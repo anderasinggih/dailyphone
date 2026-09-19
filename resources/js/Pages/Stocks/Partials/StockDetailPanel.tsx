@@ -28,6 +28,13 @@ export interface StockItemDetail {
     color?: { value: string };
     memory?: { value: string };
     license?: { value: string };
+    parameterValues?: Array<{
+        id: number;
+        parameter_id: number;
+        value_id: number;
+        value?: { value: string };
+        parameter?: { name: string; category: string };
+    }>;
     sale_items?: Array<{
         id: number;
         qty: number;
@@ -139,6 +146,16 @@ export default function StockDetailPanel({
                                 <span className="font-mono text-foreground">{stock.imei_1}</span>
                             </div>
                         )}
+                        {(stock.parameterValues || []).filter(pv => {
+                            const n = (pv.parameter?.name || '').toLowerCase();
+                            const skippable = ['brand', 'merek', 'color', 'warna', 'memory', 'memori', 'storage', 'capacity', 'license', 'lisensi', 'licence', 'condition'];
+                            return !skippable.some(k => n.includes(k)) && pv.value?.value;
+                        }).map(pv => (
+                            <div key={pv.id} className="flex justify-between border-b border-border/40 pb-2">
+                                <span>{pv.parameter?.name || 'Spec'}</span>
+                                <span className="text-foreground">{pv.value?.value}</span>
+                            </div>
+                        ))}
                     </>
                 )}
 

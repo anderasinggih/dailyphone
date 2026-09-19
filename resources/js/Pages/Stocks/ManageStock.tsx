@@ -47,6 +47,7 @@ interface StockItem {
     color_id: number | null;
     memory_id: number | null;
     license_id: number | null;
+    parameterValues?: Array<{ id: number; parameter_id: number; value_id: number }>;
     serial_number: string | null;
     imei_1: string | null;
     supplier: string | null;
@@ -332,6 +333,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         color_id: '' as string | number,
         memory_id: '' as string | number,
         license_id: '' as string | number,
+        parameter_values: {} as Record<number, string>,
         serial_number: '',
         imei_1: '',
         supplier: '',
@@ -352,6 +354,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         color_id: '' as string | number,
         memory_id: '' as string | number,
         license_id: '' as string | number,
+        parameter_values: {} as Record<number, string>,
         serial_number: '',
         imei_1: '',
         supplier: '',
@@ -388,6 +391,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             color_id: stock.color_id || '',
             memory_id: stock.memory_id || '',
             license_id: stock.license_id || '',
+            parameter_values: buildParamValueMap(stock),
             serial_number: stock.serial_number || '',
             imei_1: stock.imei_1 || '',
             supplier: stock.supplier || '',
@@ -470,18 +474,84 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         }
     };
 
-    const getParamValues = (name: string) => {
-        const n = name.toLowerCase();
-        const param = parameters.find(p => {
-            const pn = p.name.toLowerCase();
-            if (pn === n) return true;
-            if ((n === 'color' || n === 'warna') && (pn === 'color' || pn === 'warna')) return true;
-            if ((n === 'storage capacity' || n === 'kapasitas memori' || n === 'memory') && (pn === 'storage capacity' || pn === 'kapasitas memori' || pn === 'memory')) return true;
-            if ((n === 'license type' || n === 'tipe lisensi' || n === 'license') && (pn === 'license type' || pn === 'tipe lisensi' || pn === 'license')) return true;
-            if ((n === 'brand' || n === 'merek') && (pn === 'brand' || pn === 'merek')) return true;
-            return false;
+    const isConditionParam = (param: Parameter) => param.name.toLowerCase().includes('condition');
+
+    const getScopedParams = (category: string): Parameter[] => {
+        if (category === 'extra') return [];
+        if (category === 'accessories') return parameters.filter(p => p.category === 'global');
+        return parameters.filter(p => p.category === 'global' || p.category === category);
+    };
+
+    const findParamIdBySlug = (slug: string): number | null => {
+        const aliases: Record<string, string[]> = {
+            brand: ['brand', 'merek'],
+            color: ['color', 'warna'],
+            memory: ['memory', 'storage', 'capacity', 'memori'],
+            license: ['license', 'licence', 'lisensi'],
+        };
+        const set = aliases[slug] || [];
+        const found = parameters.find(p => set.some(a => p.name.toLowerCase().includes(a)));
+        return found?.id ?? null;
+    };
+
+    const buildParamValueMap = (stock: StockItem): Record<number, string> => {
+        const map: Record<number, string> = {};
+        (stock.parameterValues || []).forEach(pv => {
+            map[pv.parameter_id] = String(pv.value_id);
         });
-        return param ? param.values : [];
+        const legacy: Record<string, number | null> = {
+            brand: stock.brand_id,
+            color: stock.color_id,
+            memory: stock.memory_id,
+            license: stock.license_id,
+        };
+        Object.entries(legacy).forEach(([slug, valueId]) => {
+            if (!valueId) return;
+            const pid = findParamIdBySlug(slug);
+            if (pid && map[pid] === undefined) map[pid] = String(valueId);
+        });
+        return map;
+    };
+
+    const renderParamSelect = (form: any, param: Parameter) => {
+        const value = form.data.parameter_values?.[param.id] ?? '';
+        return (
+            <div key={param.id}>
+                <label className="block text-xs font-bold text-muted-foreground mb-1">{param.name}</label>
+                <select
+                    value={value}
+                    onChange={e => form.setData('parameter_values', { ...form.data.parameter_values, [param.id]: e.target.value })}
+                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                >
+                    <option value="">-- Select {param.name} --</option>
+                    {param.values.map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
+                </select>
+            </div>
+        );
+    };
+
+    const renderConditionSelect = (form: any, condParam: Parameter) => {
+        const value = form.data.parameter_values?.[condParam.id] ?? '';
+        return (
+            <div>
+                <label className="block text-xs font-bold text-muted-foreground mb-1">Item Condition</label>
+                <select
+                    value={value}
+                    onChange={e => {
+                        const val = e.target.value;
+                        form.setData('parameter_values', { ...form.data.parameter_values, [condParam.id]: val });
+                        const matched = condParam.values.find(o => String(o.id) === val);
+                        if (matched) {
+                            form.setData('type', matched.value.toLowerCase().includes('new') ? 'new' : 'second');
+                        }
+                    }}
+                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                >
+                    <option value="">-- Select Condition --</option>
+                    {condParam.values.map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
+                </select>
+            </div>
+        );
     };
 
     const submitSingle = (e: React.FormEvent) => {
@@ -551,6 +621,14 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             maximumFractionDigits: 0
         }).format(val);
     };
+
+    const singleScoped = getScopedParams(singleForm.data.category);
+    const singleCondParam = singleScoped.find(isConditionParam);
+    const singleSpecParams = singleScoped.filter(p => !isConditionParam(p));
+
+    const editScoped = getScopedParams(editForm.data.category);
+    const editCondParam = editScoped.find(isConditionParam);
+    const editSpecParams = editScoped.filter(p => !isConditionParam(p));
 
     return (
         <AuthenticatedLayout
@@ -1052,7 +1130,8 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 <option value="extra">Services / Add-on</option>
                                             </select>
                                         </div>
-                                        {singleForm.data.category !== 'extra' && (
+                                        {singleForm.data.category !== 'extra' && singleCondParam && renderConditionSelect(singleForm, singleCondParam)}
+                                        {singleForm.data.category !== 'extra' && !singleCondParam && (
                                             <div>
                                                 <label className="block text-xs font-bold text-muted-foreground mb-1">Item Condition</label>
                                                 <select
@@ -1087,27 +1166,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
 
                                         {singleForm.data.category !== 'accessories' && singleForm.data.category !== 'extra' && (
                                             <>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Color</label>
-                                                    <select value={singleForm.data.color_id} onChange={e => singleForm.setData('color_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
-                                                        <option value="">-- Select Color --</option>
-                                                        {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Memory Capacity</label>
-                                                    <select value={singleForm.data.memory_id} onChange={e => singleForm.setData('memory_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
-                                                        <option value="">-- Select Memory --</option>
-                                                        {getParamValues('kapasitas memori').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">License / Network Type</label>
-                                                    <select value={singleForm.data.license_id} onChange={e => singleForm.setData('license_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
-                                                        <option value="">-- Select License --</option>
-                                                        {getParamValues('tipe lisensi').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                    </select>
-                                                </div>
+                                                {singleSpecParams.map(p => renderParamSelect(singleForm, p))}
                                                 <div>
                                                     <label className="block text-xs font-bold text-muted-foreground mb-1">Serial Number (SN)</label>
                                                     <input
@@ -1153,17 +1212,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
 
                                         {}
                                         {singleForm.data.category === 'accessories' && (
-                                            <div>
-                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Color (Optional)</label>
-                                                <select
-                                                    value={singleForm.data.color_id}
-                                                    onChange={e => singleForm.setData('color_id', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
-                                                >
-                                                    <option value="">-- Select Color --</option>
-                                                    {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                </select>
-                                            </div>
+                                            singleSpecParams.map(p => renderParamSelect(singleForm, p))
                                         )}
                                     </div>
                                 </div>
@@ -1310,7 +1359,8 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 <option value="extra">Services / Add-on</option>
                                             </select>
                                         </div>
-                                        {editForm.data.category !== 'extra' && (
+                                        {editForm.data.category !== 'extra' && editCondParam && renderConditionSelect(editForm, editCondParam)}
+                                        {editForm.data.category !== 'extra' && !editCondParam && (
                                             <div>
                                                 <label className="block text-xs font-bold text-muted-foreground mb-1">Item Condition</label>
                                                 <select
@@ -1345,27 +1395,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
 
                                         {editForm.data.category !== 'accessories' && editForm.data.category !== 'extra' && (
                                             <>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Color</label>
-                                                    <select value={editForm.data.color_id} onChange={e => editForm.setData('color_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
-                                                        <option value="">-- Select Color --</option>
-                                                        {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Memory Capacity</label>
-                                                    <select value={editForm.data.memory_id} onChange={e => editForm.setData('memory_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
-                                                        <option value="">-- Select Memory --</option>
-                                                        {getParamValues('kapasitas memori').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">License / Network Type</label>
-                                                    <select value={editForm.data.license_id} onChange={e => editForm.setData('license_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
-                                                        <option value="">-- Select License --</option>
-                                                        {getParamValues('tipe lisensi').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                    </select>
-                                                </div>
+                                                {editSpecParams.map(p => renderParamSelect(editForm, p))}
                                                 <div>
                                                     <label className="block text-xs font-bold text-muted-foreground mb-1">Serial Number (SN)</label>
                                                     <input
@@ -1394,17 +1424,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                         )}
 
                                         {editForm.data.category === 'accessories' && (
-                                            <div>
-                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Color (Optional)</label>
-                                                <select
-                                                    value={editForm.data.color_id}
-                                                    onChange={e => editForm.setData('color_id', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
-                                                >
-                                                    <option value="">-- Select Color --</option>
-                                                    {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
-                                                </select>
-                                            </div>
+                                            editSpecParams.map(p => renderParamSelect(editForm, p))
                                         )}
                                     </div>
                                 </div>

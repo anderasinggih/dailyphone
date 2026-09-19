@@ -65,6 +65,83 @@ class Stock extends Model
         return $this->belongsTo(DynamicParameterValue::class, 'license_id');
     }
 
+    public function parameterValues(): HasMany
+    {
+        return $this->hasMany(StockParameterValue::class, 'stock_id');
+    }
+
+    /**
+     * Persist dynamic parameter selections for this stock unit (EAV).
+     *
+     * Accepts a map of dynamic_parameter_id => dynamic_parameter_value_id.
+     * Keeps legacy spec columns (brand_id, color_id, memory_id, license_id)
+     * and the 'type' column in sync so existing sales/display/AI flows
+     * continue to work without changes.
+     */
+    public function syncDynamicParameters(array $paramValueIds = []): void
+    {
+        $columnAliases = [
+            'brand_id' => ['brand', 'merek'],
+            'color_id' => ['color', 'warna'],
+            'memory_id' => ['memory', 'storage', 'capacity', 'memori'],
+            'license_id' => ['license', 'licence', 'lisensi'],
+        ];
+
+        $legacyColumns = [];
+        $keptParamIds = [];
+
+        foreach ($paramValueIds as $paramId => $valueId) {
+            $paramId = (int) $paramId;
+            $valueId = (int) $valueId;
+            if ($paramId <= 0 || $valueId <= 0) {
+                continue;
+            }
+
+            $param = DynamicParameter::find($paramId);
+            if (! $param) {
+                continue;
+            }
+
+            // Track the row in the EAV table
+            StockParameterValue::updateOrCreate(
+                ['stock_id' => $this->id, 'parameter_id' => $paramId],
+                ['value_id' => $valueId]
+            );
+            $keptParamIds[] = $paramId;
+
+            $name = strtolower($param->name);
+
+            // Item Condition maps to the legacy 'type' column
+            if (str_contains($name, 'condition')) {
+                $value = DynamicParameterValue::find($valueId);
+                if ($value) {
+                    $legacyColumns['type'] = str_contains(strtolower($value->value), 'new')
+                        ? 'new'
+                        : 'second';
+                }
+                continue;
+            }
+
+            foreach ($columnAliases as $column => $aliases) {
+                foreach ($aliases as $alias) {
+                    if (str_contains($name, $alias)) {
+                        $legacyColumns[$column] = $valueId;
+                        break 2;
+                    }
+                }
+            }
+        }
+
+        // Remove EAV rows whose parameter is no longer selected
+        $this->parameterValues()
+            ->whereNotIn('parameter_id', $keptParamIds)
+            ->delete();
+
+        if (! empty($legacyColumns)) {
+            $this->update($legacyColumns);
+        }
+    }
+
     public function saleItems(): HasMany
     {
         return $this->hasMany(SaleItem::class);

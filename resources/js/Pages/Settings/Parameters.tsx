@@ -39,7 +39,6 @@ const CATEGORY_OPTIONS = [
     { key: 'global', label: 'Global' },
     { key: 'iphone', label: 'iPhone' },
     { key: 'android', label: 'Android' },
-    { key: 'all', label: 'All' },
 ];
 
 function AddParameterForm() {

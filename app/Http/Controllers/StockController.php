@@ -35,7 +35,7 @@ class StockController extends Controller
         $stocks = Stock::where('status', 'available')
             ->when(!$isSuperOrViewer && $user->store_id, fn($q) => $q->where('store_id', $user->store_id))
             ->when($isSuperOrViewer && $storeId, fn($q) => $q->where('store_id', $storeId))
-            ->with(['brand', 'color', 'memory', 'license'])
+            ->with(['brand', 'color', 'memory', 'license', 'parameterValues.value', 'parameterValues.parameter'])
             ->get();
 
         // Get list of other stores for Stock Transfer options
@@ -93,7 +93,9 @@ class StockController extends Controller
             'saleItems.sale.buyer',
             'saleItems.sale.affiliateUser',
             'saleItems.sale.extras.extra',
-            'saleItems.sale.items'
+            'saleItems.sale.items',
+            'parameterValues.value',
+            'parameterValues.parameter'
         ])
         ->when(!$isSuperOrViewer && $user->store_id, fn($q) => $q->where('store_id', $user->store_id))
         ->when($isSuperOrViewer && $storeId, fn($q) => $q->where('store_id', $storeId))
@@ -140,16 +142,18 @@ class StockController extends Controller
             'sell_price_reseller' => 'nullable|numeric|min:0',
             'qty' => 'required|integer|min:1',
             'default_charge_to' => 'nullable|in:buyer,seller,free_promotion',
+            'parameter_values' => 'nullable|array',
         ]);
         
         if ($validated['store_id'] === 'all') {
             $stores = Store::all();
-            DB::transaction(function() use ($validated, $stores, $user) {
+            DB::transaction(function() use ($validated, $stores, $user, $request) {
                 foreach ($stores as $store) {
                     $data = $validated;
                     $data['store_id'] = $store->id;
                     $data['created_by'] = $user->email ?? $user->name;
                     $stock = Stock::create($data);
+                    $stock->syncDynamicParameters($request->input('parameter_values', []));
                     ActivityLog::log('add_stock', Stock::class, $stock->id, $stock->toArray());
                 }
             });
@@ -159,6 +163,7 @@ class StockController extends Controller
             $data = $validated;
             $data['created_by'] = $user->email ?? $user->name;
             $stock = Stock::create($data);
+            $stock->syncDynamicParameters($request->input('parameter_values', []));
             ActivityLog::log('add_stock', Stock::class, $stock->id, $stock->toArray());
             return redirect()->back()->with('success', 'Stok berhasil ditambahkan.');
         }
@@ -313,7 +318,7 @@ class StockController extends Controller
 
         $request->validate([
             'name' => 'required|string|max:100',
-            'category' => 'required|in:iphone,android,global,all',
+            'category' => 'required|in:iphone,android,global',
         ]);
 
         DynamicParameter::create([
@@ -434,14 +439,19 @@ class StockController extends Controller
             'update_extras.*.charge_to' => 'required|in:buyer,seller,free_promotion',
             'update_extras.*.sell_price' => 'required|numeric|min:0',
             'update_extras.*.buy_price' => 'required|numeric|min:0',
+            'parameter_values' => 'nullable|array',
         ]);
 
         $wasSold = $stock->status === 'sold';
         $oldValues = $stock->toArray();
 
         DB::transaction(function() use ($stock, $validated, $wasSold, $oldValues, $request) {
-            $stockFields = collect($validated)->except(['buyer_name', 'buyer_phone', 'buyer_address', 'remove_extra_ids', 'update_extras'])->toArray();
+            $stockFields = collect($validated)->except(['buyer_name', 'buyer_phone', 'buyer_address', 'remove_extra_ids', 'update_extras', 'parameter_values'])->toArray();
             $stock->update($stockFields);
+
+            if ($request->has('parameter_values') && is_array($request->input('parameter_values'))) {
+                $stock->syncDynamicParameters($request->input('parameter_values'));
+            }
 
             if ($stock->status === 'sold') {
                 $saleItem = \App\Models\SaleItem::where('stock_id', $stock->id)->first();

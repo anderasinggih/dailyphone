@@ -9,6 +9,8 @@ use App\Models\User;
 use App\Models\Buyer;
 use App\Models\Sale;
 use App\Models\SaleItem;
+use App\Models\DynamicParameter;
+use App\Models\DynamicParameterValue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -309,6 +311,10 @@ class AiActionService
             ];
             $existingStock->update($updateData);
 
+            $existingStock->syncDynamicParameters(
+                $this->resolveParameterMap($brandId, $colorId, $memoryId, $licenseId, $updateData['type'] ?? 'second')
+            );
+
             ActivityLog::log('ai_restore_stock', Stock::class, $existingStock->id, $existingStock->fresh()->toArray());
 
             $formattedPrice = number_format($existingStock->sell_price, 0, ',', '.');
@@ -377,6 +383,10 @@ class AiActionService
             ]);
 
             ActivityLog::log('ai_add_stock', Stock::class, $createdStock->id, $createdStock->toArray());
+
+            $createdStock->syncDynamicParameters(
+                $this->resolveParameterMap($brandId, $colorId, $memoryId, $licenseId, $type)
+            );
 
             return $createdStock;
         });
@@ -999,6 +1009,57 @@ class AiActionService
                     'message' => "Jenis aksi ini tidak mendukung operasi Undo otomatis.",
                 ];
         }
+    }
+
+    /**
+     * Build a dynamic_parameter_id => dynamic_parameter_value_id map from the
+     * resolved legacy spec columns so AI-created units get consistent EAV rows.
+     */
+    protected function resolveParameterMap(?int $brandId, ?int $colorId, ?int $memoryId, ?int $licenseId, string $type = 'second'): array
+    {
+        $map = [];
+
+        $resolveParamId = function (string $alias): ?int {
+            $id = DynamicParameter::where('name', 'like', "%{$alias}%")->value('id');
+            return $id ? (int) $id : null;
+        };
+
+        $slots = [
+            'brand' => ['brand', 'merek'],
+            'color' => ['color', 'warna'],
+            'memory' => ['memory', 'storage', 'capacity', 'memori'],
+            'license' => ['license', 'licence', 'lisensi'],
+        ];
+
+        $ids = ['brand' => $brandId, 'color' => $colorId, 'memory' => $memoryId, 'license' => $licenseId];
+
+        foreach ($slots as $slot => $aliases) {
+            if (! $ids[$slot]) {
+                continue;
+            }
+            foreach ($aliases as $alias) {
+                $paramId = $resolveParamId($alias);
+                if ($paramId) {
+                    $map[$paramId] = (int) $ids[$slot];
+                    break;
+                }
+            }
+        }
+
+        foreach (['condition', 'kondisi'] as $alias) {
+            $condParamId = $resolveParamId($alias);
+            if ($condParamId) {
+                $condValueId = DynamicParameterValue::where('parameter_id', $condParamId)
+                    ->where('value', 'like', "{$type}%")
+                    ->value('id');
+                if ($condValueId) {
+                    $map[$condParamId] = (int) $condValueId;
+                }
+                break;
+            }
+        }
+
+        return $map;
     }
 }
 
