@@ -124,6 +124,48 @@ class AiActionExecutionTest extends TestCase
         ]);
     }
 
+    public function test_superadmin_can_generate_downloadable_files_via_python()
+    {
+        $superadmin = User::factory()->create([
+            'role' => 'superadmin',
+        ]);
+
+        $response = $this->actingAs($superadmin)->postJson(route('assistant.execute'), [
+            'action' => 'run_python_script',
+            'payload' => [
+                'code' => <<<'PY'
+import os, csv
+with open('test_report.csv', 'w', newline='') as f:
+    w = csv.writer(f)
+    w.writerow(['Unit', 'Harga'])
+    w.writerow(['iPhone 13', '7299000'])
+with open('output.txt', 'w') as f:
+    f.write('generated-artifact')
+print('FILES_GENERATED')
+PY
+            ],
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertJson([
+            'success' => true,
+            'output' => 'FILES_GENERATED',
+        ]);
+
+        $fileNames = collect($response->json('files'))->pluck('name')->all();
+        $this->assertContains('test_report.csv', $fileNames);
+        $this->assertContains('output.txt', $fileNames);
+
+        // The generated file URL must be reachable (validates path traversal guard too)
+        $url = collect($response->json('files'))->firstWhere('name', 'test_report.csv')['url'] ?? null;
+        $this->assertNotNull($url);
+        $this->actingAs($superadmin)->get($url)->assertOk();
+
+        // Superadmin-only: a plain user cannot download generated files
+        $user = User::factory()->create(['role' => 'karyawan']);
+        $this->actingAs($user)->get($url)->assertForbidden();
+    }
+
     public function test_superadmin_can_execute_sell_stock_with_validation()
     {
         $superadmin = User::factory()->create([

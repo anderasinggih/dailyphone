@@ -12,6 +12,15 @@ marked.use({
     breaks: true,
 });
 
+if (typeof window !== 'undefined') {
+    DOMPurify.addHook('afterSanitizeAttributes', (node: Element) => {
+        if (node.tagName === 'A') {
+            node.setAttribute('target', '_blank');
+            node.setAttribute('rel', 'noopener noreferrer');
+        }
+    });
+}
+
 const MARKDOWN_STYLES = [
     'text-xs leading-relaxed break-words min-w-0 max-w-full',
     '[overflow-wrap:anywhere]',
@@ -24,7 +33,7 @@ const MARKDOWN_STYLES = [
     '[&_pre]:bg-black/5 dark:[&_pre]:bg-white/10 [&_pre]:rounded-xl [&_pre]:p-2.5 [&_pre]:overflow-x-auto [&_pre]:my-2 [&_pre]:max-w-full',
     '[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:rounded-none [&_pre_code]:break-all',
     '[&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-2.5 [&_blockquote]:my-2 [&_blockquote]:text-muted-foreground [&_blockquote]:break-words',
-    '[&_a]:text-primary [&_a]:underline [&_a]:break-all',
+    '[&_a]:text-primary [&_a]:underline [&_a]:break-all [&_a]:cursor-pointer [&_a:hover]:opacity-85 [&_a:hover]:decoration-primary/60',
     '[&_.markdown-table-wrapper]:overflow-x-auto [&_.markdown-table-wrapper]:my-2.5 [&_.markdown-table-wrapper]:rounded-xl [&_.markdown-table-wrapper]:border [&_.markdown-table-wrapper]:border-border/50 [&_.markdown-table-wrapper]:shadow-2xs',
     '[&_table]:w-full [&_table]:min-w-[480px] sm:[&_table]:min-w-full [&_table]:border-collapse [&_table]:text-[11px]',
     '[&_thead]:bg-muted/70 [&_thead]:text-foreground',

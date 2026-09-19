@@ -118,6 +118,7 @@ Route::prefix('application/dp')->group(function () {
         Route::post('/assistant/execute', [\App\Http\Controllers\AiAssistantController::class, 'executeAction'])->name('assistant.execute');
         Route::post('/assistant/undo', [\App\Http\Controllers\AiAssistantController::class, 'undoAction'])->name('assistant.undo');
         Route::post('/assistant/proposal-status', [\App\Http\Controllers\AiAssistantController::class, 'updateProposalStatus'])->name('assistant.proposal-status');
+        Route::get('/assistant/file/{path}', [\App\Http\Controllers\AiAssistantController::class, 'downloadGeneratedFile'])->name('assistant.file')->where('path', '.*');
         Route::post('/settings/ai/test', [\App\Http\Controllers\AiAssistantController::class, 'testConnection'])->name('settings.ai.test');
 
         // AI Training Notes / Persistent Memory (superadmin)

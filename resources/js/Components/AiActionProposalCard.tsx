@@ -22,7 +22,11 @@ import {
     FileDiff,
     Layers,
     Edit3,
-    MessageSquare
+    MessageSquare,
+    Download,
+    FileSpreadsheet,
+    FileText,
+    FileImage,
 } from 'lucide-react';
 
 export interface ActionProposalData {
@@ -64,6 +68,13 @@ export default function AiActionProposalCard({
     );
     const [resultMessage, setResultMessage] = useState<string | null>(null);
     const [executionOutput, setExecutionOutput] = useState<string | null>(null);
+    const [generatedFiles, setGeneratedFiles] = useState<Array<{
+        name: string;
+        path: string;
+        mime: string;
+        size: number;
+        url: string;
+    }>>([]);
     const [isChangesExpanded, setIsChangesExpanded] = useState<boolean>(true);
     const [isEditingProposal, setIsEditingProposal] = useState<boolean>(false);
     const [editableChanges, setEditableChanges] = useState<Array<{ field: string; old: string | number; new: string | number }>>(
@@ -271,7 +282,7 @@ export default function AiActionProposalCard({
             case 'add_parameter':
                 return 'Tambah Master Parameter (Add)';
             case 'run_python_script':
-                return 'Eksekusi Kalkulasi';
+                return 'Generate File / Eksekusi Python';
             default:
                 return proposal.action;
         }
@@ -327,6 +338,9 @@ export default function AiActionProposalCard({
                 if (data.output) {
                     setExecutionOutput(data.output);
                 }
+                if (Array.isArray(data.files) && data.files.length > 0) {
+                    setGeneratedFiles(data.files);
+                }
                 if (onExecuted) {
                     onExecuted(data.message);
                 }
@@ -343,6 +357,20 @@ export default function AiActionProposalCard({
     };
 
     const changesCount = editableChanges.length;
+
+    const fileIcon = (name: string) => {
+        const ext = name.split('.').pop()?.toLowerCase() ?? '';
+        if (['xlsx', 'xls', 'csv'].includes(ext)) {
+            return <FileSpreadsheet className="h-4 w-4 text-emerald-500" />;
+        }
+        if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) {
+            return <FileImage className="h-4 w-4 text-blue-500" />;
+        }
+        if (['pdf', 'doc', 'docx', 'txt', 'md'].includes(ext)) {
+            return <FileText className="h-4 w-4 text-primary" />;
+        }
+        return <FileCode className="h-4 w-4 text-muted-foreground" />;
+    };
 
     return (
         <div className="my-3 rounded-2xl border border-border/80 bg-background/95 dark:bg-card/90 shadow-md overflow-hidden text-xs transition-all">
@@ -536,6 +564,33 @@ export default function AiActionProposalCard({
                         <pre className="p-2 rounded-lg bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-mono text-[10px] overflow-x-auto">
                             {executionOutput}
                         </pre>
+                    </div>
+                )}
+
+                {/* Generated files (downloadable artifacts from run_python_script) */}
+                {generatedFiles.length > 0 && (
+                    <div className="space-y-1.5 pt-2 border-t border-border/40">
+                        <div className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                            <Download className="h-3 w-3" />
+                            <span>Generated files ({generatedFiles.length})</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {generatedFiles.map((f) => (
+                                <a
+                                    key={f.path}
+                                    href={f.url}
+                                    title={`Download ${f.name}`}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-border/70 bg-muted/20 hover:bg-primary/10 hover:border-primary/30 hover:text-primary text-foreground font-medium text-[11px] transition group max-w-full"
+                                >
+                                    {fileIcon(f.name)}
+                                    <span className="max-w-[180px] truncate">{f.name}</span>
+                                    <span className="text-[9.5px] font-mono text-muted-foreground shrink-0">
+                                        {(f.size / 1024).toFixed(1)} KB
+                                    </span>
+                                    <Download className="h-3 w-3 text-muted-foreground group-hover:text-primary shrink-0" />
+                                </a>
+                            ))}
+                        </div>
                     </div>
                 )}
 

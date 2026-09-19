@@ -1059,7 +1059,11 @@ class AiActionService
     }
 
     /**
-     * Safely run a Python 3 script with timeout and output capture.
+     * Safely run a Python 3 script with output capture.
+     *
+     * Any file the script writes to its working directory (the run's dedicated
+     * output folder, also exposed via the OUTPUT_DIR env var) is persisted and
+     * returned as a downloadable artifact in `files`.
      */
     protected function executeRunPythonScript(array $payload, User $user): array
     {
@@ -1077,10 +1081,20 @@ class AiActionService
             mkdir($tempDir, 0755, true);
         }
 
+        // Dedicated per-run output directory (also the script's cwd)
+        $runId = date('Ymd_His') . '_' . uniqid();
+        $outputDir = storage_path('app/ai_generated/' . $runId);
+        if (!is_dir($outputDir)) {
+            mkdir($outputDir, 0755, true);
+        }
+
         $tempFile = $tempDir . '/script_' . uniqid() . '.py';
         file_put_contents($tempFile, $scriptContent);
 
         try {
+            $env = getenv();
+            $env['OUTPUT_DIR'] = $outputDir;
+
             $process = proc_open(
                 ['python3', $tempFile],
                 [
@@ -1088,7 +1102,9 @@ class AiActionService
                     1 => ['pipe', 'w'],
                     2 => ['pipe', 'w'],
                 ],
-                $pipes
+                $pipes,
+                $outputDir,
+                $env
             );
 
             if (!is_resource($process)) {
@@ -1099,7 +1115,7 @@ class AiActionService
             }
 
             fclose($pipes[0]);
-            
+
             // Read stdout & stderr
             $stdout = stream_get_contents($pipes[1]);
             $stderr = stream_get_contents($pipes[2]);
@@ -1108,10 +1124,26 @@ class AiActionService
 
             $exitCode = proc_close($process);
 
+            // Collect any files the script generated
+            $files = [];
+            foreach ((glob($outputDir . '/*') ?: []) as $f) {
+                if (is_file($f)) {
+                    $files[] = [
+                        'name' => basename($f),
+                        'path' => $runId . '/' . basename($f),
+                        'mime' => (function_exists('mime_content_type') ? mime_content_type($f) : false) ?: 'application/octet-stream',
+                        'size' => filesize($f),
+                        'url' => route('assistant.file', $runId . '/' . basename($f)),
+                    ];
+                }
+            }
+            usort($files, fn ($a, $b) => strcmp($a['name'], $b['name']));
+
             ActivityLog::log('ai_run_python', null, null, [
                 'exit_code' => $exitCode,
                 'code_snippet' => mb_substr($scriptContent, 0, 200),
                 'output_snippet' => mb_substr($stdout, 0, 200),
+                'generated_files' => array_map(fn ($f) => $f['name'], $files),
             ]);
 
             if ($exitCode !== 0) {
@@ -1119,6 +1151,7 @@ class AiActionService
                     'success' => false,
                     'message' => 'Python script returned error: ' . ($stderr ?: $stdout ?: "Exit code {$exitCode}"),
                     'output' => $stderr ?: $stdout,
+                    'files' => $files,
                 ];
             }
 
@@ -1126,6 +1159,7 @@ class AiActionService
                 'success' => true,
                 'message' => 'Python script executed successfully.',
                 'output' => trim($stdout),
+                'files' => $files,
             ];
         } finally {
             if (file_exists($tempFile)) {
