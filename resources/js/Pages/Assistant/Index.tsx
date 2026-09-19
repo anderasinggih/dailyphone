@@ -892,78 +892,41 @@ export default function Assistant({
                             })}
 
                             {isLoading && (
-                                <div className="max-w-3xl mx-auto py-2 animate-in fade-in-50 duration-200">
-                                    {/* Gemini & Apple HIG Minimalist Sleek Thinking Indicator (Containerless) */}
-                                    <div className="flex flex-col gap-1.5 text-xs select-none">
-                                        {/* Main inline status line */}
-                                        <div 
-                                            onClick={() => setIsThinkingExpanded(!isThinkingExpanded)}
-                                            className="inline-flex items-center gap-2 cursor-pointer group py-1 text-muted-foreground hover:text-foreground transition-colors w-fit"
-                                        >
-                                            <div className="relative flex items-center justify-center">
-                                                <Sparkles className="h-4 w-4 text-primary animate-pulse" />
-                                                <span className="absolute -top-0.5 -right-0.5 flex h-1.5 w-1.5">
-                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
-                                                </span>
-                                            </div>
-
-                                            <span className="font-medium text-foreground tracking-tight flex items-center gap-1.5">
-                                                Thinking
-                                                <span className="text-[11px] font-mono text-muted-foreground">({thinkingSeconds}s)</span>
-                                            </span>
-
-                                            <span className="text-muted-foreground/50 text-[11px]">•</span>
-
-                                            <span className="font-mono text-[11px] text-muted-foreground group-hover:text-primary transition-colors truncate max-w-[280px] sm:max-w-md">
-                                                {thinkingStep}
-                                            </span>
-
-                                            <span className="p-0.5 rounded text-muted-foreground/60 group-hover:text-foreground transition">
-                                                {isThinkingExpanded ? (
-                                                    <ChevronUp className="h-3 w-3" />
-                                                ) : (
-                                                    <ChevronDown className="h-3 w-3" />
-                                                )}
-                                            </span>
-                                        </div>
-
-                                        {/* Collapsible Clean Steps / Milestones (No border/box containers) */}
-                                        {isThinkingExpanded && thinkingStepsList.length > 0 && (
-                                            <div className="pl-6 pt-1 pb-2 space-y-1 border-l-2 border-primary/20 ml-2 animate-in fade-in slide-in-from-top-1 duration-150">
-                                                {thinkingStepsList.map((step, idx) => {
-                                                    const isDone = idx < currentStepIdx;
-                                                    const isCurrent = idx === currentStepIdx;
-
-                                                    return (
-                                                        <div 
-                                                            key={idx}
-                                                            className={`flex items-center gap-2 text-[11px] font-mono transition-colors ${
-                                                                isCurrent
-                                                                    ? 'text-primary font-medium'
-                                                                    : isDone
-                                                                    ? 'text-muted-foreground/60'
-                                                                    : 'text-muted-foreground/40'
-                                                            }`}
-                                                        >
-                                                            <span className="shrink-0">
-                                                                {isDone ? (
-                                                                    <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                                                                ) : isCurrent ? (
-                                                                    <Loader2 className="h-3 w-3 text-primary animate-spin" />
-                                                                ) : (
-                                                                    <CircleDashed className="h-3 w-3 text-muted-foreground/30" />
-                                                                )}
-                                                            </span>
-                                                            <span className={isDone ? 'line-through opacity-70' : ''}>
-                                                                {step}
-                                                            </span>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
+                                <div className="max-w-3xl mx-auto py-2 text-xs select-none">
+                                    {/* Ultra Clean & Simple: No containers, no neon badges, just simple loader + text */}
+                                    <div className="flex items-center gap-2 text-muted-foreground font-mono">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+                                        <span className="font-semibold text-foreground">Thinking...</span>
+                                        <span className="text-[11px] text-muted-foreground/60 font-mono">({thinkingSeconds}s)</span>
                                     </div>
+
+                                    {/* Direct Minimalist Milestone Steps with simple strike-through */}
+                                    {thinkingStepsList.length > 0 && (
+                                        <div className="pl-5 pt-1.5 space-y-1 font-mono text-[11px]">
+                                            {thinkingStepsList.map((step, idx) => {
+                                                const isDone = idx < currentStepIdx;
+                                                const isCurrent = idx === currentStepIdx;
+
+                                                return (
+                                                    <div 
+                                                        key={idx}
+                                                        className={`flex items-center gap-2 transition-all ${
+                                                            isDone 
+                                                                ? 'text-muted-foreground/40 line-through' 
+                                                                : isCurrent 
+                                                                ? 'text-foreground font-medium' 
+                                                                : 'text-muted-foreground/30'
+                                                        }`}
+                                                    >
+                                                        <span className="text-[10px]">
+                                                            {isDone ? '✓' : isCurrent ? '›' : '•'}
+                                                        </span>
+                                                        <span>{step}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
