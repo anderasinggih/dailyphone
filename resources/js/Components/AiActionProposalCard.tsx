@@ -349,13 +349,13 @@ export default function AiActionProposalCard({
             </div>
 
             {/* Body */}
-            <div className="p-3.5 space-y-3">
+            <div className="p-4 space-y-3">
                 {proposal.action === 'empty_trash' && (
-                    <div className="p-2.5 rounded-xl bg-destructive/10 border border-destructive/25 text-destructive text-[11px] font-medium flex items-start gap-2">
+                    <div className="flex items-start gap-2.5 text-destructive text-[11px] font-medium">
                         <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                         <div>
-                            <strong className="font-bold">PERINGATAN HAPUS PERMANEN:</strong>
-                            <p className="mt-0.5 text-destructive/90">Aksi ini akan menghapus seluruh unit di keranjang sampah secara permanen dari basis data. Data tidak dapat dipulihkan kembali (No Undo).</p>
+                            <span className="font-bold">PERINGATAN HAPUS PERMANEN:</span>
+                            <span className="ml-1 text-destructive/90">Data di keranjang sampah akan dihapus selamanya dari database dan tidak dapat di-Undo.</span>
                         </div>
                     </div>
                 )}
@@ -367,81 +367,75 @@ export default function AiActionProposalCard({
                 )}
 
                 {proposal.target && (
-                    <div className="flex items-center gap-2 p-2 rounded-xl bg-muted/30 border border-border/40 font-mono text-[11px]">
-                        <span className="text-muted-foreground">Target:</span>
-                        <span className="font-semibold text-foreground truncate">{proposal.target}</span>
+                    <div className="text-[11px] font-mono text-muted-foreground flex items-center gap-1.5">
+                        <span className="text-muted-foreground/60">Target:</span>
+                        <span className="font-semibold text-foreground">{proposal.target}</span>
                     </div>
                 )}
 
-                {/* Antigravity-Style Diff Header Bar */}
+                {/* Streamlined Changes Table without nested container box */}
                 {editableChanges.length > 0 && (
-                    <div className="rounded-xl border border-border/60 bg-muted/20 overflow-hidden">
+                    <div className="pt-2 border-t border-border/40 space-y-2">
                         <div
-                            className="flex items-center justify-between px-3 py-2 bg-muted/40 transition select-none"
+                            onClick={() => setIsChangesExpanded(!isChangesExpanded)}
+                            className="flex items-center justify-between cursor-pointer py-0.5 select-none text-muted-foreground hover:text-foreground transition-colors"
                         >
-                            <div
-                                onClick={() => setIsChangesExpanded(!isChangesExpanded)}
-                                className="flex items-center gap-2 cursor-pointer flex-1"
-                            >
+                            <div className="flex items-center gap-2">
                                 {isChangesExpanded ? (
-                                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                                    <ChevronDown className="h-3.5 w-3.5" />
                                 ) : (
-                                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                                    <ChevronRight className="h-3.5 w-3.5" />
                                 )}
-                                <span className="font-medium text-foreground text-[11px]">
+                                <span className="font-medium text-[11px] text-foreground">
                                     {changesCount} {changesCount > 1 ? 'fields' : 'field'} changed
                                 </span>
                                 <span className="inline-flex items-center gap-1 font-mono text-[10px]">
-                                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">+{changesCount}</span>
-                                    <span className="text-rose-600 dark:text-rose-400 font-semibold">-{changesCount}</span>
+                                    <span className="text-emerald-500 font-semibold">+{changesCount}</span>
+                                    <span className="text-rose-500 font-semibold">-{changesCount}</span>
                                 </span>
                             </div>
 
-                            <div className="flex items-center gap-2">
-                                {status === 'pending' && onFeedbackComment && (
-                                    <button
-                                        type="button"
-                                        onClick={() => onFeedbackComment(
+                            {status === 'pending' && onFeedbackComment && (
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onFeedbackComment(
                                             proposal.action === 'delete_stock'
                                                 ? 'Jangan hapus unit ini, tapi '
                                                 : 'Tolong ubah '
-                                        )}
-                                        title="Komentar / beri instruksi revisi ke AI"
-                                        className="px-2 py-0.5 rounded text-[10.5px] font-medium bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition flex items-center gap-1"
-                                    >
-                                        <MessageSquare className="h-3 w-3" />
-                                        <span>Comment</span>
-                                    </button>
-                                )}
-
-                                <span className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-background/60 border border-border/40">
-                                    Review
-                                </span>
-                            </div>
+                                        );
+                                    }}
+                                    title="Komentar / beri instruksi revisi ke AI"
+                                    className="px-2 py-0.5 rounded text-[10.5px] font-medium hover:bg-muted text-muted-foreground hover:text-foreground transition flex items-center gap-1"
+                                >
+                                    <MessageSquare className="h-3 w-3" />
+                                    <span>Comment</span>
+                                </button>
+                            )}
                         </div>
 
-                        {/* Proposed Changes Table / Diff list */}
+                        {/* Flat Changes Table */}
                         {isChangesExpanded && (
-                            <div className="overflow-x-auto border-t border-border/40 scrollbar-thin">
-                                <table className="w-full min-w-[500px] sm:min-w-full text-left text-[11px]">
-                                    <thead className="bg-muted/40 text-muted-foreground border-b border-border/30">
+                            <div className="overflow-x-auto scrollbar-thin">
+                                <table className="w-full text-left text-[11px]">
+                                    <thead className="text-muted-foreground border-b border-border/30">
                                         <tr>
-                                            <th className="px-3 py-2 font-semibold whitespace-nowrap w-2/5">Field</th>
-                                            <th className="px-3 py-2 font-semibold whitespace-nowrap w-1/4">Current</th>
-                                            <th className="px-3 py-2 font-semibold whitespace-nowrap w-1/3">Proposed</th>
+                                            <th className="py-1.5 font-semibold w-2/5">Field</th>
+                                            <th className="py-1.5 font-semibold w-1/4">Current</th>
+                                            <th className="py-1.5 font-semibold w-1/3">Proposed</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-border/20">
                                         {editableChanges.map((c, idx) => (
-                                            <tr key={idx} className="hover:bg-muted/20">
-                                                <td className="px-3 py-2 font-medium text-foreground flex items-center gap-1.5 whitespace-nowrap">
-                                                    <span className="w-1.5 h-1.5 rounded-full bg-primary/70 shrink-0" />
-                                                    <span>{c.field}</span>
+                                            <tr key={idx} className="hover:bg-muted/10">
+                                                <td className="py-1.5 font-medium text-foreground">
+                                                    {c.field}
                                                 </td>
-                                                <td className="px-3 py-2 text-muted-foreground line-through decoration-rose-500/50 whitespace-nowrap">
+                                                <td className="py-1.5 text-muted-foreground line-through opacity-70">
                                                     {String(c.old ?? '-')}
                                                 </td>
-                                                <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+                                                <td className="py-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
                                                     <span className="inline-flex items-center gap-1">
                                                         <ArrowRight className="h-2.5 w-2.5 opacity-60" />
                                                         {String(c.new)}
