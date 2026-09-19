@@ -1146,6 +1146,116 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Second runtime guard, placed right beside the reconciliation helpers:
+     * when the model stays silent (no ```ai_memo block AND no visible storage
+     * claim), there was previously no signal to save anything. The system now
+     * deterministically scans the USER's message for a clearly memory-worthy
+     * fact and persists it as a neuron node fully behind the scenes — no
+     * announcement, no rewrite of the reply. Only runs when no persistable memo
+     * exists, so it never fights the model's own writing.
+     */
+    protected function silentlyPersistUserFact(array &$result, $user, string $userText): void
+    {
+        if (($result['success'] ?? true) === false) {
+            return;
+        }
+
+        $payload = $this->extractUserFact($userText);
+        if ($payload === null) {
+            return;
+        }
+
+        // persistMemo() dedupes by content_hash / semantic similarity, so only a
+        // genuinely NEW neuron is created — repeated chats never spawn copies.
+        if (!$this->persistMemo($payload, $user)) {
+            return;
+        }
+
+        // Keep the persistence path single-source-of-truth: append the block the
+        // raw text was missing so the follow-up persistTrainingMemos() call sees
+        // it and turns into a harmless content_hash no-op.
+        $block = "\n\n```ai_memo\n" . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n```";
+        $current = (string)($result['raw_reply'] ?? $result['reply'] ?? '');
+        $result['raw_reply'] = rtrim($current) . $block;
+    }
+
+    /**
+     * Deterministically extract ONE clearly memory-worthy fact from the user's
+     * message, if any. No LLM cost and no invented facts — the user's own wording
+     * is the source material. Returns a seed for persistMemo() ({kind, title,
+     * related, content}) or null when the message carries nothing worth a node.
+     *
+     * Priority rules, ordered so the stronger signal wins first:
+     *  - family-relation facts (kin + bernama/punya/...) become 'identity'
+     *    nodes, mirroring claimKind().
+     *  - first-person/named-person likes ("dewi suka badminton") become
+     *    'preference' nodes.
+     * Questions, commands, negations, URLs, attachment-only messages and
+     * multi-sentence rambles are never extracted.
+     */
+    protected function extractUserFact(string $userText): ?array
+    {
+        $text = trim($userText);
+        if ($text === '' || mb_strlen($text) > 1000
+            || preg_match('/https?:\/\//iu', $text)
+            || preg_match('/^📎\s/u', $text)) {
+            return null;
+        }
+
+        $sentences = preg_split('/(?<=[.!?])\s+|\n+/u', $text) ?: [trim($text)];
+
+        foreach ($sentences as $sentence) {
+            $s = trim((string)$sentence);
+            $len = mb_strlen($s);
+            if ($s === '' || $len < 6 || $len > 240) {
+                continue;
+            }
+
+            // Not a fact: questions, commands or negated / hypothetical phrasing.
+            if (str_contains($s, '?')
+                || preg_match('/\b(?:apakah|kenapa|mengapa|bagaimana|kapan|di\s+mana|yang\s+mana)\b/iu', $s)
+                || preg_match('/\b(?:tolong|mohon|bis[ae]kah|bolehkah|jangan)\b/iu', $s)
+                || preg_match('/\b(?:belum|tidak|nggak|enggak|kurang|bukan)\b/iu', $s)) {
+                continue;
+            }
+
+            $content = trim((string) preg_replace('/[*_`#>]+/u', '', $s));
+            $content = trim((string) preg_replace('/^\s*>\s*/m', '', $content));
+            $content = trim((string) preg_replace('/\s+/u', ' ', $content));
+            $content = rtrim($content, " \t\n\r,.;:!?");
+            if ($content === '' || mb_strlen($content) < 4) {
+                continue;
+            }
+
+            if (preg_match('/\b(?:(?:adikku|kakakku|saudaraku|ibuku|ayahku|bapakku|mamaku|papaku|istriku|suamiku|anakku|kakekku|nenekku|pamanku|bibiku|tenteku|keponakanku|sepupuku)|(?:adik|kakak|saudara|ibu|ayah|bapak|mama|papa|istri|suami|anak|kakek|nenek|paman|bibi|tante|keponakan|sepupu))\b/iu', $s)
+                && preg_match('/\b(?:bernama|namanya|punya|mempunyai)\b/iu', $s)) {
+                // Family relation → 'identity' node (same taxonomy as claimKind).
+                return [
+                    'kind' => 'identity',
+                    'title' => $this->shortClaimTitle($content),
+                    'related' => $this->relatedForClaim($s, $s),
+                    'content' => $content,
+                ];
+            }
+
+            // "(aku|dewi|…) suka/senang/gemar <object>" → 'preference' node.
+            if (preg_match('/^(?:(?:aku|saya|gue|gua|dewi|dia|kamu|beliau)\s+)?(?:paling\s+suka|suka|gemar|senang)(?:\s+(?:banget|sekali|sangat))?\s+(.+)$/iu', $s, $m)) {
+                $object = trim($m[1], " \t\n\r,.;:!?");
+                if ($object !== '' && mb_strlen($object) <= 120) {
+                    return [
+                        'kind' => 'preference',
+                        'title' => $this->shortClaimTitle($content),
+                        'related' => $this->relatedForClaim($s, $s),
+                        'content' => $content,
+                    ];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Neutralise the storage-claim phrases in a reply so the user is told the
      * truth when the memory could not be saved.
      */
