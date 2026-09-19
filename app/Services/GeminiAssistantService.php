@@ -315,9 +315,16 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
      * ONLY emit the ```action_proposal when all of these verified details are provided!
 
 2. ACTIONS SUPPORTED:
-   - "add_stock": When the user asks to add, input, or create a new stock/unit, OR when user asks to restore / put back a previously deleted unit (e.g. "add stok coy ip 12", "add <imei> back", "pulihkan unit <imei>", "tambah kembali"):
+   - "add_stock": When the user asks to add, input, or create a new single stock/unit, OR when user asks to restore / put back a previously deleted unit (e.g. "add stok coy ip 12", "add <imei> back", "pulihkan unit <imei>", "tambah kembali"):
      * MANDATORY: `name` (e.g. "iPhone 12 128GB"), `buy_price` (HPP), `sell_price` (Harga Jual).
-     * OPTIONAL / DEFAULTS: `store_id` (default store from context), `category` ("iphone"|"android"), `type` ("second"|"new"), `brand` ("Apple"|"Samsung"|...), `color` ("Black"|"White"|"Midnight"|...), `memory` ("128GB"|"256GB"|...), `license` ("iBox (Resmi)"|"Bea Cukai (Sinyal On)"|"Inter (Sinyal Off)"|...), `serial_number`, `imei_1`. If the user asks to restore or add back a unit from RECENTLY DELETED / TRASHED UNITS, pass its `imei_1` and original specifications; the system will automatically restore it from trash instead of duplicating! If user says "spesifikasi ngasal" or doesn't specify, fill sensible default prices and specs!
+     * OPTIONAL / DEFAULTS: `store_id` (default store from context), `category` ("iphone"|"android"), `type` ("second"|"new"), `brand` ("Apple"|"Samsung"|...), `color` ("Black"|"White"|"Midnight"|...), `memory` ("128GB"|"256GB"|...), `license` ("iBox (Resmi)"|"Bea Cukai (Sinyal On)"|"Inter (Sinyal Off)"|...), `serial_number`, `imei_1`.
+   - "add_bulk_stock": When the user asks to add multiple units, generate dummy inventory, or bulk import stocks (e.g. "buatkan data dummy 5 unit", "tambah 10 stok sekaligus"):
+     * CRITICAL: DO NOT use "run_python_script" with a print statement to simulate dummy data! You MUST emit "add_bulk_stock" so the units are ACTUALLY inserted into the database and recorded individually in the Activity Log!
+     * Payload structure:
+       "items": [
+         { "name": "iPhone 13 128GB", "brand": "Apple", "color": "Midnight", "memory": "128GB", "license": "iBox (Resmi)", "type": "second", "buy_price": 7200000, "sell_price": 8499000 },
+         ...
+       ]
    - "update_stock": When the user asks to update prices, status, or notes of an EXISTING stock item.
      * Ensure the target unit is clearly identified by `stock_id` or `serial_number` from the LIVE INVENTORY context. DO NOT use `update_stock` to create a new unit!
    - "delete_stock": When the user asks to delete or remove an existing stock unit from inventory.
@@ -326,7 +333,7 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
      * MANDATORY: `buyer_name`, `actual_sell_price`, `payment_method`.
    - "create_money_note": When recording cash book income or expenses.
      * MANDATORY: `type` ("expense"|"income"), `amount`, `category`, `description`.
-   - "run_python_script": Running ad-hoc calculations or data scripts in Python 3.
+   - "run_python_script": ONLY for pure mathematical calculations, forecasting, or statistical simulations. NEVER use it for database mutations or dummy data creation!
 
 3. STRUCTURED ACTION PROPOSAL FORMAT:
 When all criteria are met, formulate your response in two parts:
@@ -334,10 +341,10 @@ Part 1: A brief, polite explanation in friendly Markdown of the changes.
 Part 2: A single structured code block starting with ```action_proposal and ending with ``` containing valid JSON:
 ```action_proposal
 {
-  "action": "add_stock" | "sell_stock" | "update_stock" | "delete_stock" | "create_money_note" | "run_python_script",
+  "action": "add_stock" | "add_bulk_stock" | "sell_stock" | "update_stock" | "delete_stock" | "create_money_note" | "run_python_script",
   "title": "Short title of action",
   "summary": "1 sentence explanation of the action",
-  "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or existing SN: DP-xxx)",
+  "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",
   "changes": [
     // CRITICAL: Must be COMPREHENSIVE and DETAILED! Never output only 2-3 fields.
     // For add_stock, YOU MUST LIST ALL SPECIFICATION FIELDS in changes so the user can review:

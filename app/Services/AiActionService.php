@@ -38,6 +38,9 @@ class AiActionService
                 case 'add_stock':
                     return $this->executeAddStock($payload, $user);
 
+                case 'add_bulk_stock':
+                    return $this->executeAddBulkStock($payload, $user);
+
                 case 'delete_stock':
                     return $this->executeDeleteStock($payload, $user);
 
@@ -313,6 +316,51 @@ class AiActionService
                 'type' => 'stock_created',
                 'stock_id' => $stock->id,
             ],
+        ];
+    }
+
+    /**
+     * Add multiple stock units in bulk, recording an individual ActivityLog for EACH unit.
+     */
+    protected function executeAddBulkStock(array $payload, User $user): array
+    {
+        $items = $payload['items'] ?? [];
+        if (empty($items) || !is_array($items)) {
+            return [
+                'success' => false,
+                'message' => 'Gagal: Daftar unit (items) kosong atau tidak valid.',
+            ];
+        }
+
+        $addedStocks = [];
+        $errors = [];
+
+        foreach ($items as $index => $itemPayload) {
+            $res = $this->executeAddStock($itemPayload, $user);
+            if ($res['success'] && isset($res['data'])) {
+                $addedStocks[] = $res['data'];
+            } else {
+                $errors[] = "Item #" . ($index + 1) . " (" . ($itemPayload['name'] ?? 'Unit') . "): " . ($res['message'] ?? 'Error');
+            }
+        }
+
+        $count = count($addedStocks);
+        if ($count === 0) {
+            return [
+                'success' => false,
+                'message' => 'Tidak ada unit yang berhasil ditambahkan: ' . implode('; ', $errors),
+            ];
+        }
+
+        $msg = "Berhasil menambahkan {$count} unit ke inventaris, dan masing-masing telah dicatat ke Activity Log.";
+        if (!empty($errors)) {
+            $msg .= " Catatan kendala: " . implode('; ', $errors);
+        }
+
+        return [
+            'success' => true,
+            'message' => $msg,
+            'data' => $addedStocks,
         ];
     }
 
