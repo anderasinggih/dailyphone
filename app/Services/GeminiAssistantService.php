@@ -633,7 +633,7 @@ PROMPT;
         $type = $stock->type === 'new' ? 'New' : 'Pre-owned (Second)';
 
         $prompt = <<<PROMPT
-You are the retail marketing assistant of a gadget store. A customer is buying this unit today:
+You are the retail operations & sales assistant of a gadget store. You are helping the STAFF member at the point-of-sale terminal — NOT the customer. A customer is buying this unit today:
 - Unit: {$stock->name}
 - Brand: {$brand}
 - Color: {$color}
@@ -642,11 +642,12 @@ You are the retail marketing assistant of a gadget store. A customer is buying t
 - Condition: {$type}
 - Agreed selling price: Rp " . number_format($price, 0, ',', '.') . "
 
-Give a SHORT list (max 4 bullets) of relevant upsell / cross-sell / after-sales suggestions for THIS exact device and condition (e.g. tempered glass, case, charger/power adapter, extended warranty, screen protection, trade-in or loyalty tips).
+The staff has just filled in the sell form. Give a SHORT pre-submit checklist (max 4 bullets) written FOR THE STAFF: what to verify or do before hitting submit — e.g. physically check the unit & accessories, offer add-ons to the customer (tempered glass, case, charger/power adapter, extended warranty, trade-in, loyalty tips), confirm payment/DP method, note warranty & after-sales reminders, and handle repeat-buyer/loyalty care for THIS exact device and condition.
 
 Rules:
 - Respond in Bahasa Indonesia, concise and professional.
-- ONLY marketing suggestions. NEVER mention profit, margin, HPP, modal, atau biaya beli.
+- Address the STAFF directly with directives (e.g. "Tawarkan…", "Cek…", "Pastikan…") — do NOT speak to the customer.
+- ONLY operational + marketing suggestions. NEVER mention profit, margin, HPP, modal, atau biaya beli.
 - Format: plain bullet lines starting with "- ", no headings, no markdown tables.
 PROMPT;
 

@@ -1265,12 +1265,12 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
 
                                         {aiSummary.upsell ? (
                                             <div className="border-t border-border/40 pt-2">
-                                                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Suggested add-ons</p>
+                                                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Staff checklist — before submitting</p>
                                                 <div className="text-xs text-foreground whitespace-pre-line leading-relaxed">{aiSummary.upsell}</div>
                                             </div>
                                         ) : (
                                             aiSummary.checks.filter(c => c.type === 'info').length > 0 && (
-                                                <p className="text-[10px] text-muted-foreground/80">AI suggestions nonaktif — menampilkan cek otomatis saja.</p>
+                                                <p className="text-[10px] text-muted-foreground/80">AI suggestions disabled — showing automatic checks only.</p>
                                             )
                                         )}
                                     </div>
