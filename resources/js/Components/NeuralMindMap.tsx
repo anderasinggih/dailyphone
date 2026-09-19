@@ -102,7 +102,7 @@ function forceLayout(
     const rng = mulberry32((seed + ids.length * 104729) >>> 0);
     const pos: Record<number, Point> = {};
     const disp: Record<number, Point> = {};
-    const radius = 170 + ids.length * 2.6;
+    const radius = 200 + ids.length * 3;
 
     ids.forEach(id => {
         const angle = rng() * Math.PI * 2;
@@ -111,7 +111,7 @@ function forceLayout(
         disp[id] = { x: 0, y: 0 };
     });
 
-    const k = 64 + Math.sqrt(ids.length) * 3;
+    const k = 88 + Math.sqrt(ids.length) * 3.2;
     const iterations = Math.max(16, Math.min(80, Math.round(84 - ids.length * 0.1)));
     let temp = 16;
 
@@ -170,8 +170,8 @@ function forceLayout(
         cx /= ids.length;
         cy /= ids.length;
         ids.forEach(id => {
-            disp[id].x += (cx - pos[id].x) * 0.05;
-            disp[id].y += (cy - pos[id].y) * 0.05;
+            disp[id].x += (cx - pos[id].x) * 0.035;
+            disp[id].y += (cy - pos[id].y) * 0.035;
         });
 
         // Integrate, clamped by the cooling temperature, then reset forces.
@@ -187,9 +187,10 @@ function forceLayout(
         temp *= 0.9;
     }
 
-    // Uniformly rescale the finished lobe into a bounded circle so every
-    // island reads as balanced and organic — no direction ever dominates, so
-    // nothing stretches into a tall, skinny column.
+    // Give the finished lobe generous breathing room and keep it bounded. The
+    // scale is UNIFORM (aspect preserved), so nothing is ever squashed into a
+    // vertical column — and nodes get enough spread to read as a real scattered
+    // neural web instead of a packed clump.
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     ids.forEach(id => {
         minX = Math.min(minX, pos[id].x);
@@ -199,7 +200,7 @@ function forceLayout(
     });
     const w = Math.max(maxX - minX, 1);
     const h = Math.max(maxY - minY, 1);
-    const target = 150 + Math.sqrt(ids.length) * 18;
+    const target = 230 + Math.sqrt(ids.length) * 26;
     const scale = target / Math.max(w / 2, h / 2, 1);
     const midX = (minX + maxX) / 2;
     const midY = (minY + maxY) / 2;
@@ -212,11 +213,12 @@ function forceLayout(
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Organic brain-lobe layout: every connected component is pushed
-   through a seeded force simulation (above) into a tangled, dense
-   "neural web" blob — random but structured, centered, overlap-free.
-   Components pack left→right into rows so the whole canvas reads as
-   one sprawling, balanced neural network instead of a vertical list.
+   Organic neurography layout: every connected component is pushed
+   through a seeded force simulation (above) into a tangled web of
+   neuron-like blobs — random but structured, centered, overlap-free.
+   Lobes scatter along a golden-angle spiral so the whole canvas
+   sprawls in every direction like real brain tissue — never a grid,
+   never a vertical list.
    $seed reseeds the (deterministic) scatter + forces, so a
    "rearrange" always yields a brand-new, plausible brain pose.
    ───────────────────────────────────────────────────────────── */
@@ -257,9 +259,6 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
         comps.push(comp);
     });
 
-    // Cozy gaps so the lobes stay close enough to read as ONE brain.
-    const COMP_GAP = 64;
-
     // Unique undirected edges shared by every lobe's force pass.
     const edgeSet = new Set<string>();
     links.forEach(l => {
@@ -288,7 +287,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
 
         ids.forEach(id => {
             const p = local[id];
-            const spread = 16 + Math.min(22, (adj[id]?.length || 0) * 2.4);
+            const spread = 30 + Math.min(42, (adj[id]?.length || 0) * 3.2);
             local[id] = {
                 x: p.x * cos - p.y * sin + (hash1(id + seed * 7919) - 0.5) * spread,
                 y: p.x * sin + p.y * cos + (hash1(id + seed * 9173) - 0.5) * spread,
@@ -317,30 +316,27 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     const compLayouts = comps.map(c => layoutComponent(c))
         .sort((a, b) => b.ids.length - a.ids.length);
 
-    // Pack every component's bounding box left→right, wrapping into a new row
-    // when a row fills up, so the whole canvas stays structured and overlap-free.
+    // Scatter every lobe along a Fermat spiral (golden-angle phyllotaxis) so
+    // the islands sprawl outward in every direction — no tidy rows, no vertical
+    // columns. The spiral hub sits at the lobe's box origin; the final pass
+    // below recenters everything onto the canvas.
     const global: Record<number, Point> = {};
-    const ROW_BUDGET = 2200;
-    let curX = 0;
-    let curY = 0;
-    let rowMaxH = 0;
-    compLayouts.forEach(comp => {
-        if (curX > 0 && curX + comp.w > ROW_BUDGET) {
-            curX = 0;
-            curY += rowMaxH + COMP_GAP;
-            rowMaxH = 0;
-        }
-        const dx = curX - comp.minX;
-        const dy = curY - comp.minY;
+    const GOLDEN_ANGLE = 2.39996323;
+    const SPIRAL_STEP = 170 + Math.sqrt(compLayouts.length) * 10;
+    compLayouts.forEach((comp, index) => {
+        const ang = index * GOLDEN_ANGLE;
+        const rad = Math.sqrt(index + 0.5) * SPIRAL_STEP;
+        const anchorX = Math.cos(ang) * rad;
+        const anchorY = Math.sin(ang) * rad;
+        const dx = anchorX - comp.minX;
+        const dy = anchorY - comp.minY;
         comp.ids.forEach(id => {
             global[id] = { x: comp.local[id].x + dx, y: comp.local[id].y + dy };
         });
-        curX += comp.w + COMP_GAP;
-        rowMaxH = Math.max(rowMaxH, comp.h);
     });
 
     // Belt-and-suspenders pass in case jitter ever squeezes two nodes together.
-    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 60);
+    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 80, 500);
 
     // Center the structure without rescaling. Rescaling coordinates to "fit the
     // viewport" would shrink the gaps between node centers while the NODE boxes
