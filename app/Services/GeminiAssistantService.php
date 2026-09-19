@@ -824,8 +824,27 @@ PROMPT;
 
         return [
             'success' => false,
-            'reply' => "I encountered an error communicating with Gemini: {$lastErrorMsg}"
+            'reply' => $this->assistantErrorMessage($lastErrorMsg, $isImageModel),
         ];
+    }
+
+    /**
+     * Build a user-friendly failure reply. Image models frequently return HTTP
+     * 429 / "quota exhausted" on plans without image-model quota, so translate
+     * that into a clear, actionable message instead of a raw status code.
+     */
+    protected function assistantErrorMessage(string $error, bool $isImageModel): string
+    {
+        $looksLikeQuota = str_contains($error, '429')
+            || stripos($error, 'exhaust') !== false
+            || stripos($error, 'quota') !== false
+            || stripos($error, 'rate limit') !== false;
+
+        if ($isImageModel && $looksLikeQuota) {
+            return "I couldn't generate an image — your image model quota is exhausted. Please check your billing/quota in Google AI Studio (enable billing on the linked Google Cloud project to unlock Nano Banana image generation). You can keep chatting with a text model in the meantime.";
+        }
+
+        return "I encountered an error communicating with Gemini: {$error}";
     }
 
     /**

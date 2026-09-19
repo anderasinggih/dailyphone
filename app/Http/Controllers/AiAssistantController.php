@@ -151,7 +151,7 @@ class AiAssistantController extends Controller
     public function chat(Request $request): JsonResponse|StreamedResponse
     {
         $request->validate([
-            'message' => 'required_without:attachments|string',
+            'message' => 'required_without:attachments|string|max:200000',
             'session_id' => 'nullable|exists:ai_sessions,id',
             'attachments' => 'nullable|array',
             'attachments.*' => 'integer',
@@ -179,29 +179,40 @@ class AiAssistantController extends Controller
         }
 
         // If no session provided, find or create one
-        if (!$sessionId) {
-            $session = \App\Models\AiSession::create([
-                'user_id' => $user->id,
-                'title' => mb_substr($userText, 0, 80) . (mb_strlen($userText) > 80 ? '...' : ''),
-            ]);
-            $sessionId = $session->id;
-        } else {
-            $session = \App\Models\AiSession::where('user_id', $user->id)->findOrFail($sessionId);
-            // If it was default title "New Chat", rename based on first query
-            if ($session->title === 'New Chat') {
-                $session->update([
+        try {
+            if (!$sessionId) {
+                $session = \App\Models\AiSession::create([
+                    'user_id' => $user->id,
                     'title' => mb_substr($userText, 0, 80) . (mb_strlen($userText) > 80 ? '...' : ''),
                 ]);
+                $sessionId = $session->id;
+            } else {
+                $session = \App\Models\AiSession::where('user_id', $user->id)->findOrFail($sessionId);
+                // If it was default title "New Chat", rename based on first query
+                if ($session->title === 'New Chat') {
+                    $session->update([
+                        'title' => mb_substr($userText, 0, 80) . (mb_strlen($userText) > 80 ? '...' : ''),
+                    ]);
+                }
             }
-        }
 
-        // 1. Save user message in this session
-        $userChat = \App\Models\AiChat::create([
-            'user_id' => $user->id,
-            'session_id' => $sessionId,
-            'role' => 'user',
-            'content' => $userText,
-        ]);
+            // 1. Save user message in this session
+            $userChat = \App\Models\AiChat::create([
+                'user_id' => $user->id,
+                'session_id' => $sessionId,
+                'role' => 'user',
+                'content' => $userText,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('AI Chat pre-stream persistence failed: ' . $e->getMessage(), [
+                'exception' => $e
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'The message could not be saved. Please shorten it or try again.',
+                'reply' => 'The message could not be saved. Please shorten it or try again.',
+            ], 422);
+        }
 
         // Link any uploaded attachments to this message so they stay with the
         // session history and can be reused / cleaned up later.

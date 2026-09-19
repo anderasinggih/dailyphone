@@ -673,14 +673,56 @@ function playCompletionChime(soundEnabled: boolean): void {
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     };
 
+    const toPlainText = (text: string): string => {
+        let t = text;
+
+        // Drop internal AI payloads (action proposal / memory notes) entirely
+        t = t.replace(/```action_proposal[\s\S]*?```/g, '');
+        t = t.replace(/```ai_memo[\s\S]*?```/g, '');
+
+        // Keep other fenced code content but drop the fences
+        t = t.replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code: string) => '\n' + code.trim() + '\n');
+
+        const out: string[] = [];
+        for (const rawLine of t.split('\n')) {
+            const trimmed = rawLine.trim();
+
+            // Markdown table row -> tab-separated cells (paste-ready for spreadsheets)
+            if (/^\|.*\|\s*$/.test(trimmed)) {
+                const cells = trimmed
+                    .replace(/^\||\|$/g, '')
+                    .split('|')
+                    .map(c => c.trim().replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/`(.*?)`/g, '$1'));
+                if (cells.every(c => /^[-:]+$/.test(c))) continue; // skip header separator row
+                out.push(cells.join('\t'));
+                continue;
+            }
+
+            if (/^\s*(---|\*\*\*|___)\s*$/.test(rawLine)) continue; // horizontal rule
+
+            let line = rawLine;
+            line = line.replace(/^>\s?/, '');                       // blockquote
+            line = line.replace(/^[-*+]\s+/, '');                   // bullet list
+            line = line.replace(/^\d+[.)]\s+/, '');                 // numbered list
+            line = line.replace(/^#{1,6}\s+/, '');                  // heading
+            line = line.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');   // image -> alt text
+            line = line.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');    // link -> label only
+            line = line.replace(/\*\*(.*?)\*\*/g, '$1');            // bold
+            line = line.replace(/__(.*?)__/g, '$1');                // bold (alt)
+            line = line.replace(/\*(.*?)\*/g, '$1');                // italic
+            line = line.replace(/~~(.*?)~~/g, '$1');                // strikethrough
+            line = line.replace(/`([^`]*)`/g, '$1');                // inline code
+
+            out.push(line.replace(/\s+$/, ''));
+        }
+
+        return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    };
+
     const copyMessage = async (id: string, text: string) => {
-        // Strip markdown formatting for clean plain text copy without ** or #
-        const cleanText = text
-            .replace(/\*\*(.*?)\*\*/g, '$1')       // bold **text** -> text
-            .replace(/\*(.*?)\*/g, '$1')           // italic *text* -> text
-            .replace(/^#{1,6}\s+/gm, '')           // headers # Header -> Header
-            .replace(/`{1,3}(.*?)`{1,3}/gs, '$1')  // code `code` -> code
-            .trim();
+        // Pure plain text ready to paste: no **, #, table pipes, links — tables
+        // become tab-separated columns for spreadsheets.
+        const cleanText = toPlainText(text);
 
         try {
             await navigator.clipboard.writeText(cleanText);

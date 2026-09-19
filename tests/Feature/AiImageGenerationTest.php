@@ -38,6 +38,22 @@ class AiImageGenerationTest extends TestCase
         $this->assertStringContainsString('assistant/file/images/test_run/generated-1.png', $meta['url']);
     }
 
+    public function test_image_quota_error_gets_friendly_message(): void
+    {
+        $svc = app(GeminiAssistantService::class);
+        $method = new \ReflectionMethod($svc, 'assistantErrorMessage');
+
+        $quota = $method->invoke($svc, 'HTTP 429', true);
+        $this->assertStringContainsString('quota is exhausted', $quota);
+        $this->assertStringContainsString('Google AI Studio', $quota);
+
+        $quota2 = $method->invoke($svc, 'Resource has been exhausted (e.g. check quota).', true);
+        $this->assertStringContainsString('quota is exhausted', $quota2);
+
+        $plain = $method->invoke($svc, 'HTTP 500', true);
+        $this->assertEquals("I encountered an error communicating with Gemini: HTTP 500", $plain);
+    }
+
     private function tinyPng(): string
     {
         return base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4WkAAAAASUVORK5CYII=');
