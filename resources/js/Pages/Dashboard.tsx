@@ -4,10 +4,19 @@ import { useState, useEffect } from 'react';
 import {
     TrendingUp,
     Store as StoreIcon,
-    Clock
+    Clock,
+    ChevronDown,
+    ChevronUp,
+    RefreshCw,
+    Loader2,
+    Sparkles,
+    CircleAlert,
+    ExternalLink
 } from 'lucide-react';
 import DonutChart from '@/Components/Charts/DonutChart';
 import LineChart from '@/Components/Charts/LineChart';
+import GeminiStar from '@/Components/GeminiStar';
+import Markdown from '@/Components/Markdown';
 
 interface DashboardProps {
     stats: {
@@ -76,6 +85,11 @@ interface DashboardProps {
             store_name: string;
         } | null;
     };
+    aiConfig: {
+        is_configured: boolean;
+        is_enabled: boolean;
+        model: string;
+    };
 }
 
 export default function Dashboard({
@@ -91,6 +105,7 @@ export default function Dashboard({
     activeStoreName,
     filters,
     todayStats,
+    aiConfig,
 }: DashboardProps) {
     const authUser = usePage().props.auth.user as any;
     const isKaryawan = authUser.role === 'karyawan';
@@ -161,6 +176,75 @@ export default function Dashboard({
         return months[m - 1] || '';
     };
 
+    const [aiExpanded, setAiExpanded] = useState(false);
+    const [aiInsight, setAiInsight] = useState<string | null>(null);
+    const [aiLoading, setAiLoading] = useState(false);
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [aiGeneratedAt, setAiGeneratedAt] = useState<string | null>(null);
+
+    const aiFetchInsight = async () => {
+        if (aiLoading) return;
+
+        if (!aiConfig?.is_configured || !aiConfig?.is_enabled) {
+            setAiInsight(null);
+            setAiError(
+                aiConfig && !aiConfig.is_configured
+                    ? 'Gemini API key is not configured yet. Ask the Superadmin to set it in Settings > General.'
+                    : 'AI Assistant is currently disabled in system settings.'
+            );
+            return;
+        }
+
+        setAiLoading(true);
+        setAiError(null);
+
+        try {
+            const res = await fetch(route('dashboard.ai-insight'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
+                },
+                body: JSON.stringify({
+                    store_id: filters.store_id,
+                    month: filters.month,
+                    year: filters.year,
+                }),
+            });
+
+            const data = await res.json();
+
+            if (!res.ok || !data.success) {
+                setAiInsight(null);
+                setAiError(data.message || `Server error (${res.status})`);
+                return;
+            }
+
+            setAiInsight(data.insight);
+            setAiGeneratedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+        } catch (err: any) {
+            setAiInsight(null);
+            setAiError('Network error while reaching the AI: ' + (err?.message || 'Unknown error'));
+        } finally {
+            setAiLoading(false);
+        }
+    };
+
+    const aiToggle = async () => {
+        const next = !aiExpanded;
+        setAiExpanded(next);
+        if (next && aiInsight === null && aiError === null) {
+            await aiFetchInsight();
+        }
+    };
+
+    const aiRefresh = async () => {
+        setAiInsight(null);
+        setAiGeneratedAt(null);
+        await aiFetchInsight();
+    };
+
     return (
         <AuthenticatedLayout>
             <Head title="Financial Dashboard" />
@@ -221,6 +305,104 @@ export default function Dashboard({
                                 ))}
                             </select>
                         </div>
+                    </div>
+
+                    <div className="apple-card border border-border/60 overflow-hidden shadow-xs">
+                        <div className="flex items-center justify-between gap-3 px-4 py-3">
+                            <button
+                                type="button"
+                                onClick={aiToggle}
+                                className="flex-1 flex items-center gap-3 min-w-0 text-left rounded-xl px-1.5 py-1 -ml-1.5 transition hover:bg-muted/30"
+                            >
+                                <div className="h-8 w-8 shrink-0 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                                    <GeminiStar className="h-4 w-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold tracking-tight text-foreground">
+                                            AI Business Overview
+                                        </span>
+                                        {aiLoading && (
+                                            <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />
+                                        )}
+                                    </div>
+                                    <p className="text-[11px] text-muted-foreground truncate">
+                                        {aiExpanded
+                                            ? 'Executive summary of this period'
+                                            : aiInsight
+                                                ? 'Tap to view the saved AI summary'
+                                                : 'Gemini-powered summary • Tap to generate'}
+                                    </p>
+                                </div>
+                            </button>
+
+                            <div className="flex items-center gap-1 shrink-0">
+                                {aiExpanded && aiInsight && !aiLoading && (
+                                    <button
+                                        type="button"
+                                        onClick={aiRefresh}
+                                        title="Regenerate insight"
+                                        className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-muted/70 transition"
+                                    >
+                                        <RefreshCw className="h-3.5 w-3.5" />
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={aiToggle}
+                                    title={aiExpanded ? 'Collapse' : 'Expand'}
+                                    className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/70 transition"
+                                >
+                                    {aiExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                </button>
+                            </div>
+                        </div>
+
+                        {aiExpanded && (
+                            <div className="border-t border-border/40 bg-muted/20">
+                                <div className="px-4 py-3.5">
+                                    {aiLoading ? (
+                                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+                                            <span>
+                                                Analyzing {getMonthName(filters.month)} {filters.year} — {activeStoreName}...
+                                            </span>
+                                        </div>
+                                    ) : aiError ? (
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="flex items-start gap-2 text-xs text-destructive">
+                                                <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                                                <span className="break-words">{aiError}</span>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={aiRefresh}
+                                                className="shrink-0 flex items-center gap-1 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:border-primary/50 hover:bg-primary/5 transition"
+                                            >
+                                                <RefreshCw className="h-3 w-3" />
+                                                Retry
+                                            </button>
+                                        </div>
+                                    ) : aiInsight ? (
+                                        <div className="space-y-2">
+                                            <Markdown content={aiInsight} />
+                                            <div className="flex items-center justify-between pt-2 border-t border-border/50 text-[10px] text-muted-foreground/70">
+                                                <span className="flex items-center gap-1">
+                                                    <Sparkles className="h-3 w-3 text-primary" />
+                                                    Generated by Gemini
+                                                </span>
+                                                <span>{aiGeneratedAt}</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                            <span>No summary yet. Click the refresh button above to generate one.</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     <div className="space-y-2">

@@ -26,6 +26,7 @@ Route::prefix('application/dp')->group(function () {
     Route::middleware(['auth', 'verified'])->group(function () {
         // Dashboard
         Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+        Route::post('/dashboard/ai-insight', [DashboardController::class, 'aiInsight'])->name('dashboard.ai-insight');
 
         // Timeline
         Route::get('/timeline', [ActivityLogController::class, 'index'])->name('timeline.index');

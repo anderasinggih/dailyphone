@@ -11,17 +11,102 @@ use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 use Illuminate\Support\Facades\DB;
+use App\Services\GeminiAssistantService;
 
 class DashboardController extends Controller
 {
+    protected GeminiAssistantService $geminiService;
+
+    public function __construct(GeminiAssistantService $geminiService)
+    {
+        $this->geminiService = $geminiService;
+    }
+
     public function index(Request $request): Response
     {
         $user = $request->user();
+        $data = $this->resolveDashboardData($request, $user);
 
+        return Inertia::render('Dashboard', array_merge($data, [
+            'aiConfig' => [
+                'is_configured' => $this->geminiService->isConfigured(),
+                'is_enabled' => $this->geminiService->isEnabled(),
+                'model' => $this->geminiService->getModel(),
+            ],
+        ]));
+    }
+
+    /**
+     * Generate a one-shot AI Business Overview for the current dashboard filters.
+     * Returns the AI markdown reply (or null / error info if unavailable).
+     */
+    public function aiInsight(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $user = $request->user();
+        $data = $this->resolveDashboardData($request, $user);
+
+        if (!$this->geminiService->isConfigured()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Gemini API Key is not configured yet. Please ask the Superadmin to configure it in Settings > General.',
+            ]);
+        }
+
+        if (!$this->geminiService->isEnabled()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'AI Assistant is currently disabled in system settings.',
+            ]);
+        }
+
+        $context = array_merge($data, [
+            'periodLabel' => $data['activeStoreName'] . ' — ' . $data['filters']['month'] . '/' . $data['filters']['year'],
+            'scopeLabel' => $data['activeStoreName'],
+        ]);
+
+        try {
+            $insight = $this->geminiService->generateDashboardInsight($context);
+
+            if (!$insight) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'AI did not return any insight. Please try again in a moment.',
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'insight' => $insight,
+                'period' => [
+                    'label' => $context['periodLabel'],
+                    'month' => $data['filters']['month'],
+                    'year' => $data['filters']['year'],
+                    'store_id' => $data['filters']['store_id'],
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Dashboard AI insight error: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred while generating the AI summary: ' . $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Compute the full dashboard dataset scoped to the current user, filters
+     * and selected period. Shared by the page renderer and the AI insight endpoint.
+     */
+    protected function resolveDashboardData(Request $request, $user): array
+    {
         // Viewers and Superadmins can see all stores and filter. Employees are scoped to their store.
         $storeId = $user->store_id;
-        if (in_array($user->role, ['superadmin', 'viewer']) && $request->has('store_id')) {
-            $storeId = $request->input('store_id');
+        if (in_array($user->role, ['superadmin', 'viewer'])) {
+            $requestedStore = $request->input('store_id');
+            if ($requestedStore !== null && $requestedStore !== '') {
+                $storeId = $requestedStore;
+            }
         }
 
         // Custom time period (month & year)
@@ -105,7 +190,7 @@ class DashboardController extends Controller
             ->when($storeId, fn($q) => $q->where('store_id', $storeId))
             ->with(['items.stock', 'extras'])
             ->get();
-            
+
         $pendingProfit = 0;
         foreach ($bookingSales as $sale) {
             $rev = $sale->total_amount;
@@ -121,7 +206,7 @@ class DashboardController extends Controller
             ->when($storeId, fn($q) => $q->where('store_id', $storeId))
             ->with(['items.stock', 'extras', 'returns'])
             ->get();
-            
+
         $allTimeRevenue = 0;
         $allTimeHpp = 0;
         $allTimeSoldItems = 0;
@@ -393,7 +478,7 @@ class DashboardController extends Controller
             }
         }
 
-        return Inertia::render('Dashboard', [
+        return [
             'stats' => [
                 'totalRevenue' => (float)$totalRevenue,
                 'totalHpp' => $user->role === 'karyawan' ? 0 : (float)$totalHpp,
@@ -426,6 +511,6 @@ class DashboardController extends Controller
                 'year' => $year,
             ],
             'todayStats' => $todayStats,
-        ]);
+        ];
     }
 }

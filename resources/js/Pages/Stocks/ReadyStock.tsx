@@ -634,7 +634,7 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                                             {renderBadges(item)}
                                                             <p className="text-[10px] font-bold text-muted-foreground tracking-wider mt-0.5 truncate">
                                                                 {item.category !== 'accessories' && item.category !== 'extra'
-                                                                    ? `${item.serial_number || item.imei_1 || '-'} (${item.license?.value || item.supplier || 'N/A'})`
+                                                                    ? `${item.serial_number || item.imei_1 || '-'} (${item.license?.value || 'N/A'})`
                                                                     : `${item.category} • ${item.brand?.value || '-'}`
                                                                 }
                                                             </p>
@@ -690,7 +690,7 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                                                 {renderBadges(item)}
                                                                 <p className="text-[10px] font-medium text-muted-foreground tracking-wider mt-0.5 truncate max-w-xs">
                                                                     {item.category !== 'accessories' && item.category !== 'extra'
-                                                                        ? `${item.serial_number || item.imei_1 || '-'} (${item.license?.value || item.supplier || 'N/A'})`
+                                                                        ? `${item.serial_number || item.imei_1 || '-'} (${item.license?.value || 'N/A'})`
                                                                         : `${item.category} • ${item.brand?.value || '-'}`
                                                                     }
                                                                 </p>
@@ -827,12 +827,6 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                         <span className="text-muted-foreground text-[10px]">Warranty</span>
                                         <span className="text-right text-foreground">{selectedStockDetail.warranty_duration_days} Days</span>
                                     </div>
-                                    {authUser.role === 'superadmin' && (
-                                        <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                            <span className="text-muted-foreground text-[10px]">Supplier</span>
-                                            <span className="text-right text-foreground">{selectedStockDetail.supplier || '-'}</span>
-                                        </div>
-                                    )}
                                 </div>
 
                                 {authUser.role !== 'viewer' && (

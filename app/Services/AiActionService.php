@@ -74,11 +74,72 @@ class AiActionService
                 'user_id' => $user->id,
             ]);
 
+            // Auto-learn from the failure so the AI does not repeat the same
+            // mistake in future proposals (persisted into AI training memory).
+            $this->rememberFailure($action, $e->getMessage(), $payload, $user);
+
             return [
                 'success' => false,
                 'message' => 'Execution error: ' . $e->getMessage(),
             ];
         }
+    }
+
+    /**
+     * Automatically write a durable AI training note when an execution fails,
+     * so Gemini "learns" from past errors. Duplicate rules are skipped.
+     */
+    protected function rememberFailure(string $action, string $errorMessage, array $payload, User $user): void
+    {
+        $content = $this->failureLearningRule($action, $errorMessage);
+        if (!$content || mb_strlen($content) < 20) {
+            return;
+        }
+
+        $hash = md5($content);
+        if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists()) {
+            return;
+        }
+
+        try {
+            \App\Models\AiTrainingNote::create([
+                'user_id' => $user->id,
+                'author_name' => 'System (Auto-Learn)',
+                'author_role' => 'system',
+                'content' => $content,
+                'content_hash' => $hash,
+                'kind' => $user->role === 'superadmin' ? 'rule' : 'knowledge',
+                'is_active' => true,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to persist auto-learned AI note: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Translate a known failure signature into a concise learning rule.
+     */
+    protected function failureLearningRule(string $action, string $errorMessage): ?string
+    {
+        $msg = strtolower($errorMessage);
+
+        if (str_contains($msg, 'foreign key constraint') || str_contains($msg, 'integrity constraint violation')) {
+            return "Saat membuat proposal add_stock/update_stock, JANGAN pernah mengirim brand_id, color_id, memory_id, atau license_id berupa angka ID mentah di payload — angka seperti 128 seringkali berarti 128GB, bukan ID, dan langsung memicu error database foreign key. Selalu kirim nilai teks yang bisa dibaca (contoh: 'memory': '128GB', 'brand': 'Apple', 'color': 'Midnight', 'license': 'iBox (Resmi)'). Backend yang bertugas mencocokkan teks ke ID parameter yang valid.";
+        }
+
+        if (str_contains($msg, 'duplicate entry')) {
+            return "Sebelum membuat proposal add_stock, pastikan serial_number atau IMEI unit belum pernah dipakai unit lain (termasuk yang sudah ada di keranjang sampah/trash) untuk menghindari error duplikat saat menambah stok.";
+        }
+
+        if (str_contains($msg, 'column cannot be null') || str_contains($msg, 'not null')) {
+            return "Saat membuat proposal add_stock, pastikan semua kolom wajib (store, nama unit, harga, status) selalu diisi dan tidak boleh kosong/null, agar eksekusi ke database tidak gagal.";
+        }
+
+        if (str_contains($msg, 'out of range')) {
+            return "Saat membuat proposal add_stock atau update_stock, gunakan angka harga yang wajar (tidak ekstrem besar) agar tidak melebihi batas kolom database.";
+        }
+
+        return null;
     }
 
     /**
@@ -197,14 +258,56 @@ class AiActionService
             $type = 'second';
         }
 
-        // Helper to resolve dynamic parameter ID by value name
+        // Helper to resolve dynamic parameter ID by value name.
+        // Never blindly casts numeric values to IDs: the model may output a raw
+        // number like "128" (meaning 128GB) which is NOT a valid parameter value
+        // ID and would violate the stocks foreign key.
         $resolveParamId = function($paramName, $valueName) {
             if (!$valueName) return null;
-            if (is_numeric($valueName)) return (int)$valueName;
 
-            return \App\Models\DynamicParameterValue::whereHas('parameter', function ($q) use ($paramName) {
-                $q->where('name', 'like', "%{$paramName}%");
-            })->where('value', 'like', "%{$valueName}%")->value('id');
+            $param = \App\Models\DynamicParameter::where('name', 'like', "%{$paramName}%")->first();
+            if (!$param) return null;
+
+            // 1. If the value looks like an ID, only trust it when a value row
+            //    with that exact ID actually exists under this parameter.
+            if (is_numeric($valueName)) {
+                $byId = \App\Models\DynamicParameterValue::where('parameter_id', $param->id)
+                    ->whereKey((int)$valueName)
+                    ->first();
+                if ($byId) return (int)$byId->id;
+            }
+
+            // 2. Fallback: match by value text (e.g. "128GB", "128", "Midnight").
+            $byValue = \App\Models\DynamicParameterValue::where('parameter_id', $param->id)
+                ->where('value', 'like', "%{$valueName}%")
+                ->first();
+            if ($byValue) return (int)$byValue->id;
+
+            // 3. Last resort: use the first available option of the parameter so
+            //    the foreign key can never be violated. Null only if there are
+            //    no options at all (columns are nullable).
+            $fallback = \App\Models\DynamicParameterValue::where('parameter_id', $param->id)->value('id');
+
+            return $fallback ? (int)$fallback : null;
+        };
+
+        // Guarantee a valid parameter value id: if the payload supplied a raw
+        // numeric id (e.g. "memory_id": 128), only keep it when it really exists
+        // under the matching parameter; otherwise re-resolve from the text value.
+        $safeParamId = function($paramName, $valueName, $candidateId = null) use ($resolveParamId) {
+            if ($candidateId !== null && is_numeric($candidateId) && (int)$candidateId > 0) {
+                $param = \App\Models\DynamicParameter::where('name', 'like', "%{$paramName}%")->first();
+                if ($param) {
+                    $exists = \App\Models\DynamicParameterValue::where('parameter_id', $param->id)
+                        ->whereKey((int)$candidateId)
+                        ->exists();
+                    if ($exists) {
+                        return (int)$candidateId;
+                    }
+                }
+            }
+
+            return $resolveParamId($paramName, $valueName);
         };
 
         // Extract memory from unit name if not explicitly provided
@@ -258,10 +361,10 @@ class AiActionService
             }
         }
 
-        $brandId = $payload['brand_id'] ?? $resolveParamId('Brand', $brandVal);
-        $colorId = $payload['color_id'] ?? $resolveParamId('Warna', $colorVal);
-        $memoryId = $payload['memory_id'] ?? $resolveParamId('Kapasitas Memori', $memoryVal);
-        $licenseId = $payload['license_id'] ?? $resolveParamId('Tipe Lisensi', $licenseVal);
+        $brandId = $safeParamId('Brand', $brandVal, $payload['brand_id'] ?? null);
+        $colorId = $safeParamId('Warna', $colorVal, $payload['color_id'] ?? null);
+        $memoryId = $safeParamId('Kapasitas Memori', $memoryVal, $payload['memory_id'] ?? null);
+        $licenseId = $safeParamId('Tipe Lisensi', $licenseVal, $payload['license_id'] ?? null);
 
         // Generate unique Serial Number & IMEI if missing
         $serialNumber = trim($payload['serial_number'] ?? '');

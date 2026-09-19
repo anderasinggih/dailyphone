@@ -379,6 +379,7 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
        12. `Harga Jual` (`sell_price`): Realistic catalogue sell price e.g. Rp 7.299.000
        13. `Lokasi Cabang` (`store_name` / `store_id`): Branch store name e.g. "PERENG STORE" (ID: 1)
        14. `Status Unit` (`status`): e.g. "Available (Ready)" / "available"
+     * RULE (SANGAT PENTING): JANGAN PERNAH kirim `brand_id`, `color_id`, `memory_id`, atau `license_id` berupa angka ID mentah di payload. Angka seperti 128 seringkali berarti "128GB", bukan ID, dan memicu error database (foreign key). SELALU kirim nilai teks yang bisa dibaca manusia (contoh: `"memory": "128GB"`, `"brand": "Apple"`, `"color": "Midnight"`, `"license": "iBox (Resmi)"`). Backend yang bertugas mencocokkan teks ke ID parameter.
      * Example `changes` for `add_stock`:
        [
          { "field": "Nama Unit", "old": "-", "new": "iPhone 13 128GB" },
@@ -620,6 +621,138 @@ PROMPT;
      * NEVER receives or mentions profit/HPP/modal — marketing suggestions only,
      * so staff can use them without exposing store margins.
      */
+    /**
+     * Generate a concise AI Business Overview for the Dashboard.
+     * Uses the exact data already computed for the dashboard page, so no
+     * profit/HPP leakage rules apply — the caller decides what to include.
+     */
+    public function generateDashboardInsight(array $context): ?string
+    {
+        if (!$this->isConfigured()) {
+            return null;
+        }
+
+        // Format a compact readable context snapshot for the model.
+        $fmt = fn($v) => 'Rp ' . number_format((float)$v, 0, ',', '.');
+        $lines = [];
+        $lines[] = "Periode: {$context['periodLabel']}";
+        $lines[] = "Cakupan: {$context['scopeLabel']}";
+        $lines[] = "";
+        $lines[] = "=== Ringkasan Periode ===";
+        $lines[] = "- Revenue: {$fmt($context['stats']['totalRevenue'])}";
+        $lines[] = "- HPP/COGS: {$fmt($context['stats']['totalHpp'])}";
+        $lines[] = "- Reparasi/Garansi: {$fmt($context['stats']['totalRepairs'])}";
+        $lines[] = "- Penalti Retur (10%): {$fmt($context['stats']['totalReturnPenalty'])}";
+        $lines[] = "- Biaya Affiliator: {$fmt($context['stats']['totalAffiliatorFee'])}";
+        $lines[] = "- Net Profit: {$fmt($context['stats']['netProfit'])}";
+        $lines[] = "- Unit Terjual: {$context['stats']['soldItemsCount']}";
+        $lines[] = "- Pending Profit (booking): {$fmt($context['stats']['pendingProfit'])}";
+        $lines[] = "- Affiliator aktif: {$context['stats']['activeAffiliatorsCount']}";
+
+        $lines[] = "";
+        $lines[] = "=== Performa Hari Ini ===";
+        $todayLines = [];
+        $gabungan = $context['todayStats']['gabungan'] ?? null;
+        if ($gabungan) {
+            $todayLines[] = "- Semua Cabang: Revenue {$fmt($gabungan['revenue'])}, Net Profit {$fmt($gabungan['netProfit'])}, {$gabungan['soldItems']} unit, {$gabungan['transactions']} transaksi";
+        }
+        foreach ($context['todayStats']['stores'] as $s) {
+            $todayLines[] = "- {$s['store_name']}: Revenue {$fmt($s['revenue'])}, Net Profit {$fmt($s['netProfit'])}, {$s['soldItems']} unit, {$s['transactions']} trx";
+        }
+        if ($context['todayStats']['store']) {
+            $s = $context['todayStats']['store'];
+            $todayLines[] = "- Toko ini: Revenue {$fmt($s['revenue'])}, Net Profit {$fmt($s['netProfit'])}, {$s['soldItems']} unit, {$s['transactions']} trx";
+        }
+        $lines[] = $todayLines ? implode("\n", $todayLines) : '- Belum ada transaksi hari ini.';
+
+        $lines[] = "";
+        $lines[] = "=== Model Terlaris (periode ini) ===";
+        $top = collect($context['topProducts'])->map(fn($t) => "- {$t['name']}: {$t['total_sold']} unit")->implode("\n");
+        $lines[] = $top ?: '- Belum ada data.';
+
+        $lines[] = "";
+        $lines[] = "=== Metode Pembayaran ===";
+        $pays = collect($context['paymentData'])->map(fn($p) => "- {$p['method']}: {$p['count']} trx / {$fmt($p['revenue'])}")->implode("\n");
+        $lines[] = $pays ?: '- Belum ada data.';
+
+        $lines[] = "";
+        $lines[] = "=== Tren 8 Bulan Terakhir (Revenue) ===";
+        $trends = collect($context['monthlyRevenue'])->map(fn($m) => "- {$m['month']}: {$fmt($m['revenue'])}")->implode("\n");
+        $lines[] = $trends ?: '- Belum ada data.';
+
+        $lines[] = "";
+        $lines[] = "=== Statistik All-Time ===";
+        $lines[] = "- Revenue: {$fmt($context['allTimeStats']['revenue'])}";
+        $lines[] = "- Gross Profit: {$fmt($context['allTimeStats']['actualProfit'])}";
+        $lines[] = "- Net Profit: {$fmt($context['allTimeStats']['netProfit'])}";
+        $lines[] = "- Unit Terjual: {$context['allTimeStats']['soldItems']}";
+
+        $contextBlock = implode("\n", $lines);
+
+        $prompt = <<<PROMPT
+Kamu adalah "Daily Phone Intelligence", analis bisnis senior untuk toko retail gadget (Daily Phone). Di bawah ini adalah snapshot data performa toko yang dipilih. Analisislah dan tulis ringkasan eksekutif untuk SUPERADMIN/PEMILIK TOKO.
+
+DATA SNAPSHOT:
+{$contextBlock}
+
+Tulis respons dalam Bahasa Indonesia dengan struktur Markdown yang ringkas namun padat informasi:
+## Ringkasan Eksekutif
+Tulis 2-3 kalimat paragraf singkat yang menggambarkan kesehatan performa periode ini (kuat/lemah, tren naik/turun, konteks 8 bulan terakhir).
+
+## Sorotan Positif
+- Maks 3 bullet: hal yang berjalan baik (produk terlaris, metode pembayaran dominan, profit sehat, cabang terbaik, dll).
+
+## Perhatian / Risiko
+- Maks 3 bullet: hal yang butuh perhatian (profit tipis, repair/garansi tinggi, revenue rendah vs all-time, unit sedikit, dependensi satu produk/cabang, dll).
+
+## Rekomendasi Tindakan
+- Maks 3 bullet actionable: saran konkret untuk superadmin (bundling, promo, stock moving, efisiensi, follow-up affiliator, dll), sesuai fakta data.
+
+Aturan:
+- HARUS berbasis data snapshot di atas. JANGAN mengarang/menghalusinasi angka yang tidak ada.
+- Jika stock kosong / belum ada data berarti, katakan itu secara jujur.
+- Format Markdown rapi; gunakan **bold** untuk angka penting dan tabel hanya jika benar-benar membantu.
+- Ringkas dan profesional, total kurang lebih 180-260 kata. Jangan menyebut "HPP/modal/biaya beli" sebagai hal buruk, tapi wajar disebut sebagai COGS.
+- Jangan menyematkan blok ```action_proposal, ```ai_memo, atau JSON apa pun.
+PROMPT;
+
+        $payload = [
+            'system_instruction' => [
+                'parts' => [['text' => 'Kamu analis bisnis retail gadget. Jawab dalam Bahasa Indonesia, berbasis data, ringkas dan profesional.']]
+            ],
+            'contents' => [
+                ['role' => 'user', 'parts' => [['text' => $prompt]]]
+            ],
+            'generationConfig' => [
+                'temperature' => 0.4,
+                'maxOutputTokens' => 1200,
+            ]
+        ];
+
+        $candidateModels = array_unique(array_filter([
+            $this->model,
+            'gemini-3.5-flash-lite',
+            'gemini-2.5-flash',
+            'gemini-flash-latest',
+        ]));
+
+        foreach ($candidateModels as $modelToTry) {
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
+                $response = Http::timeout(30)->post($url, $payload);
+
+                if ($response->successful()) {
+                    $text = trim($response->json('candidates.0.content.parts.0.text', ''));
+                    return $text === '' ? null : $text;
+                }
+            } catch (\Exception $e) {
+                Log::warning("Gemini dashboard insight failed on {$modelToTry}: {$e->getMessage()}");
+            }
+        }
+
+        return null;
+    }
+
     public function generateCheckoutUpsell(Stock $stock, float $price): ?string
     {
         if (!$this->isConfigured()) {
