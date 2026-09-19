@@ -695,42 +695,7 @@ PROMPT;
         $pending = '';
         $inMemo = false;
 
-        $flush = function (string $s) use (&$out, $onChunk): void {
-            if ($s === '') {
-                return;
-            }
-            $out .= $s;
-            $onChunk($s);
-        };
-
-        $buffer = '';
-        while (!$body->eof()) {
-            $buffer .= $body->read(8192);
-            while (($pos = strpos($buffer, "\n")) !== false) {
-                $line = rtrim(substr($buffer, 0, $pos));
-                $buffer = substr($buffer, $pos + 1);
-                if ($line === '') {
-                    continue;
-                }
-                $json = json_decode($line, true);
-                if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
-                    $meta['finishReason'] = $json['candidates'][0]['finishReason'];
-                }
-                if (($meta['blockReason'] ?? '') === '' && !empty($json['promptFeedback']['blockReason'])) {
-                    $meta['blockReason'] = $json['promptFeedback']['blockReason'];
-                }
-                $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
-                if ($delta === '') {
-                    continue;
-                }
-                $pending .= $delta;
-                $this->streamVisible($pending, $inMemo, $flush);
-            }
-        }
-
-        $tail = trim($buffer);
-        if ($tail !== '') {
-            $json = json_decode($tail, true);
+        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta): void {
             if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
@@ -738,12 +703,86 @@ PROMPT;
                 $meta['blockReason'] = $json['promptFeedback']['blockReason'];
             }
             $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
-            if ($delta !== '') {
-                $pending .= $delta;
-                $this->streamVisible($pending, $inMemo, $flush);
+            if ($delta === '') {
+                return;
+            }
+            $pending .= $delta;
+            $this->streamVisible($pending, $inMemo, function (string $s) use (&$out, $onChunk): void {
+                if ($s === '') {
+                    return;
+                }
+                $out .= $s;
+                $onChunk($s);
+            });
+        };
+
+        // Gemini's :streamGenerateContent?alt=json streams a *pretty-printed*
+        // JSON array  [ { ... }, { ... } ]  where each top-level object spans
+        // many lines — so a naive line-by-line json_decode() always fails and
+        // yields nothing ("empty stream"). Scan the byte stream for balanced
+        // top-level objects, honouring braces inside JSON strings, and decode
+        // each complete object as soon as it arrives (keeps live token flow).
+        $buffer = '';
+        $depth = 0;
+        $start = -1;
+        $inStr = false;
+        $esc = false;
+
+        while (!$body->eof()) {
+            $buffer .= $body->read(8192);
+            $len = strlen($buffer);
+            for ($i = 0; $i < $len; $i++) {
+                $ch = $buffer[$i];
+
+                if ($inStr) {
+                    if ($esc) {
+                        $esc = false;
+                    } elseif ($ch === '\\') {
+                        $esc = true;
+                    } elseif ($ch === '"') {
+                        $inStr = false;
+                    }
+                    continue;
+                }
+
+                if ($ch === '"') {
+                    $inStr = true;
+                } elseif ($ch === '{') {
+                    if ($depth === 0) {
+                        $start = $i;
+                    }
+                    $depth++;
+                } elseif ($ch === '}') {
+                    $depth--;
+                    if ($depth === 0 && $start >= 0) {
+                        $json = json_decode(substr($buffer, $start, $i - $start + 1), true);
+                        if (is_array($json)) {
+                            $emitJson($json);
+                        }
+                        $buffer = substr($buffer, $i + 1);
+                        $len = strlen($buffer);
+                        $i = -1;
+                        $start = -1;
+                    }
+                }
+            }
+
+            // Drop leading non-object junk (whitespace, "["/"]", ",") so the
+            // buffer never grows unbounded while waiting for the next object.
+            if ($depth === 0) {
+                $clean = ltrim($buffer, " \t\r\n[],");
+                $buffer = $clean;
+                $start = -1;
             }
         }
-        $this->streamVisible($pending, $inMemo, $flush);
+
+        $this->streamVisible($pending, $inMemo, function (string $s) use (&$out, $onChunk): void {
+            if ($s === '') {
+                return;
+            }
+            $out .= $s;
+            $onChunk($s);
+        });
 
         return $out;
     }
