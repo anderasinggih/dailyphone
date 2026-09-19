@@ -162,11 +162,13 @@ class AiAssistantController extends Controller
 
             // 4. Save AI reply to database in this session
             if (!empty($result['reply'])) {
+                $hasProposal = str_contains($result['reply'], '```action_proposal') || str_contains($result['reply'], '```json' . "\n" . '{' . "\n" . '  "action":');
                 $aiChat = \App\Models\AiChat::create([
                     'user_id' => $user->id,
                     'session_id' => $sessionId,
                     'role' => 'assistant',
                     'content' => $result['reply'],
+                    'action_status' => $hasProposal ? 'pending' : null,
                 ]);
 
                 $result['message_id'] = (string)$aiChat->id;

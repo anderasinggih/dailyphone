@@ -165,6 +165,15 @@ export default function Assistant({
         setCurrentRules(active?.custom_rules || '');
     }, [currentSessionId, sessionList]);
 
+    // Synchronize messages state when initialMessages or activeSessionId updates (e.g. on page refresh or session switch)
+    useEffect(() => {
+        if (initialMessages && initialMessages.length > 0) {
+            setMessages(initialMessages);
+        } else {
+            setMessages([welcomeMessage]);
+        }
+    }, [initialMessages, activeSessionId]);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -462,10 +471,12 @@ export default function Assistant({
 
             const data = await response.json();
 
+            const isProposal = data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('```json\n{\n  "action":'));
             const assistantMsg: Message = {
                 id: data.message_id || 'assistant-' + Date.now(),
                 role: 'assistant',
                 content: data.reply || 'Maaf, terjadi kendala saat memproses jawaban.',
+                action_status: isProposal ? 'pending' : null,
                 timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             };
 

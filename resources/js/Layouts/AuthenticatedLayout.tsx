@@ -159,56 +159,56 @@ export default function Authenticated({
 
                         {}
                         <div className="hidden sm:flex items-center gap-0.5 flex-1 justify-center">
-                            <Link href={route('dashboard')} className={navLink(!!route().current('dashboard'))}>
+                            <Link href={route('dashboard')} prefetch className={navLink(!!route().current('dashboard'))}>
                                 <LayoutDashboard className="h-4 w-4" />
                                 <span>Dashboard</span>
                             </Link>
 
-                            <Link href={route('selling.index')} className={navLink(!!route().current('selling.index'))}>
+                            <Link href={route('selling.index')} prefetch className={navLink(!!route().current('selling.index'))}>
                                 <Smartphone className="h-4 w-4" />
                                 <span>Sell</span>
                             </Link>
 
                             {user.role !== 'karyawan' && (
-                                <Link href={route('sale-data.index')} className={navLink(!!route().current('sale-data.index'))}>
+                                <Link href={route('sale-data.index')} prefetch className={navLink(!!route().current('sale-data.index'))}>
                                     <Layers className="h-4 w-4" />
                                     <span>Inventory</span>
                                 </Link>
                             )}
 
-                            <Link href={route('timeline.index')} className={navLink(!!route().current('timeline.index'))}>
+                            <Link href={route('timeline.index')} prefetch className={navLink(!!route().current('timeline.index'))}>
                                 <Activity className="h-4 w-4" />
                                 <span>Activity</span>
                             </Link>
 
-                            <Link href={route('assistant.index')} className={navLink(!!route().current('assistant.index'))}>
+                            <Link href={route('assistant.index')} prefetch className={navLink(!!route().current('assistant.index'))}>
                                 <GeminiStar className="h-4 w-4 text-primary" />
                                 <span>Assistant</span>
                             </Link>
 
-                            <Link href={route('sales-history.index')} className={navLink(!!route().current('sales-history.index'))}>
+                            <Link href={route('sales-history.index')} prefetch className={navLink(!!route().current('sales-history.index'))}>
                                 <History className="h-4 w-4" />
                                 <span>History</span>
                             </Link>
 
                             <div className="hidden xl:flex items-center gap-0.5">
-                                <Link href={route('customers.index')} className={navLink(!!route().current('customers.index'))}>
+                                <Link href={route('customers.index')} prefetch className={navLink(!!route().current('customers.index'))}>
                                     <Users className="h-4 w-4" />
                                     <span>Customers</span>
                                 </Link>
 
-                                <Link href={route('shifts.index')} className={navLink(!!route().current('shifts.index'))}>
+                                <Link href={route('shifts.index')} prefetch className={navLink(!!route().current('shifts.index'))}>
                                     <Clock className="h-4 w-4" />
                                     <span>Shifts</span>
                                 </Link>
 
                                 {user.role === 'superadmin' && (
                                     <>
-                                        <Link href={route('stores.index')} className={navLink(!!route().current('stores.index'))}>
+                                        <Link href={route('stores.index')} prefetch className={navLink(!!route().current('stores.index'))}>
                                             <Store className="h-4 w-4" />
                                             <span>Stores</span>
                                         </Link>
-                                        <Link href={route('money-notes.index')} className={navLink(!!route().current('money-notes.index'))}>
+                                        <Link href={route('money-notes.index')} prefetch className={navLink(!!route().current('money-notes.index'))}>
                                             <Banknote className="h-4 w-4" />
                                             <span>Cash Notes</span>
                                         </Link>
@@ -347,6 +347,7 @@ export default function Authenticated({
                             <Link
                                 key={tab.name}
                                 href={tab.href}
+                                prefetch
                                 className={`flex flex-col items-center justify-center flex-1 py-1 gap-0.5 transition-all duration-200 ${
                                     tab.current
                                         ? activeTabColor

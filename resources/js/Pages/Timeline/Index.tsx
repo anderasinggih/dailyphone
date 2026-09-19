@@ -1,6 +1,6 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, Link, usePage, router } from '@inertiajs/react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     ShoppingBag,
     PackagePlus,
@@ -67,6 +67,12 @@ export default function Timeline({ activities }: TimelineProps) {
     const [showFilters, setShowFilters] = useState(!!(filters?.action_type || filters?.date));
     const [savingId, setSavingId] = useState<number | null>(null);
 
+    const [localActivities, setLocalActivities] = useState<ActivityLog[]>(activities.data);
+
+    useEffect(() => {
+        setLocalActivities(activities.data);
+    }, [activities.data]);
+
     const applyFilters = (newSearch = search, newAction = actionType, newDate = date, newSavedOnly = savedOnly) => {
         router.get(route('timeline.index'), {
             search: newSearch,
@@ -81,9 +87,20 @@ export default function Timeline({ activities }: TimelineProps) {
 
     const toggleSave = (logId: number) => {
         setSavingId(logId);
+        // Optimistic update
+        setLocalActivities(prev =>
+            prev.map(item =>
+                item.id === logId ? { ...item, is_saved: !item.is_saved } : item
+            )
+        );
+
         router.post(route('timeline.toggle-save', logId), {}, {
             preserveScroll: true,
-            onFinish: () => setSavingId(null)
+            onFinish: () => setSavingId(null),
+            onError: () => {
+                // Revert on error
+                setLocalActivities(activities.data);
+            }
         });
     };
 
@@ -533,14 +550,14 @@ export default function Timeline({ activities }: TimelineProps) {
 
                     {/* Timeline Activity Stream */}
                     <div className="divide-y divide-border/60 sm:space-y-4 sm:divide-y-0">
-                        {activities.data.length === 0 ? (
+                        {localActivities.length === 0 ? (
                             <div className="p-12 text-center text-muted-foreground bg-card sm:rounded-2xl sm:border sm:border-border/60 mx-3 sm:mx-0">
                                 <p className="font-semibold text-sm">
                                     {savedOnly ? 'No saved activities yet. Bookmark any activity to review it here.' : 'No recorded activities found.'}
                                 </p>
                             </div>
                         ) : (
-                            activities.data.map((log) => {
+                            localActivities.map((log) => {
                                 const details = getActionDetails(log);
                                 const IconComponent = details.icon;
                                 const userName = log.user?.name || 'System';
