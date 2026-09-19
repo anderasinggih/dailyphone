@@ -242,13 +242,15 @@ class AiAssistantController extends Controller
             // trip take minutes; make sure PHP's execution clock never cuts the
             // stream mid-flight, otherwise the client sees an empty response.
             @set_time_limit(600);
+            @ini_set('zlib.output_compression', '0');
 
             $emit = function (array $payload): void {
                 echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
-                if (ob_get_level() > 0) {
-                    ob_flush();
+                $levels = ob_get_level();
+                for ($i = 0; $i < $levels; $i++) {
+                    @ob_flush();
                 }
-                flush();
+                @flush();
             };
 
             try {

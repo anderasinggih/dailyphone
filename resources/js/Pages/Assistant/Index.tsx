@@ -1049,7 +1049,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                                 );
                             })}
 
-                            {isLoading && (
+                            {isLoading && !draftStream && (
                                 <div className="max-w-3xl mx-auto py-2 text-xs select-none space-y-2">
                                     {/* Ultra Clean & Simple: no containers, just a spinner + live progress */}
                                     <div className="flex items-center gap-2 text-muted-foreground font-mono">
@@ -1066,13 +1066,10 @@ function playCompletionChime(soundEnabled: boolean): void {
                             )}
 
                             {draftStream && (
-                                <div key="draft-stream" className="max-w-3xl mx-auto text-foreground">
-                                    <div className="text-[13px] leading-relaxed">
-                                        <Markdown content={draftStream} />
-                                    </div>
-                                    <div className="flex items-center gap-1 text-muted-foreground/70 pt-1">
-                                        <span className="inline-block h-3 w-[2px] bg-primary animate-pulse" />
-                                        <span className="text-[10.5px] font-mono">streaming</span>
+                                <div key="draft-stream" className="max-w-3xl mx-auto">
+                                    <div className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground/90 rounded-2xl bg-card border border-border/60 px-4 py-2.5 shadow-2xs">
+                                        {draftStream}
+                                        <span className="inline-block ml-0.5 h-3.5 w-[2px] translate-y-[2px] bg-primary animate-pulse" />
                                     </div>
                                 </div>
                             )}
