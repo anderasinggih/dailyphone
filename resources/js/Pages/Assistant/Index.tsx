@@ -181,38 +181,48 @@ export default function Assistant({
     const [currentRules, setCurrentRules] = useState<string>('');
     const [isSavingRules, setIsSavingRules] = useState(false);
 
-    // Elegant Web Audio API harmonic chime (like Antigravity / macOS notification)
-    const playCompletionChime = () => {
-        if (!soundEnabled) return;
-        try {
-            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-            if (!AudioCtx) return;
-            const ctx = new AudioCtx();
-            if (ctx.state === 'suspended') {
-                ctx.resume();
-            }
+    // Reuse a single AudioContext so completion chimes do not leak one context per
+// message (browsers cap concurrent AudioContexts).
+let sharedAudioCtx: AudioContext | null = null;
 
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
+function getSharedAudioCtx(): AudioContext | null {
+    if (sharedAudioCtx) return sharedAudioCtx;
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return null;
+    sharedAudioCtx = new AudioCtx();
+    return sharedAudioCtx;
+}
 
-            // Pure Apple notification chime: 1 single elegant crystal tone (880Hz - A5)
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(880, ctx.currentTime); // Crisp, gentle single note
-
-            // Smooth bell envelope: quick soft attack, pure exponential decay
-            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + 0.02);
-            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.45);
-
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-
-            osc.start(ctx.currentTime);
-            osc.stop(ctx.currentTime + 0.45);
-        } catch (e) {
-            // Audio context not allowed or unsupported
+function playCompletionChime(soundEnabled: boolean): void {
+    if (!soundEnabled) return;
+    try {
+        const ctx = getSharedAudioCtx();
+        if (!ctx) return;
+        if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
+            ctx.resume();
         }
-    };
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        // Pure Apple notification chime: 1 single elegant crystal tone (880Hz - A5)
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime); // Crisp, gentle single note
+
+        // Smooth bell envelope: quick soft attack, pure exponential decay
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.45);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.45);
+    } catch (e) {
+        // Audio context not allowed or unsupported
+    }
+}
 
     // Load active session rules when current session changes
     useEffect(() => {
@@ -429,7 +439,6 @@ export default function Assistant({
         setReplyingTo(null);
         setIsLoading(true);
         setAccessedNetwork({ nodes: [], edges: [] });
-        setAccessedNetwork({ nodes: [], edges: [] });
 
         const applyReply = (data: any) => {
             const looksLikeProposal = !!data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('"action":'));
@@ -442,7 +451,7 @@ export default function Assistant({
             };
 
             setMessages(prev => [...prev, assistantMsg]);
-            playCompletionChime();
+            playCompletionChime(soundEnabled);
 
             // Update session list with new session or updated title
             if (data.session_id) {

@@ -175,14 +175,9 @@ class AiAssistantController extends Controller
             };
 
             try {
-                $emit(['type' => 'phase', 'label' => 'Loading live store network…']);
-
                 $network = $this->geminiService->resolveNeuronNetwork($userText);
                 $neurons = $network['nodes'];
-                $emit(['type' => 'phase', 'label' => count($neurons) > 0 ? 'Tapping ' . count($neurons) . ' memory neurons…' : 'Scanning memory network…']);
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
-
-                $emit(['type' => 'phase', 'label' => 'Reasoning & drafting response…']);
 
                 // 3. Send to Gemini with full session memory & custom session rules/training
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText);

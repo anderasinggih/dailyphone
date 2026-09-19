@@ -18,6 +18,12 @@ class GeminiAssistantService
     protected bool $enabled;
     protected ?string $customInstruction;
 
+    // The training-note selection is queried up to three times per chat
+    // request (live neuron map, model context, memo-eligibility review).
+    // Memoize per query so we hit the DB once.
+    protected ?string $notesCacheKey = null;
+    protected ?\Illuminate\Support\Collection $notesCache = null;
+
     public function __construct()
     {
         $this->reloadSettings();
@@ -573,8 +579,10 @@ PROMPT;
 
         foreach ($candidateModels as $modelToTry) {
             try {
+                // 8192 output tokens can take well over 30s; keep the client from
+                // racing ahead of slow completions.
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
-                $response = Http::timeout(30)->post($url, $payload);
+                $response = Http::timeout(90)->post($url, $payload);
 
                 if ($response->successful()) {
                     $text = $response->json('candidates.0.content.parts.0.text', '');
@@ -660,6 +668,11 @@ PROMPT;
      */
     protected function selectTrainingNotes(?string $query): \Illuminate\Support\Collection
     {
+        $key = trim((string)$query);
+        if ($this->notesCache !== null && $this->notesCacheKey === $key) {
+            return $this->notesCache;
+        }
+
         $rules = \App\Models\AiTrainingNote::where('is_active', true)
             ->where('kind', 'rule')
             ->orderBy('updated_at', 'desc')
@@ -672,24 +685,29 @@ PROMPT;
         $tokens = app(\App\Services\AiMemoryGraphService::class)->tokenize(trim((string)$query));
 
         if ($tokens === []) {
-            return $rules->merge($knowledge->sortByDesc('updated_at')->take(10)->values());
+            $notes = $rules->merge($knowledge->sortByDesc('updated_at')->take(10)->values());
+        } else {
+            $scored = $knowledge->map(function ($n) use ($tokens) {
+                return ['note' => $n, 'score' => $this->scoreAgainst($n, $tokens)];
+            });
+
+            $matched = $scored->filter(fn ($s) => $s['score'] > 0)
+                ->sortByDesc('score')
+                ->take(12)
+                ->pluck('note')
+                ->values();
+
+            $selected = $matched->isNotEmpty()
+                ? $matched
+                : $knowledge->sortByDesc('updated_at')->take(6)->values();
+
+            $notes = $rules->merge($selected);
         }
 
-        $scored = $knowledge->map(function ($n) use ($tokens) {
-            return ['note' => $n, 'score' => $this->scoreAgainst($n, $tokens)];
-        });
+        $this->notesCacheKey = $key;
+        $this->notesCache = $notes;
 
-        $matched = $scored->filter(fn ($s) => $s['score'] > 0)
-            ->sortByDesc('score')
-            ->take(12)
-            ->pluck('note')
-            ->values();
-
-        $selected = $matched->isNotEmpty()
-            ? $matched
-            : $knowledge->sortByDesc('updated_at')->take(6)->values();
-
-        return $rules->merge($selected);
+        return $notes;
     }
 
     protected function scoreAgainst($note, array $tokens): int
@@ -778,11 +796,6 @@ PROMPT;
         })->implode("\n");
     }
 
-    /**
-     * Generate concise upsell / cross-sell suggestions for a unit being sold.
-     * NEVER receives or mentions profit/HPP/modal — marketing suggestions only,
-     * so staff can use them without exposing store margins.
-     */
     /**
      * Generate a concise AI Business Overview for the Dashboard.
      * Uses the exact data already computed for the dashboard page, so no
