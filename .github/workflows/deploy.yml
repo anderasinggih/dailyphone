@@ -16,18 +16,18 @@ jobs:
       - name: 🐘 Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: '8.4'
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_pgsql, pgsql, bcmath, fileinfo
           coverage: none
 
       - name: 📦 Install Composer Dependencies
         run: |
-          composer install --no-dev --prefer-dist --optimize-autoloader --no-progress --no-interaction
+          composer install --no-dev --prefer-dist --optimize-autoloader --no-progress --no-interaction --ignore-platform-reqs
 
       - name: ⚡ Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: 🔨 Install NPM & Build Production Assets
@@ -57,7 +57,7 @@ jobs:
             fi
 
             # Install vendor dependencies jika ada update package
-            composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+            composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --ignore-platform-reqs
 
             # Jalankan migrasi database
             php artisan migrate --force
