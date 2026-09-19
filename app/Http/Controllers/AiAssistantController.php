@@ -367,6 +367,14 @@ class AiAssistantController extends Controller
 
                 // 4. Save AI reply to database in this session
                 if (!empty($result['reply'])) {
+                    // The model sometimes claims a node was saved without ever
+                    // emitting a real ```ai_memo block (so nothing persisted and
+                    // the claim is a lie). Reconcile BEFORE storing: try one
+                    // deterministic recovery call to actually save the memory;
+                    // if that fails, correct the visible reply so the claim no
+                    // longer deceives the user.
+                    $this->reconcileMemoClaims($result, $user, $userText, $ingestNotice);
+
                     // Persist any training memos the AI wrote. The visible reply
                     // is already stripped client-side; the RAW text (which still
                     // contains the ```ai_memo blocks) is what we inspect here.
@@ -907,6 +915,251 @@ class AiAssistantController extends Controller
     protected function stripCitedNodeFooter(string $text): string
     {
         return trim((string) preg_replace('/(?:^|\n)\s*(?:Memori node yang dikonsultasi|Memory node[^\n]*consulted)[^\n]*/mi', '', $text));
+    }
+
+    /**
+     * Reconcile storage claims so the model's words stay truthful (honest
+     * persistence). The model sometimes writes a confirmation in the visible
+     * reply ("📝 Node baru: ...", "sudah tersimpan", "berhasil dicatat", ...)
+     * without ever emitting a real ```ai_memo block — so persistTrainingMemos()
+     * finds nothing to save and the claim would be a lie. Run BEFORE persisting:
+     *
+     * 1. If the raw reply already holds a parsable, content-bearing ```ai_memo
+     *    block, the claim is backed by a real node → nothing to do.
+     * 2. Otherwise try ONE deterministic reconstruction of the missed block,
+     *    built from the claim sentence itself (no extra LLM cost and no
+     *    invented facts — the model's own wording is the source material).
+     *    On success the block is appended to raw_reply so the subsequent
+     *    persistTrainingMemos() call really stores the memory.
+     * 3. If reconstruction yields nothing usable (ambiguous, duplicate or a DB
+     *    error), rewrite the visible reply so the claim no longer deceives.
+     *
+     * When the system itself just ingested an attachment/URL into real nodes,
+     * any "node baru" phrase in the reply refers to that genuine server-side
+     * storage — reconciliation must not second-guess it.
+     */
+    protected function reconcileMemoClaims(array &$result, $user, string $userText, string $ingestNotice = ''): void
+    {
+        if (($result['success'] ?? true) === false) {
+            return;
+        }
+
+        $visible = trim((string)($result['reply'] ?? ''));
+        if ($visible === '') {
+            return;
+        }
+
+        // A successful system ingest already created the nodes this reply talks
+        // about, so a storage claim here is backed by the backend, not the model.
+        if (str_contains($ingestNotice, 'SISTEM INGEST (FAKTUAL)')) {
+            return;
+        }
+
+        $claim = $this->findStorageClaim($visible);
+        if ($claim === null) {
+            return;
+        }
+
+        // Already backed by a real, persistable memo block → the claim is honest.
+        $rawReply = (string)($result['raw_reply'] ?? $visible);
+        if ($this->hasPersistableMemo($rawReply)) {
+            return;
+        }
+
+        // Reconstruct one ```ai_memo block from the model's own claim wording.
+        $payload = [
+            'kind' => $this->claimKind((string)($claim['content'] ?? '')),
+            'title' => $claim['title'] ?? null,
+            'related' => $this->relatedForClaim($userText, (string)($claim['content'] ?? '')),
+            'content' => $claim['content'] ?? null,
+        ];
+        $payload = array_filter($payload, fn($v) => $v !== null && $v !== '' && $v !== []);
+
+        if ($payload['content'] ?? '') {
+            if ($this->persistMemo($payload, $user)) {
+                // Saved for real; give the raw text the block it was missing so
+                // the normal persistence path stays single-source-of-truth
+                // (content_hash makes the follow-up persist a harmless no-op).
+                $block = "\n\n```ai_memo\n" . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n```";
+                $result['raw_reply'] = rtrim($rawReply) . $block;
+                return;
+            }
+        }
+
+        // Reconstruction failed → correct the lying claim instead of shipping it.
+        $result['reply'] = $this->correctFalseClaim($visible);
+    }
+
+    /**
+     * True when the raw text contains at least one ```ai_memo block whose JSON
+     * decodes and carries a non-empty content (exactly what persistMemo() would
+     * actually store).
+     */
+    protected function hasPersistableMemo(string $text): bool
+    {
+        preg_match_all('/```ai_memo\s*([\s\S]*?)```/', $text, $matches);
+
+        foreach ($matches[1] as $raw) {
+            $decoded = json_decode(trim($raw), true);
+            if (is_array($decoded) && trim((string)($decoded['content'] ?? '')) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Detect a positive first-person ("I saved this") storage claim in the
+     * visible reply. Negated, hypothetical, suggestion-like sentences and
+     * references to storage that happened earlier are ignored, so honest
+     * statements about pre-existing or system-made nodes are left untouched.
+     *
+     * @return array{title: string, content: string}|null
+     */
+    protected function findStorageClaim(string $text): ?array
+    {
+        $sentences = preg_split('/(?<=[.!?])\s+|\n+/u', trim($text)) ?: [trim($text)];
+        $verbClaim = null;
+
+        foreach ($sentences as $sentence) {
+            $s = trim($sentence);
+            if ($s === '') {
+                continue;
+            }
+            if (preg_match('/\b(?:belum|tidak|gagal|batal|jangan|bukan|tanpa|jika|kalau|sebaiknya|seharusnya)\b/iu', $s)
+                || preg_match('/\b(?:sebelumnya|sebelum|pernah|sejak|sudah\s+tadi)\b/iu', $s)) {
+                continue;
+            }
+
+            // The visual confirmation marker — the system prompt only allows it
+            // together with a real ```ai_memo block, so it is the strongest lie
+            // and names the exact entity: prefer it over a vague verb claim.
+            if (preg_match('/📝\s*node\s+baru\s*[:：\-]?\s*(.+?)$/iu', $s, $m)) {
+                return $this->claimFrom($s, $m[1]);
+            }
+
+            if ($verbClaim === null && $this->matchesStorageVerbClaim($s)) {
+                $verbClaim = $s;
+            }
+        }
+
+        return $verbClaim !== null ? $this->claimFrom($verbClaim, '') : null;
+    }
+
+    /**
+     * Compact first-person/perfected markers of "a memory was just saved".
+     * No rigid phrase list — the model itself decides what deserves a node;
+     * this only catches when it forgot to emit the block.
+     */
+    protected function matchesStorageVerbClaim(string $sentence): bool
+    {
+        // No rigid phrase list — just first-person save verbs, completion
+        // markers, or an explicitly persisted state. The model decides what
+        // deserves a node; this only catches when it forgot the block.
+        return (bool) preg_match(
+            '/\b(?:kucatat|kusimpan|kuingat|kurekam)\b'
+            . '|(?:berhasil|sudah|telah)\s+(?:di|ter|ku|saya\s+)?(?:catat|simp[ae]n|ingat|rekam)\b'
+            . '|\b(?:tersimp[ae]n|tercatat)\b'
+            . '|\bnode\s+baru\b'
+            . '/iu',
+            $sentence
+        );
+    }
+
+    /**
+     * Turn one claimed sentence into the memo payload seed: a short title and
+     * the cleaned sentence as content. The claim's own wording is the source
+     * material, so the reconstructed memory never invents facts.
+     *
+     * @return array{title: string, content: string}
+     */
+    protected function claimFrom(string $sentence, string $entity): array
+    {
+        $content = trim($entity !== '' ? $entity : $sentence);
+        $content = trim((string) preg_replace('/^\s*>\s*/m', '', (string) trim((string) preg_replace('/[*_`#>]+/u', '', $content))));
+        $content = rtrim($content, " \t\n\r,.;:!?");
+        $content = trim((string) preg_replace('/\s+/u', ' ', $content));
+
+        return [
+            'title' => $this->shortClaimTitle($entity !== '' ? $entity : $sentence),
+            'content' => $content,
+        ];
+    }
+
+    /**
+     * Cap a reconstructed node title at ~5 words (the system-prompt rule for
+     * ai_memo titles) while stripping markdown noise.
+     */
+    protected function shortClaimTitle(string $text): string
+    {
+        $clean = trim((string) preg_replace('/[*_`#>\[\]()]+/u', '', $text));
+        $words = preg_split('/\s+/u', $clean) ?: [];
+
+        return mb_strimwidth(implode(' ', array_slice($words, 0, 5)), 0, 120, '');
+    }
+
+    /**
+     * Deterministic kind guess for a reconstructed memo: family-relation facts
+     * become 'identity' nodes, everything else falls back to the safe 'note'.
+     */
+    protected function claimKind(string $content): string
+    {
+        return preg_match('/\b(?:adik|kakak|saudara|ibu|ayah|bapak|mama|papa|istri|suami|anak|kakek|nenek|paman|bibi|tante|keponakan|sepupu)\b/iu', $content)
+            ? 'identity'
+            : 'note';
+    }
+
+    /**
+     * Small bounded set of related-keyword candidates for the reconstructed
+     * memo, drawn from the claim sentence and the user's own message.
+     */
+    protected function relatedForClaim(string $userText, string $content): array
+    {
+        $stopwords = preg_split('/\s+/', strtolower(
+            'yang dan atau untuk dengan dari pada ini itu ke di tidak ya sudah akan bisa lalu maka agar '
+            . 'karena jika saya kamu kita node nodes memori memory baru tersimpan simpan catat ingat rekam '
+            . 'berhasil silakan tolong mohon jangan lupa'
+        )) ?: [];
+        $stop = array_fill_keys($stopwords, true);
+
+        $words = [];
+        foreach ([$content, $userText] as $src) {
+            foreach ((preg_split('/[^\p{L}\p{N}]+/u', strtolower($src)) ?: []) as $w) {
+                if ($w === '' || mb_strlen($w) < 4 || isset($stop[$w])) {
+                    continue;
+                }
+                $words[$w] = true;
+            }
+        }
+
+        return array_slice(array_keys($words), 0, 4);
+    }
+
+    /**
+     * Neutralise the storage-claim phrases in a reply so the user is told the
+     * truth when the memory could not be saved.
+     */
+    protected function correctFalseClaim(string $visible): string
+    {
+        $replacements = [
+            // Ordered so earlier insertions never get re-matched later: the
+            // broad "tersimpan/tercatat" rewrite runs last.
+            '/📝\s*node\s+baru\s*[:：\-]?[^\n]*/iu' => 'gagal menyimpan catatan ke node memori',
+            '/\b(?:kucatat|kusimpan|kuingat|kurekam)\b/iu' => 'tidak sempat menyimpan',
+            '/\b(?:berhasil|sudah|telah)\s+(?:di|ter|ku|saya\s+)?(?:catat|simp[ae]n|ingat|rekam)\b/iu' => 'gagal disimpan',
+            '/\bnode\s+baru\b/iu' => 'node gagal dibuat',
+            '/\b(?:tersimp[ae]n|tercatat)\b/iu' => 'belum tersimpan',
+        ];
+
+        $corrected = trim((string) preg_replace(array_keys($replacements), array_values($replacements), $visible));
+        $corrected = preg_replace('/\n{3,}/', "\n\n", $corrected) ?: $corrected;
+
+        if (!preg_match('/\b(?:gagal|tidak berhasil|belum tersimpan|tidak sempat)\b/i', $corrected)) {
+            $corrected = trim($corrected) . "\n\n> Sistem tidak berhasil menyimpan memori tersebut ke jaringan neuron. Mohon ulangi permintaan bila masih ingin mencatatnya.";
+        }
+
+        return trim((string) $corrected);
     }
 
     /**

@@ -782,6 +782,7 @@ PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (ATURAN PENYIMPANAN WAJIB
 - "title" boleh dihilangkan (otomatis dibuat dari content). "related" sangat dianjurkan: 2-4 kata kunci spesifik yang menentukan relasi node ini di neuron map.
 - Tulis content padat & actionable, hanya aturan/fakta yang belum tercatat.
 - Konfirmasi visual "📝 Node baru: ..." di teks normal HANYA boleh muncul BERSAMA blok ```ai_memo yang benar-benar kamu keluarkan pada balasan yang sama.
+- INISIATIF MENYIMPAN (OTONOM): Kamu tidak perlu menunggu diminta untuk mencatat. Jika dalam percakapan pengguna menyampaikan fakta / relasi / kebijakan / preferensi / koreksi yang kamu nilai penting dan belum tercatat di GLOBAL AI TRAINING MEMORY di atas, ambil inisiatif mengeluarkan SATU blok ```ai_memo tanpa diminta — sepanjang benar-benar baru, spesifik, dan tidak mengulang node yang sudah ada. Gunakan penilaianmu sendiri; jangan mencatat hal sepele, dan jangan mengeluarkan blok bila ragu hal itu sudah tercatat.
 
 USAGE FEEDBACK / CITATION (PENTING):
 - Ketika kamu menjawab dengan benar-benar memanfaatkan isi satu atau beberapa node dari GLOBAL AI TRAINING MEMORY di atas (bukan sekadar menyebut umum), AKHIRI balasanmu dengan SATU baris penutup persis:
