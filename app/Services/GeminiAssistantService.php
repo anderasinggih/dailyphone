@@ -898,9 +898,27 @@ PROMPT;
                 $name = (string)($call['name'] ?? '');
                 $args = is_array($call['args'] ?? null) ? $call['args'] : [];
 
-                $modelParts[] = [
-                    'functionCall' => ['name' => $name, 'args' => (object)$args],
-                ];
+                // Gemini 3 requires the model's thought_signature to be replayed
+                // on the same functionCall part; echo the part verbatim rather
+                // than rebuilding it so the signature (and any id) survives.
+                $fnPart = $call['part'] ?? null;
+                if (is_array($fnPart) && !empty($fnPart['functionCall'])) {
+                    if (is_array($fnPart['functionCall']['args'] ?? null)) {
+                        $fnPart['functionCall']['args'] = (object)$fnPart['functionCall']['args'];
+                    }
+                    if (empty($fnPart['thoughtSignature']) && !empty($call['thoughtSignature'])) {
+                        $fnPart['thoughtSignature'] = (string)$call['thoughtSignature'];
+                    }
+                    $modelParts[] = $fnPart;
+                } else {
+                    $modelPart = [
+                        'functionCall' => ['name' => $name, 'args' => (object)$args],
+                    ];
+                    if (!empty($call['thoughtSignature'])) {
+                        $modelPart['thoughtSignature'] = (string)$call['thoughtSignature'];
+                    }
+                    $modelParts[] = $modelPart;
+                }
 
                 if ($name === 'submit_action_proposal') {
                     if ($proposalArgs === null) {
@@ -1053,6 +1071,8 @@ PROMPT;
                 $calls[] = [
                     'name' => (string)($part['functionCall']['name'] ?? ''),
                     'args' => (array)($part['functionCall']['args'] ?? []),
+                    'thoughtSignature' => isset($part['thoughtSignature']) ? (string)$part['thoughtSignature'] : null,
+                    'part' => $part,
                 ];
             }
             if (!empty($part['inlineData'])) {
@@ -1346,8 +1366,11 @@ SYSTEM;
         }
         $runId = date('Ymd_His') . '_' . uniqid();
         $imgIndex = 0;
+        // Gemini 3 may stream a thought_signature on its own part (empty text)
+        // just before the functionCall part that must carry it on the next turn.
+        $pendingSignature = '';
 
-        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$calls, &$usage, &$grounding, &$imgIndex, $runId): void {
+        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$calls, &$usage, &$grounding, &$imgIndex, &$pendingSignature, $runId): void {
             if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
@@ -1362,6 +1385,7 @@ SYSTEM;
             }
             $delta = '';
             foreach (($json['candidates'][0]['content']['parts'] ?? []) as $part) {
+                $partSignature = isset($part['thoughtSignature']) ? (string)$part['thoughtSignature'] : '';
                 if (!empty($part['inlineData']) && is_array($part['inlineData'])) {
                     $m = $this->persistInlineImage($part['inlineData'], $runId, $imgIndex++);
                     if ($m) {
@@ -1369,10 +1393,19 @@ SYSTEM;
                     }
                 }
                 if (!empty($part['functionCall']) && is_array($part['functionCall'])) {
+                    // Gemini 3 requires the thought_signature on the replayed
+                    // functionCall part; capture it (from this part or the one
+                    // streamed just before it) so the tool loop can echo it back.
+                    $sig = $partSignature !== '' ? $partSignature : $pendingSignature;
+                    $pendingSignature = '';
                     $calls[] = [
                         'name' => (string)($part['functionCall']['name'] ?? ''),
                         'args' => (array)($part['functionCall']['args'] ?? []),
+                        'thoughtSignature' => $sig !== '' ? $sig : null,
+                        'part' => $part,
                     ];
+                } elseif ($partSignature !== '') {
+                    $pendingSignature = $partSignature;
                 }
                 if (!empty($part['text']) && $delta === '') {
                     $delta = $part['text'];
