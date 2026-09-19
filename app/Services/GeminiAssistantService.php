@@ -317,8 +317,57 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
 
 2. ACTIONS SUPPORTED:
    - "add_stock": When the user asks to add, input, or create a new single stock/unit, OR when user asks to restore / put back a previously deleted unit (e.g. "add stok coy ip 12", "add <imei> back", "pulihkan unit <imei>", "tambah kembali"):
-     * MANDATORY: `name` (e.g. "iPhone 12 128GB"), `buy_price` (HPP), `sell_price` (Harga Jual).
-     * OPTIONAL / DEFAULTS: `store_id` (default store from context), `category` ("iphone"|"android"), `type` ("second"|"new"), `brand` ("Apple"|"Samsung"|...), `color` ("Black"|"White"|"Midnight"|...), `memory` ("128GB"|"256GB"|...), `license` ("iBox (Resmi)"|"Bea Cukai (Sinyal On)"|"Inter (Sinyal Off)"|...), `serial_number`, `imei_1`.
+     * CRITICAL FIELD COMPLETENESS: The user requires ALL fields to be comprehensively filled and presented in BOTH the `changes` table and `payload`. DO NOT omit fields or provide only partial info!
+     * The fields that MUST be included in `changes` and `payload` are:
+       1. `Nama Unit` (`name`): e.g. "iPhone 13 128GB"
+       2. `Brand` (`brand`): e.g. "Apple" or "Samsung"
+       3. `Kapasitas Memori` (`memory`): e.g. "128GB", "256GB" (extract from name or set default)
+       4. `Warna` (`color`): e.g. "Midnight", "Blue", "Space Gray"
+       5. `Tipe Lisensi` (`license`): e.g. "iBox (Resmi)", "Bea Cukai (Sinyal On)", "Inter (Sinyal Off)"
+       6. `Kondisi` (`type`): e.g. "Second" or "New"
+       7. `Supplier / Distributor` (`supplier`): e.g. "Distributor Utama Jakarta", "Supplier Partner", or user specified supplier
+       8. `Serial Number (SN)` (`serial_number`): e.g. "DP-IP-XXXXXX" (unique generated SN)
+       9. `Nomor IMEI` (`imei_1`): e.g. "358729104829104" (15-digit realistic IMEI)
+       10. `Garansi Toko (Hari)` (`warranty_duration_days`): e.g. 30 (or user specified)
+       11. `Harga Beli (HPP)` (`buy_price`): Realistic purchase price e.g. Rp 6.200.000
+       12. `Harga Jual` (`sell_price`): Realistic catalogue sell price e.g. Rp 7.299.000
+       13. `Lokasi Cabang` (`store_name` / `store_id`): Branch store name e.g. "PERENG STORE" (ID: 1)
+       14. `Status Unit` (`status`): e.g. "Available (Ready)" / "available"
+     * Example `changes` for `add_stock`:
+       [
+         { "field": "Nama Unit", "old": "-", "new": "iPhone 13 128GB" },
+         { "field": "Brand", "old": "-", "new": "Apple" },
+         { "field": "Kapasitas Memori", "old": "-", "new": "128GB" },
+         { "field": "Warna", "old": "-", "new": "Midnight" },
+         { "field": "Tipe Lisensi", "old": "-", "new": "iBox (Resmi)" },
+         { "field": "Kondisi", "old": "-", "new": "Second" },
+         { "field": "Supplier / Distributor", "old": "-", "new": "Distributor Utama Jakarta" },
+         { "field": "Serial Number (SN)", "old": "-", "new": "DP-IP-782190" },
+         { "field": "Nomor IMEI", "old": "-", "new": "358729104829104" },
+         { "field": "Garansi Toko (Hari)", "old": "-", "new": "30 Hari" },
+         { "field": "Harga Beli (HPP)", "old": "-", "new": "Rp 6.200.000" },
+         { "field": "Harga Jual", "old": "-", "new": "Rp 7.299.000" },
+         { "field": "Lokasi Cabang", "old": "-", "new": "PERENG STORE" },
+         { "field": "Status Unit", "old": "-", "new": "Available (Ready)" }
+       ]
+     * Example `payload` for `add_stock`:
+       {
+         "name": "iPhone 13 128GB",
+         "brand": "Apple",
+         "category": "iphone",
+         "type": "second",
+         "color": "Midnight",
+         "memory": "128GB",
+         "license": "iBox (Resmi)",
+         "supplier": "Distributor Utama Jakarta",
+         "serial_number": "DP-IP-782190",
+         "imei_1": "358729104829104",
+         "warranty_duration_days": 30,
+         "buy_price": 6200000,
+         "sell_price": 7299000,
+         "store_id": 1,
+         "status": "available"
+       }
     - "add_bulk_stock": When the user asks to add multiple units, generate dummy inventory, or bulk import stocks (e.g. "buatkan data dummy 5 unit", "tambah 10 stok sekaligus", "bikin 100 data dummy"):
       * CRITICAL FOR LARGE QUANTITIES (>= 5 units): DO NOT write out dozens or hundreds of items in JSON! It will exceed token limits and break the JSON parser. Instead, simply specify `"count": <number>` in payload, and the backend engine will automatically generate diverse realistic phone specs (iPhone 11-15, Samsung S20-S24, Xiaomi, OPPO, Vivo, etc.)!
       * Payload structure for dummy / bulk generation:
@@ -373,16 +422,20 @@ Part 2: A single structured code block starting with ```action_proposal and endi
   "summary": "1 sentence explanation of the action",
   "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",
   "changes": [
-    // For single unit actions (add_stock, update_stock, sell_stock): list specific unit fields.
+    // For single unit actions (add_stock): MUST list all 14 detailed fields (Nama Unit, Brand, Kapasitas Memori, Warna, Tipe Lisensi, Kondisi, Supplier / Distributor, Serial Number (SN), Nomor IMEI, Garansi Toko (Hari), Harga Beli (HPP), Harga Jual, Lokasi Cabang, Status Unit).
+    // For update_stock or sell_stock: list all relevant fields being changed.
     // For add_bulk_stock: provide high-level summary fields (Total Unit, Kategori, Lokasi Cabang, Status), while the full breakdown goes into payload.items!
-    { "field": "Jumlah Unit Ditambahkan", "old": "0 Unit", "new": "20 Unit" },
-    { "field": "Kategori Unit", "old": "-", "new": "iPhone & Android" },
-    { "field": "Lokasi Toko", "old": "-", "new": "PERENG STORE" },
-    { "field": "Status Unit", "old": "-", "new": "Available (Ready)" }
+    { "field": "Nama Unit", "old": "-", "new": "iPhone 13 128GB" },
+    { "field": "Kapasitas Memori", "old": "-", "new": "128GB" },
+    { "field": "Warna", "old": "-", "new": "Midnight" },
+    { "field": "Tipe Lisensi", "old": "-", "new": "iBox (Resmi)" },
+    { "field": "Supplier / Distributor", "old": "-", "new": "Distributor Utama Jakarta" },
+    { "field": "Garansi Toko (Hari)", "old": "-", "new": "30 Hari" },
+    { "field": "Harga Jual", "old": "-", "new": "Rp 7.299.000" }
   ],
   "payload": {
     // For add_stock:
-    // "name": "iPhone 12 128GB", "store_id": 1, "category": "iphone", "type": "second", "brand": "Apple", "color": "Blue", "memory": "128GB", "license": "iBox (Resmi)", "imei_1": "358729104829104", "buy_price": 4500000, "sell_price": 5800000, "warranty_duration_days": 30
+    // "name": "iPhone 13 128GB", "brand": "Apple", "color": "Midnight", "memory": "128GB", "license": "iBox (Resmi)", "type": "second", "supplier": "Distributor Utama Jakarta", "serial_number": "DP-IP-782190", "imei_1": "358729104829104", "warranty_duration_days": 30, "buy_price": 6200000, "sell_price": 7299000, "store_id": 1, "status": "available"
     // For update_stock:
     // "stock_id": 123 (or "serial_number": "..."), "sell_price": 9200000, "buy_price": 7500000, "status": "available"
     // For delete_stock:

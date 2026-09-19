@@ -202,10 +202,61 @@ class AiActionService
             })->where('value', 'like', "%{$valueName}%")->value('id');
         };
 
-        $brandId = $payload['brand_id'] ?? $resolveParamId('Brand', $payload['brand'] ?? ($category === 'iphone' ? 'Apple' : null));
-        $colorId = $payload['color_id'] ?? $resolveParamId('Warna', $payload['color'] ?? null);
-        $memoryId = $payload['memory_id'] ?? $resolveParamId('Kapasitas Memori', $payload['memory'] ?? null);
-        $licenseId = $payload['license_id'] ?? $resolveParamId('Tipe Lisensi', $payload['license'] ?? null);
+        // Extract memory from unit name if not explicitly provided
+        $memoryVal = $payload['memory'] ?? null;
+        if (!$memoryVal && preg_match('/(64\s*GB|128\s*GB|256\s*GB|512\s*GB|1\s*TB|8GB\/\d+GB|12GB\/\d+GB)/i', $name, $matches)) {
+            $memoryVal = str_replace(' ', '', strtoupper($matches[1]));
+        }
+
+        // Extract brand from unit name if not explicitly provided
+        $brandVal = $payload['brand'] ?? null;
+        if (!$brandVal) {
+            if ($category === 'iphone' || stripos($name, 'iphone') !== false) {
+                $brandVal = 'Apple';
+            } elseif (stripos($name, 'samsung') !== false) {
+                $brandVal = 'Samsung';
+            } elseif (stripos($name, 'xiaomi') !== false || stripos($name, 'redmi') !== false || stripos($name, 'poco') !== false) {
+                $brandVal = 'Xiaomi';
+            } elseif (stripos($name, 'oppo') !== false) {
+                $brandVal = 'Oppo';
+            } elseif (stripos($name, 'realme') !== false) {
+                $brandVal = 'Realme';
+            }
+        }
+
+        // Extract license if not provided
+        $licenseVal = $payload['license'] ?? null;
+        if (!$licenseVal) {
+            if (stripos($name, 'ibox') !== false) {
+                $licenseVal = 'iBox (Resmi)';
+            } elseif (stripos($name, 'inter') !== false) {
+                $licenseVal = 'Inter (Sinyal Off)';
+            } elseif (stripos($name, 'bea cukai') !== false) {
+                $licenseVal = 'Bea Cukai (Sinyal On)';
+            } else {
+                $licenseVal = ($category === 'iphone') ? 'iBox (Resmi)' : 'Android';
+            }
+        }
+
+        // Extract color if not provided
+        $colorVal = $payload['color'] ?? null;
+        if (!$colorVal) {
+            $commonColors = ['Midnight', 'Space Gray', 'Sierra Blue', 'Titanium Natural', 'Phantom Black', 'White', 'Black', 'Blue', 'Pink', 'Purple', 'Gold', 'Silver', 'Green', 'Red', 'Yellow'];
+            foreach ($commonColors as $c) {
+                if (stripos($name, $c) !== false) {
+                    $colorVal = $c;
+                    break;
+                }
+            }
+            if (!$colorVal) {
+                $colorVal = 'Midnight';
+            }
+        }
+
+        $brandId = $payload['brand_id'] ?? $resolveParamId('Brand', $brandVal);
+        $colorId = $payload['color_id'] ?? $resolveParamId('Warna', $colorVal);
+        $memoryId = $payload['memory_id'] ?? $resolveParamId('Kapasitas Memori', $memoryVal);
+        $licenseId = $payload['license_id'] ?? $resolveParamId('Tipe Lisensi', $licenseVal);
 
         // Generate unique Serial Number & IMEI if missing
         $serialNumber = trim($payload['serial_number'] ?? '');
@@ -224,7 +275,13 @@ class AiActionService
         $sellPrice = isset($payload['sell_price']) ? (float)$payload['sell_price'] : 0;
         $sellPriceReseller = isset($payload['sell_price_reseller']) ? (float)$payload['sell_price_reseller'] : null;
         $warrantyDays = isset($payload['warranty_duration_days']) ? (int)$payload['warranty_duration_days'] : 30;
-        $supplier = $payload['supplier'] ?? 'AI Input';
+        
+        // Supplier fallback: ensure realistic distributor partner instead of empty or generic string
+        $supplier = trim($payload['supplier'] ?? '');
+        if (empty($supplier) || $supplier === 'AI Input') {
+            $supplier = 'Distributor Utama Jakarta';
+        }
+
         $status = $payload['status'] ?? 'available';
         $aiCreatorTag = ($user->email ?? $user->name) . ' (AI)';
 
