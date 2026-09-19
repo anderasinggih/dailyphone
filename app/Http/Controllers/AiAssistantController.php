@@ -162,6 +162,10 @@ class AiAssistantController extends Controller
 
             // 4. Save AI reply to database in this session
             if (!empty($result['reply'])) {
+                // Persist any training memos the AI wrote, then hide the raw block
+                $this->persistTrainingMemos($result['reply'], $user);
+                $result['reply'] = $this->stripTrainingMemos($result['reply']);
+
                 $hasProposal = str_contains($result['reply'], '```action_proposal') || str_contains($result['reply'], '```json' . "\n" . '{' . "\n" . '  "action":');
                 $aiChat = \App\Models\AiChat::create([
                     'user_id' => $user->id,
@@ -236,6 +240,97 @@ class AiAssistantController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Chat session deleted successfully.'
+        ]);
+    }
+
+    /**
+     * Lightweight AI Deal Summary for the checkout modal.
+     * Runs deterministic integrity/anomaly checks server-side and asks Gemini
+     * for upsell suggestions. NEVER includes or returns HPP/margin data.
+     */
+    public function checkoutSummary(Request $request): JsonResponse
+    {
+        $request->validate([
+            'stock_id' => 'required|integer|exists:stocks,id',
+            'price' => 'nullable|numeric|min:0',
+            'buyer_phone' => 'nullable|string|max:30',
+        ]);
+
+        $stock = \App\Models\Stock::with(['brand', 'color', 'memory', 'license', 'store'])
+            ->findOrFail($request->input('stock_id'));
+        $price = (float)$request->input('price', $stock->sell_price);
+
+        $checks = [];
+
+        // 1. IMEI integrity
+        $imei = (string)($stock->imei_1 ?? '');
+        if ($imei === '') {
+            $checks[] = ['type' => 'info', 'label' => 'IMEI', 'detail' => 'IMEI belum dicatat. Lengkapi untuk garansi & registrasi Bea Cukai.'];
+        } elseif (preg_match('/^\d{15}$/', $imei)) {
+            $checks[] = ['type' => 'ok', 'label' => 'IMEI', 'detail' => 'IMEI valid (15 digit).'];
+        } else {
+            $checks[] = ['type' => 'warn', 'label' => 'IMEI', 'detail' => "Format IMEI tidak standar 15 digit ('{$imei}'). Periksa untuk keperluan garansi & Bea Cukai."];
+        }
+
+        // 2. Serial number
+        $serial = (string)($stock->serial_number ?? '');
+        $checks[] = $serial === ''
+            ? ['type' => 'info', 'label' => 'Serial', 'detail' => 'Serial number belum dicatat.']
+            : ['type' => 'ok', 'label' => 'Serial', 'detail' => "Serial: {$serial}"];
+
+        // 3. Repeat buyer (last 9 digits, formatting-agnostic)
+        $phoneDigits = preg_replace('/\D/', '', $request->input('buyer_phone') ?? '');
+        if ($phoneDigits !== '') {
+            $last9 = substr($phoneDigits, -9);
+            $priorCount = \App\Models\Sale::where('status', 'completed')
+                ->whereHas('buyer', function ($q) use ($last9) {
+                    $q->whereRaw('REPLACE(phone, "-", "") LIKE "%' . $last9 . '"');
+                })
+                ->count();
+
+            $checks[] = $priorCount > 0
+                ? ['type' => 'warn', 'label' => 'Repeat Buyer', 'detail' => "Nomor ini tercatat {$priorCount} transaksi sebelumnya. Cek nama & riwayat pelanggan (flag/loyalty)."]
+                : ['type' => 'ok', 'label' => 'Customer', 'detail' => 'Nomor baru, belum ada riwayat transaksi.'];
+        }
+
+        // 4. Price anomaly vs same-model 90-day average sell price
+        $modelIds = \App\Models\Stock::where('name', $stock->name)->pluck('id');
+        $avgPrice = null;
+        if ($modelIds->isNotEmpty()) {
+            $avgPrice = \App\Models\SaleItem::whereIn('stock_id', $modelIds)
+                ->whereHas('sale', function ($q) {
+                    $q->where('status', 'completed')->where('created_at', '>=', now()->subDays(90));
+                })
+                ->where('actual_sell_price', '>', 0)
+                ->avg('actual_sell_price');
+        }
+
+        if ($avgPrice) {
+            $pct = round(($price / (float)$avgPrice) * 100);
+            $fmtAvg = number_format($avgPrice, 0, ',', '.');
+            $fmtPrice = number_format($price, 0, ',', '.');
+            $checks[] = ($pct < 80 || $pct > 130)
+                ? ['type' => 'warn', 'label' => 'Price Check', 'detail' => "Deal Rp {$fmtPrice} ≈ {$pct}% dari rata-rata model ini (Rp {$fmtAvg}). Pastikan deal memang disengaja."]
+                : ['type' => 'ok', 'label' => 'Price Check', 'detail' => "Deal dalam rentang normal model ini (avg Rp {$fmtAvg})."];
+        } else {
+            $checks[] = ['type' => 'info', 'label' => 'Price Check', 'detail' => 'Belum ada data harga rata-rata untuk model ini.'];
+        }
+
+        // 5. AI upsell suggestions (marketing only, HPP never sent)
+        $upsell = null;
+        if ($this->geminiService->isEnabled() && $this->geminiService->isConfigured()) {
+            try {
+                $upsell = $this->geminiService->generateCheckoutUpsell($stock, $price);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Checkout upsell error: ' . $e->getMessage());
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'ai_enabled' => $upsell !== null,
+            'checks' => $checks,
+            'upsell' => $upsell,
         ]);
     }
 
@@ -387,5 +482,67 @@ class AiAssistantController extends Controller
         }
 
         return response()->json(['success' => true, 'status' => $status]);
+    }
+
+    /**
+     * Extract and persist AI-written training memos from a reply.
+     * Kind 'rule' is preserved only when the author is superadmin;
+     * everyone else's notes are stored as 'knowledge'.
+     */
+    protected function persistTrainingMemos(string $reply, $user): int
+    {
+        preg_match_all('/```ai_memo\s*([\s\S]*?)```/', $reply, $matches);
+
+        if (empty($matches[1])) {
+            return 0;
+        }
+
+        $saved = 0;
+        foreach ($matches[1] as $raw) {
+            $decoded = json_decode(trim($raw), true);
+            $content = trim((string)($decoded['content'] ?? ''));
+            if (!is_array($decoded) || $content === '') {
+                continue;
+            }
+
+            $kind = strtolower((string)($decoded['kind'] ?? 'knowledge'));
+            if ($kind !== 'rule') {
+                $kind = 'knowledge';
+            }
+            if ($kind === 'rule' && $user->role !== 'superadmin') {
+                $kind = 'knowledge';
+            }
+
+            $hash = md5($content);
+            $exists = \App\Models\AiTrainingNote::where('content_hash', $hash)->exists();
+            if ($exists) {
+                continue;
+            }
+
+            try {
+                \App\Models\AiTrainingNote::create([
+                    'user_id' => $user->id,
+                    'author_name' => $user->name,
+                    'author_role' => $user->role,
+                    'content' => $content,
+                    'content_hash' => $hash,
+                    'kind' => $kind,
+                    'is_active' => true,
+                ]);
+                $saved++;
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to persist AI training memo: ' . $e->getMessage());
+            }
+        }
+
+        return $saved;
+    }
+
+    /**
+     * Remove raw ```ai_memo blocks from a reply before it is shown to the user.
+     */
+    protected function stripTrainingMemos(string $reply): string
+    {
+        return trim(preg_replace('/```ai_memo\s*[\s\S]*?```/', '', $reply));
     }
 }

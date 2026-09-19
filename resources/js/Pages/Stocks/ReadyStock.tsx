@@ -1,6 +1,7 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, useForm, usePage } from '@inertiajs/react';
 import { useState, useRef, useEffect } from 'react';
+import axios from 'axios';
 import {
     Search,
     Smartphone,
@@ -22,7 +23,11 @@ import {
     MessageCircle,
     Send,
     ExternalLink,
-    Filter
+    Filter,
+    Sparkles,
+    RefreshCw,
+    ShieldCheck,
+    AlertTriangle
 } from 'lucide-react';
 
 interface ParameterValue {
@@ -142,6 +147,13 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
 
     const [successData, setSuccessData] = useState<{ invoiceNumber: string; buyerPhone: string; buyerName: string; total: number } | null>(null);
 
+    const [aiSummary, setAiSummary] = useState<{
+        checks: Array<{ type: 'ok' | 'warn' | 'info'; label: string; detail: string }>;
+        upsell: string | null;
+        ai_enabled: boolean;
+    } | null>(null);
+    const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+
     const imeiInputRef = useRef<HTMLInputElement>(null);
 
     const brandOptions = parameters.find(p => ['brand', 'merek'].includes(p.name.toLowerCase()))?.values || [];
@@ -234,6 +246,36 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
         });
         setIsCheckoutOpen(true);
     };
+
+    const fetchCheckoutSummary = async () => {
+        if (!selectedStock) return;
+
+        const price = Number(checkoutForm.data.items[0]?.actual_sell_price) || 0;
+        setAiSummaryLoading(true);
+        try {
+            const res = await axios.post(route('assistant.checkout-summary'), {
+                stock_id: selectedStock.id,
+                price,
+                buyer_phone: checkoutForm.data.buyer_phone,
+            });
+            setAiSummary(res.data);
+        } catch {
+            setAiSummary(null);
+        } finally {
+            setAiSummaryLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (!isCheckoutOpen || !selectedStock) {
+            setAiSummary(null);
+            return;
+        }
+        setAiSummary(null);
+        const t = setTimeout(fetchCheckoutSummary, 500);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isCheckoutOpen, selectedStock?.id, checkoutForm.data.buyer_phone]);
 
     useEffect(() => {
         let buffer = '';
@@ -1161,6 +1203,78 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                         {formatCurrency(calculateTotal())}
                                     </span>
                                 </div>
+                            </div>
+
+                            {}
+
+                            {/* AI Deal Summary (upsell + integrity + anomaly — no margin/profit shown) */}
+                            <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/5 to-transparent p-4 space-y-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <h5 className="text-xs font-bold text-primary flex items-center gap-1.5 uppercase tracking-wider">
+                                        <Sparkles className="h-3.5 w-3.5" /> AI Deal Summary
+                                    </h5>
+                                    <button
+                                        type="button"
+                                        onClick={fetchCheckoutSummary}
+                                        disabled={aiSummaryLoading}
+                                        className="text-[11px] font-semibold text-primary hover:underline flex items-center gap-1"
+                                    >
+                                        <RefreshCw className={`h-3 w-3 ${aiSummaryLoading ? 'animate-spin' : ''}`} /> Refresh
+                                    </button>
+                                </div>
+
+                                {aiSummaryLoading && !aiSummary ? (
+                                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                                        <span className="animate-pulse h-2 w-2 rounded-full bg-primary" />
+                                        Analyzing unit, IMEI, customer history & price...
+                                    </div>
+                                ) : aiSummary ? (
+                                    <div className="space-y-2">
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {aiSummary.checks.map(c => (
+                                                <span
+                                                    key={c.label}
+                                                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold border ${
+                                                        c.type === 'ok'
+                                                            ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                                                            : c.type === 'warn'
+                                                                ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+                                                                : 'bg-primary/10 text-primary border-primary/20'
+                                                    }`}
+                                                >
+                                                    {c.type === 'ok'
+                                                        ? <ShieldCheck className="h-3 w-3" />
+                                                        : c.type === 'warn'
+                                                            ? <AlertTriangle className="h-3 w-3" />
+                                                            : <Info className="h-3 w-3" />}
+                                                    {c.label}
+                                                </span>
+                                            ))}
+                                        </div>
+
+                                        {aiSummary.checks.some(c => c.type === 'warn') && (
+                                            <div className="space-y-1">
+                                                {aiSummary.checks.filter(c => c.type === 'warn').map(c => (
+                                                    <p key={c.label} className="text-[11px] text-amber-600 dark:text-amber-400 flex gap-1.5">
+                                                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />
+                                                        <span><b>{c.label}:</b> {c.detail}</span>
+                                                    </p>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {aiSummary.upsell ? (
+                                            <div className="border-t border-border/40 pt-2">
+                                                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Suggested add-ons</p>
+                                                <div className="text-xs text-foreground whitespace-pre-line leading-relaxed">{aiSummary.upsell}</div>
+                                            </div>
+                                        ) : (
+                                            aiSummary.checks.filter(c => c.type === 'info').length > 0 && (
+                                                <p className="text-[10px] text-muted-foreground/80">AI suggestions nonaktif — menampilkan cek otomatis saja.</p>
+                                            )
+                                        )}
+                                    </div>
+                                ) : null}
                             </div>
 
                             {}

@@ -310,6 +310,7 @@ CONTEXT;
         $userRole = $user ? $user->role : 'user';
         $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
         $storeContext = $this->generateStoreContext($user);
+        $trainingNotesStr = $this->generateTrainingNotesContext();
         $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : "";
         $sessionRulesPrompt = !empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n" . $sessionRules . "\n" : "";
 
@@ -499,6 +500,19 @@ CRITICAL: Only emit ```action_proposal when the user role is 'superadmin'. For n
 {$storeContext}
 {$customInst}
 {$sessionRulesPrompt}
+
+PERSISTENT TRAINING MEMORY (AI MENULIS SENDIRI — SANGAT PENTING):
+- Ketika pengguna memberimu instruksi, feedback, koreksi perilaku, atau fakta toko yang layak diingat selamanya (contoh: "tolong kedepannya harus perhatikan memory", "jangan pernah sebut nomor HPP/modal", "diskon maksimal 200 ribu", "warna unit itu wajib diisi"), kamu HARUS mengecek apakah hal itu sudah tercatat di GLOBAL AI TRAINING MEMORY di bawah.
+- Jika belum tercatat, AKHIRI balasanmu dengan blok persis seperti ini (skala kecil, max 2 blok per balasan):
+```ai_memo
+{"kind": "rule", "content": "instruksi singkat, spesifik, 1-2 kalimat"}
+```
+- Gunakan "kind": "rule" HANYA jika pengguna adalah SUPERADMIN (lihat role di ACCESS RULES). Untuk pengguna lain gunakan "kind": "knowledge".
+- Tulis content yang padat & actionable. Jadikan aturan/fakta yang SESUAI dengan arahan pengguna — jangan mencatat hal umum yang sudah ada.
+- Di teks normal balasanmu, konfirmasikan catatan singkat (mis. "📝 Dicatat: ...") supaya pengguna tahu hal itu tersimpan.
+
+GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat):
+{$trainingNotesStr}
 PROMPT;
 
         // Build contents for Gemini API
@@ -563,5 +577,102 @@ PROMPT;
             'success' => false,
             'reply' => "I encountered an error communicating with Gemini: {$lastErrorMsg}"
         ];
+    }
+
+    /**
+     * Load the persistent AI training memory (rules first, then recent notes)
+     * to include in every chat system prompt so the AI "remembers" across
+     * sessions, stores, and users.
+     */
+    public function generateTrainingNotesContext(): string
+    {
+        $notes = \App\Models\AiTrainingNote::where('is_active', true)
+            ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
+            ->orderBy('updated_at', 'desc')
+            ->limit(50)
+            ->get();
+
+        if ($notes->isEmpty()) {
+            return "- (kosong - belum ada catatan pelatihan)";
+        }
+
+        return $notes->map(function ($n) {
+            $tag = $n->kind === 'rule' ? '[RULE]' : '[CATATAN]';
+            $content = mb_strimwidth((string)$n->content, 0, 240, '…');
+            $author = $n->author_name ?? 'System';
+            return "- {$tag} {$content} (oleh: {$author})";
+        })->implode("\n");
+    }
+
+    /**
+     * Generate concise upsell / cross-sell suggestions for a unit being sold.
+     * NEVER receives or mentions profit/HPP/modal — marketing suggestions only,
+     * so staff can use them without exposing store margins.
+     */
+    public function generateCheckoutUpsell(Stock $stock, float $price): ?string
+    {
+        if (!$this->isConfigured()) {
+            return null;
+        }
+
+        $brand = $stock->brand ? $stock->brand->value : '-';
+        $color = $stock->color ? $stock->color->value : '-';
+        $mem = $stock->memory ? $stock->memory->value : '-';
+        $license = $stock->license ? $stock->license->value : '-';
+        $type = $stock->type === 'new' ? 'New' : 'Pre-owned (Second)';
+
+        $prompt = <<<PROMPT
+You are the retail marketing assistant of a gadget store. A customer is buying this unit today:
+- Unit: {$stock->name}
+- Brand: {$brand}
+- Color: {$color}
+- Storage: {$mem}
+- License: {$license}
+- Condition: {$type}
+- Agreed selling price: Rp " . number_format($price, 0, ',', '.') . "
+
+Give a SHORT list (max 4 bullets) of relevant upsell / cross-sell / after-sales suggestions for THIS exact device and condition (e.g. tempered glass, case, charger/power adapter, extended warranty, screen protection, trade-in or loyalty tips).
+
+Rules:
+- Respond in Bahasa Indonesia, concise and professional.
+- ONLY marketing suggestions. NEVER mention profit, margin, HPP, modal, atau biaya beli.
+- Format: plain bullet lines starting with "- ", no headings, no markdown tables.
+PROMPT;
+
+        $payload = [
+            'system_instruction' => [
+                'parts' => [['text' => 'Kamu asisten pemasaran toko gadget. Jawab singkat, profesional, dan dalam Bahasa Indonesia.']]
+            ],
+            'contents' => [
+                ['role' => 'user', 'parts' => [['text' => $prompt]]]
+            ],
+            'generationConfig' => [
+                'temperature' => 0.4,
+                'maxOutputTokens' => 300,
+            ]
+        ];
+
+        $candidateModels = array_unique(array_filter([
+            $this->model,
+            'gemini-3.5-flash-lite',
+            'gemini-2.5-flash',
+            'gemini-flash-latest',
+        ]));
+
+        foreach ($candidateModels as $modelToTry) {
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
+                $response = Http::timeout(12)->post($url, $payload);
+
+                if ($response->successful()) {
+                    $text = trim($response->json('candidates.0.content.parts.0.text', ''));
+                    return $text === '' ? null : $text;
+                }
+            } catch (\Exception $e) {
+                Log::warning("Gemini checkout upsell failed on {$modelToTry}: {$e->getMessage()}");
+            }
+        }
+
+        return null;
     }
 }
