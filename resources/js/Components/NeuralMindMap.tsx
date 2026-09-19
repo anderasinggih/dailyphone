@@ -3,7 +3,7 @@ import {
     ZoomIn,
     ZoomOut,
     Maximize,
-    RotateCcw,
+    RefreshCw,
     Search,
     X,
     Network,
@@ -45,6 +45,7 @@ const RELATION_LABEL: Record<string, string> = {
 interface NeuralMindMapProps {
     nodes: MindMapNode[];
     links: MindMapLink[];
+    onToggleActive?: (node: MindMapNode) => void;
 }
 
 interface Point {
@@ -79,13 +80,17 @@ function nodeWidth(n: MindMapNode | undefined): number {
    Galaxy layout: each connected component becomes a small
    galaxy (hub at the center, memories on depth rings), then
    every galaxy is packed into a larger cosmos.
+   $seed perturbs the deterministic hash so a "rearrange" actually
+   produces a fresh galaxy, not an identical rebuild.
    ───────────────────────────────────────────────────────────── */
-function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<number, Point> {
+function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Record<number, Point> {
     const n = nodes.length;
     const result: Record<number, Point> = {};
     if (n === 0) return result;
 
     const nodeById = new Map(nodes.map(nd => [nd.id, nd]));
+    const jitter = (id: number) => hash1(id + seed * 7919);
+    const ringSpin = seed !== 0 ? (hash1(seed * 13.37) - 0.5) * Math.PI * 2 : 0;
 
     const adj: Record<number, number[]> = {};
     nodes.forEach(nd => (adj[nd.id] = []));
@@ -151,9 +156,9 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<numbe
             const avgW = ring.reduce((s, id) => s + nodeWidth(nodeById.get(id)), 0) / ring.length;
             const ringR = Math.max(base + d * spacing, (ring.length * Math.max(avgW, 130) * 1.18) / (2 * Math.PI));
             ring.forEach((id, i) => {
-                const jx = (hash1(id) - 0.5) * 26;
-                const jy = (hash1(id + 3) - 0.5) * 26;
-                const ang = d * 1.618 + (i * 2 * Math.PI) / ring.length;
+                const jx = (jitter(id) - 0.5) * 26;
+                const jy = (jitter(id + 3) - 0.5) * 26;
+                const ang = d * 1.618 + ringSpin + (i * 2 * Math.PI) / ring.length;
                 pos[id] = { x: Math.cos(ang) * ringR + jx, y: Math.sin(ang) * ringR + jy };
             });
         });
@@ -247,7 +252,7 @@ function loadSavedPositions(): Record<number, Point> | null {
     }
 }
 
-export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
+export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMindMapProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerSize, setContainerSize] = useState({ w: 900, h: 600 });
 
@@ -262,6 +267,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [showLabels, setShowLabels] = useState(true);
     const [layoutSeed, setLayoutSeed] = useState(0);
+    const [rearrangeTick, setRearrangeTick] = useState(0);
     const [savedPos, setSavedPos] = useState<Record<number, Point> | null>(() => loadSavedPositions());
 
     const [drag, setDrag] = useState<{
@@ -286,7 +292,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         return () => ro.disconnect();
     }, []);
 
-    const layout = useMemo(() => computeLayout(nodes, links), [nodes, links, layoutSeed]);
+    const layout = useMemo(() => computeLayout(nodes, links, layoutSeed), [nodes, links, layoutSeed]);
 
     const positions = useMemo<Record<number, Point>>(() => {
         const merged: Record<number, Point> = {};
@@ -383,15 +389,21 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         setView(fit);
     }, [containerSize, nodes.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const resetLayout = () => {
-        if (!confirm('Reset node positions to AI auto-layout?')) return;
+    // Refit the cosmos onto the just-rearranged layout.
+    useEffect(() => {
+        if (rearrangeTick === 0) return;
+        fitToView();
+    }, [rearrangeTick, fitToView]);
+
+    const rearrangeLayout = () => {
         try {
             localStorage.removeItem(STORAGE_KEY);
         } catch {
             // ignore
         }
         setSavedPos(null);
-        setLayoutSeed(s => s + 1);
+        setLayoutSeed(Math.floor(Math.random() * 1_000_000));
+        setRearrangeTick(t => t + 1);
     };
 
     const focusNode = (id: number) => {
@@ -505,6 +517,16 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const selectedNode = selectedId !== null ? nodeById[selectedId] : null;
     const selectedNeighbors = selectedNode ? Array.from(neighbors[selectedNode.id] || []) : [];
 
+    const detailRef = useRef<HTMLDivElement>(null);
+
+    // Bring the below-the-map detail panel into view whenever a node is picked.
+    useEffect(() => {
+        if (selectedId === null) return;
+        requestAnimationFrame(() => {
+            detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+    }, [selectedId]);
+
     // Relation metadata (label/weight/reason) between the selected node and each neighbour.
     const linkInfoTo = useMemo(() => {
         const map: Record<number, MindMapLink> = {};
@@ -517,11 +539,10 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         return map;
     }, [links, selectedId]);
 
-    const detailRef = useRef<HTMLDivElement>(null);
-
     const searching = searchQuery.trim().length > 0;
 
     return (
+        <>
         <div className="relative rounded-2xl border border-border/60 bg-background overflow-hidden select-none apple-card">
             {/* Top-left: compact stats pill + standalone search pill */}
             <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-2 w-64 sm:w-80">
@@ -584,8 +605,8 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                 >
                     <Tag className="h-4 w-4" />
                 </button>
-                <button onClick={resetLayout} title="Reset auto-layout" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
-                    <RotateCcw className="h-4 w-4" />
+                <button onClick={rearrangeLayout} title="Rearrange layout" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
+                    <RefreshCw className="h-4 w-4" />
                 </button>
             </div>
 
@@ -762,101 +783,118 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                     </svg>
                 )}
 
-                {/* Node detail — anchored to the bottom of the map container as a
-                    sheet, so it never covers the graph or the clicked node. */}
-                {selectedNode && (
-                    <div
-                        ref={detailRef}
-                        className="absolute inset-x-3 bottom-3 z-20 rounded-2xl bg-card/95 dark:bg-card/90 backdrop-blur-2xl border border-border/70 shadow-2xl p-4 space-y-3 animate-in slide-in-from-bottom-2 fade-in duration-150"
-                        onPointerDown={e => e.stopPropagation()}
-                        onDoubleClick={e => e.stopPropagation()}
-                    >
-                        <div className="mx-auto h-1 w-10 rounded-full bg-muted-foreground/25" />
-
-                        <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
-                                <span
-                                    className={`inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
-                                        selectedNode.kind === 'rule'
-                                            ? 'bg-primary/10 text-primary border-primary/30'
-                                            : 'bg-muted text-muted-foreground border-border'
-                                    }`}
-                                >
-                                    {selectedNode.kind === 'rule' ? '[RULE]' : '[NOTE]'}
-                                </span>
-                                <h4 className="text-sm font-semibold text-foreground truncate">
-                                    {selectedNode.title}
-                                </h4>
-                            </div>
-                            <button
-                                onClick={() => setSelectedId(null)}
-                                className="p-1 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition shrink-0"
-                                title="Close"
-                            >
-                                <X className="h-4 w-4" />
-                            </button>
-                        </div>
-
-                        <p className="text-xs text-foreground/95 leading-relaxed whitespace-pre-wrap max-h-[38vh] overflow-y-auto border-t border-border/40 pt-2.5">
-                            {selectedNode.content}
-                        </p>
-
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                            <span className="inline-flex items-center gap-1">
-                                <BookOpen className="h-3 w-3" />
-                                {selectedNode.author_name}
-                            </span>
-                            <span className="inline-flex items-center gap-1 capitalize">
-                                {selectedNode.kind === 'rule' && <ShieldCheck className="h-3 w-3 text-primary" />}
-                                {selectedNode.kind === 'rule' ? 'Directive' : 'Knowledge'}
-                            </span>
-                            <span
-                                className={`inline-flex items-center gap-1 ${selectedNode.is_active ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}
-                            >
-                                <Power className="h-3 w-3" />
-                                {selectedNode.is_active ? 'active' : 'paused'}
-                            </span>
-                        </div>
-
-                        {selectedNeighbors.length > 0 && (
-                            <div className="border-t border-border/40 pt-2.5 space-y-2">
-                                <p className="text-[10px] font-bold tracking-wider text-muted-foreground uppercase">
-                                    Synapses ({selectedNeighbors.length})
-                                </p>
-                                <div className="flex flex-wrap gap-1.5">
-                                    {selectedNeighbors.map(nid => {
-                                        const nb = nodeById[nid];
-                                        if (!nb) return null;
-                                        const link = linkInfoTo[nid];
-                                        const relName = link?.relation
-                                            ? RELATION_LABEL[link.relation] ?? link.relation
-                                            : link?.label ?? 'Related';
-                                        const w = link?.weight;
-                                        return (
-                                            <button
-                                                key={nid}
-                                                onClick={() => focusNode(nid)}
-                                                title={link?.reason ?? link?.label ?? relName}
-                                                className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground hover:border-primary/50 hover:text-primary transition"
-                                            >
-                                                {nb.title}
-                                                <span className="ml-1.5 inline-flex items-center gap-1 text-[9px] font-semibold text-primary uppercase">
-                                                    {relName}
-                                                    {w !== null && w !== undefined && (
-                                                        <span className="font-mono text-muted-foreground">
-                                                            {Math.round(w * 100)}%
-                                                        </span>
-                                                    )}
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                )}
+                </div>
             </div>
-        </div>
+
+        {/* Node detail — rendered BELOW the mind-map container, never covering the graph. */}
+        {selectedNode && (
+            <div
+                ref={detailRef}
+                className="rounded-2xl border border-border/60 bg-card apple-card overflow-hidden animate-in slide-in-from-bottom-2 fade-in duration-150"
+            >
+                <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                            className={`inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
+                                selectedNode.kind === 'rule'
+                                    ? 'bg-primary/10 text-primary border-primary/30'
+                                    : 'bg-muted text-muted-foreground border-border'
+                            }`}
+                        >
+                            {selectedNode.kind === 'rule' ? 'RULE' : 'NOTE'}
+                        </span>
+                        <h4 className="text-sm font-semibold text-foreground truncate">
+                            {selectedNode.title}
+                        </h4>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                            onClick={() => onToggleActive?.(selectedNode)}
+                            className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
+                                selectedNode.is_active
+                                    ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
+                                    : 'bg-primary/10 text-primary hover:bg-primary/20'
+                            }`}
+                            title={selectedNode.is_active ? 'Pause this memory' : 'Activate this memory'}
+                        >
+                            <Power className="h-3 w-3" />
+                            {selectedNode.is_active ? 'Pause' : 'Activate'}
+                        </button>
+                        <button
+                            onClick={() => setSelectedId(null)}
+                            className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition"
+                            title="Close"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                    </div>
+                </div>
+
+                <p className="px-4 py-3 text-xs text-foreground/95 leading-relaxed whitespace-pre-wrap max-h-[38vh] overflow-y-auto bg-background/40 border-y border-border/40">
+                    {selectedNode.content}
+                </p>
+
+                <div className="px-4 py-3 space-y-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                            <BookOpen className="h-3 w-3" />
+                            {selectedNode.author_name || 'System'}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                            {selectedNode.kind === 'rule' && <ShieldCheck className="h-3 w-3 text-primary" />}
+                            {selectedNode.kind === 'rule' ? 'Directive' : 'Knowledge'}
+                        </span>
+                        <span
+                            className={`inline-flex items-center gap-1 ${
+                                selectedNode.is_active ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'
+                            }`}
+                        >
+                            <span
+                                className={`h-1.5 w-1.5 rounded-full ${selectedNode.is_active ? 'bg-emerald-500' : 'bg-destructive'}`}
+                            />
+                            {selectedNode.is_active ? 'Active' : 'Paused'}
+                        </span>
+                    </div>
+
+                    {selectedNeighbors.length > 0 && (
+                        <div className="border-t border-border/40 pt-3 space-y-2">
+                            <p className="text-[10px] font-bold tracking-wider text-muted-foreground uppercase">
+                                Synapses ({selectedNeighbors.length})
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                                {selectedNeighbors.map(nid => {
+                                    const nb = nodeById[nid];
+                                    if (!nb) return null;
+                                    const link = linkInfoTo[nid];
+                                    const relName = link?.relation
+                                        ? RELATION_LABEL[link.relation] ?? link.relation
+                                        : link?.label ?? 'Related';
+                                    const w = link?.weight;
+                                    return (
+                                        <button
+                                            key={nid}
+                                            onClick={() => focusNode(nid)}
+                                            title={link?.reason ?? link?.label ?? relName}
+                                            className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground hover:border-primary/50 hover:text-primary transition"
+                                        >
+                                            {nb.title}
+                                            <span className="ml-1.5 inline-flex items-center gap-1 text-[9px] font-semibold text-primary uppercase">
+                                                {relName}
+                                                {w !== null && w !== undefined && (
+                                                    <span className="font-mono text-muted-foreground">
+                                                        {Math.round(w * 100)}%
+                                                    </span>
+                                                )}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+        </>
     );
 }

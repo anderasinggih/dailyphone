@@ -261,14 +261,24 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                 <div>
                                     <h3 className="h3 text-foreground">Neuron Mind Map</h3>
                                     <p className="text2 mt-0.5">
-                                        Click any node to open its full memory and typed connections beneath it. Drag to arrange, scroll to zoom.
+                                        Click a node to open its memory below the map. Hit the refresh button to auto-arrange the galaxy, or pause any node when you want the AI to ignore it.
                                     </p>
                                 </div>
                                 <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">
                                     {safeGraph.links.length} synapses
                                 </span>
                             </div>
-                            <NeuralMindMap nodes={safeGraph.nodes} links={safeGraph.links} />
+                            <NeuralMindMap
+                                nodes={safeGraph.nodes}
+                                links={safeGraph.links}
+                                onToggleActive={node =>
+                                    router.post(
+                                        route('settings.ai.training-notes.toggle', node.id),
+                                        {},
+                                        { preserveScroll: true },
+                                    )
+                                }
+                            />
                             {safeNotes.length === 0 && (
                                 <div className="rounded-xl border border-dashed border-border/80 px-4 py-3 text-xs text-muted-foreground text-center">
                                     The map grows by itself — every time the AI records something new in a chat, a node appears
