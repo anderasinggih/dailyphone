@@ -941,13 +941,7 @@ export default function Assistant({
 
                                     {/* Neurons the AI is tapping into — shown live while thinking */}
                                     {accessedNetwork.nodes.length > 0 && (
-                                        <div className="pl-2 pt-1 space-y-1.5">
-                                            <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-muted-foreground/70 uppercase">
-                                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                                                Accessing neurons ({accessedNetwork.nodes.length})
-                                            </div>
-                                            <NeuronFiringMap nodes={accessedNetwork.nodes} edges={accessedNetwork.edges} />
-                                        </div>
+                                        <NeuronFiringMap nodes={accessedNetwork.nodes} edges={accessedNetwork.edges} />
                                     )}
                                 </div>
                             )}

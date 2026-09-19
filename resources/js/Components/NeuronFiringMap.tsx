@@ -16,26 +16,33 @@ interface Point {
     y: number;
 }
 
-interface Curve {
+interface Trace {
     d: string;
     reverse: string;
-    control: Point;
+    c1: Point;
+    c2: Point;
     length: number;
 }
 
 const GOLDEN = 2.39996323;
 
-// Cap the displayed network so the map stays airy instead of crowded.
+// Keep the circuit airy: a compact slice of the accessed network is drawn.
 const MAX_NODES = 9;
 
-// Ignition timing is intentionally non-linear: fast in the middle of the run,
-// easing to a slower crawl at either end — like a pulse that accelerates.
-const STEP_MIN = 220;
+// Ignition pacing is eased (fast mid-run, crawling at the edges) so the energy
+// moves like a living pulse instead of a metronome.
+const STEP_MIN = 260;
 const STEP_MAX = 620;
-const LOOP_PAUSE = 1500;
+const LOOP_PAUSE = 1600;
 
-const SVG_GLOW = 'url(#dp-glow)';
-const GLOW_WIDTH = '2';
+const GLOW_BLUR = '1.4';
+const GLOW_FILTER = 'url(#dp-glow)';
+
+const ACTIVE_BLUE = 'rgba(0,122,255,0.9)';
+const CABLE_DIM = 'rgba(0,122,255,0.16)';
+const CABLE_ONE = 'rgba(0,122,255,0.4)';
+const CABLE_FULL = 'rgba(0,122,255,0.75)';
+const NODE_IDLE = 'rgba(134,146,168,0.4)';
 
 function hashSeed(id: number, salt: number): number {
     const x = Math.sin(id * 127.1 + salt * 311.7) * 43758.5453;
@@ -60,34 +67,43 @@ function computePositions(nodes: NeuronFiringNode[]): Record<number, Point> {
     return positions;
 }
 
-function curveFrom(a: Point, b: Point, salt: number): { control: Point; d: string } {
+// Swooping S-curves between neurons — circuit traces rather than straight
+// wires. Each connection sweeps to a distinct side so the web stays legible.
+function traceFrom(a: Point, b: Point, salt: number): { c1: Point; c2: Point; d: string } {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const off = (salt % 2 === 0 ? 1 : -1) * 5;
-    const midX = (a.x + b.x) / 2;
-    const midY = (a.y + b.y) / 2;
-    const control = {
-        x: midX - (dy / len) * off,
-        y: midY + (dx / len) * off,
+    const dist = Math.hypot(dx, dy) || 1;
+    const ux = dx / dist;
+    const uy = dy / dist;
+    const amp = Math.min(9, dist * 0.38);
+    const s1 = salt % 2 === 0 ? 1 : -1;
+    const s2 = -s1;
+    const push = dist * 0.12;
+    const c1 = {
+        x: a.x + (-uy) * amp * s1 + ux * push,
+        y: a.y + ux * amp * s1 + uy * push,
     };
-    const d = `M ${a.x} ${a.y} Q ${control.x} ${control.y} ${b.x} ${b.y}`;
-    return { control, d };
+    const c2 = {
+        x: b.x + (-uy) * amp * s2 - ux * push,
+        y: b.y + ux * amp * s2 - uy * push,
+    };
+    const d = `M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y} ${b.x} ${b.y}`;
+    return { c1, c2, d };
 }
 
-function quadPoint(a: Point, c: Point, b: Point, t: number): Point {
+function cubicPoint(a: Point, c1: Point, c2: Point, b: Point, t: number): Point {
     const mt = 1 - t;
     return {
-        x: mt * mt * a.x + 2 * mt * t * c.x + t * t * b.x,
-        y: mt * mt * a.y + 2 * mt * t * c.y + t * t * b.y,
+        x: mt * mt * mt * a.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * b.x,
+        y: mt * mt * mt * a.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * b.y,
     };
 }
 
-function measureLength(a: Point, c: Point, b: Point, samples = 48): number {
-    let prev = quadPoint(a, c, b, 0);
+function measureLength(a: Point, c1: Point, c2: Point, b: Point, samples = 56): number {
+    let prev = cubicPoint(a, c1, c2, b, 0);
     let total = 0;
     for (let i = 1; i <= samples; i++) {
-        const next = quadPoint(a, c, b, i / samples);
+        const next = cubicPoint(a, c1, c2, b, i / samples);
         total += Math.hypot(next.x - prev.x, next.y - prev.y);
         prev = next;
     }
@@ -95,7 +111,7 @@ function measureLength(a: Point, c: Point, b: Point, samples = 48): number {
 }
 
 // Breadth-first traversal along real synapses, so the ignition visibly
-// spreads from neuron to neuron instead of firing in arbitrary order.
+// hops from neuron to neuron instead of firing in arbitrary order.
 function activationOrder(nodes: NeuronFiringNode[], edges: NeuronFiringEdge[]): number[] {
     if (nodes.length === 0) return [];
 
@@ -133,8 +149,6 @@ function activationOrder(nodes: NeuronFiringNode[], edges: NeuronFiringEdge[]): 
 }
 
 export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringNode[]; edges: NeuronFiringEdge[] }) {
-    // Only a compact slice of the accessed network is drawn so the animation
-    // stays a tasteful murmur rather than a wall of dots.
     const shownNodes = useMemo(() => nodes.slice(0, MAX_NODES), [nodes]);
     const shownIds = useMemo(() => new Set(shownNodes.map(n => n.id)), [shownNodes]);
     const shownEdges = useMemo(
@@ -146,19 +160,20 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
     const order = useMemo(() => activationOrder(shownNodes, shownEdges), [shownNodes, shownEdges]);
     const orderKey = order.join(',');
 
-    const curves = useMemo(() => {
-        const map: Record<string, Curve> = {};
+    const traces = useMemo(() => {
+        const map: Record<string, Trace> = {};
         shownEdges.forEach((edge, idx) => {
             const source = positions[edge.source];
             const target = positions[edge.target];
             if (!source || !target) return;
-            const { control, d } = curveFrom(source, target, idx);
-            const reverse = `M ${target.x} ${target.y} Q ${control.x} ${control.y} ${source.x} ${source.y}`;
+            const { c1, c2, d } = traceFrom(source, target, idx);
+            const reverse = `M ${target.x} ${target.y} C ${c2.x} ${c2.y}, ${c1.x} ${c1.y} ${source.x} ${source.y}`;
             map[`${edge.source}-${edge.target}`] = {
                 d,
                 reverse,
-                control,
-                length: measureLength(source, control, target),
+                c1,
+                c2,
+                length: measureLength(source, c1, c2, target),
             };
         });
         return map;
@@ -167,8 +182,7 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
     const [frame, setFrame] = useState({ lit: 0, current: null as number | null, wipe: 0 });
 
     // One requestAnimationFrame loop drives the whole ignition: step timing is
-    // eased (fast mid-run, slow at the ends) and each glow-wipe travels along
-    // its cable with easeInOut interpolation instead of a constant speed.
+    // eased and each energy pulse travels along its trace with interpolation.
     useEffect(() => {
         if (!order.length) return;
 
@@ -210,19 +224,19 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
 
     if (shownNodes.length === 0) return null;
 
-    const dotRadius = shownNodes.length > 6 ? 2 : 2.3;
+    const dotRadius = shownNodes.length > 6 ? 1.6 : 1.9;
     const litSet = new Set(order.slice(0, frame.lit));
     const wipeActive = frame.current !== null && frame.wipe > 0 && frame.wipe < 1;
-    const firingEdges = wipeActive
-        ? shownEdges.filter(e => e.source === frame.current || e.target === frame.current)
-        : [];
+    const firingEdges = new Set(
+        wipeActive ? shownEdges.filter(e => e.source === frame.current || e.target === frame.current) : []
+    );
 
     return (
         <div className="w-full max-w-[190px]">
             <svg viewBox="-52 -52 104 104" className="block w-full" style={{ overflow: 'visible' }}>
                 <defs>
                     <filter id="dp-glow" x="-80%" y="-80%" width="260%" height="260%">
-                        <feGaussianBlur stdDeviation={GLOW_WIDTH} result="blur" />
+                        <feGaussianBlur stdDeviation={GLOW_BLUR} result="blur" />
                         <feMerge>
                             <feMergeNode in="blur" />
                             <feMergeNode in="SourceGraphic" />
@@ -230,57 +244,60 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                     </filter>
                 </defs>
 
-                {/* Cables: thin, quiet, and always blue — never white. */}
+                {/* Traces: whisper-thin blue circuit lines; they charge up as
+                    their endpoints light, never white */}
                 {shownEdges.map((edge, idx) => {
-                    const curve = curves[`${edge.source}-${edge.target}`];
-                    if (!curve) return null;
+                    const trace = traces[`${edge.source}-${edge.target}`];
+                    if (!trace) return null;
                     const sourceLit = litSet.has(edge.source);
                     const targetLit = litSet.has(edge.target);
-                    const lit = Number(sourceLit) + Number(targetLit);
-                    const firing = firingEdges.includes(edge);
+                    const charged = Number(sourceLit) + Number(targetLit);
+                    const firing = firingEdges.has(edge) && wipeActive;
                     const fromSource = frame.current === edge.source;
 
-                    const grown = wipeActive && firing ? Math.max(0, frame.wipe * curve.length) : 0;
+                    const grown = firing ? Math.max(0, frame.wipe * trace.length) : 0;
 
                     return (
                         <g key={`${edge.source}-${edge.target}`}>
                             <path
-                                d={curve.d}
+                                d={trace.d}
                                 fill="none"
-                                stroke={lit > 0 ? 'rgba(0,122,255,0.75)' : 'rgba(0,122,255,0.25)'}
-                                strokeWidth={lit > 0 ? 1 : 0.7}
+                                stroke={charged === 2 ? CABLE_FULL : charged === 1 ? CABLE_ONE : CABLE_DIM}
+                                strokeWidth={charged === 2 ? 0.8 : charged === 1 ? 0.65 : 0.5}
                                 strokeLinecap="round"
-                                opacity={lit > 0 ? 0.9 : 0.6}
+                                opacity={charged === 0 ? 0.75 : 1}
                             />
-                            {/* White glow-wipe growing from the firing neuron outward. */}
+                            {/* White energy pulse racing along the trace. */}
                             {grown > 0 && (
                                 <>
                                     <path
-                                        d={fromSource ? curve.d : curve.reverse}
+                                        d={fromSource ? trace.d : trace.reverse}
                                         fill="none"
                                         stroke="#ffffff"
-                                        strokeWidth={1.4}
+                                        strokeWidth={1}
                                         strokeLinecap="round"
-                                        strokeDasharray={`${grown.toFixed(2)} ${curve.length.toFixed(2)}`}
-                                        filter={SVG_GLOW}
-                                        opacity={0.95}
+                                        strokeDasharray={`${grown.toFixed(2)} ${trace.length.toFixed(2)}`}
+                                        filter={GLOW_FILTER}
+                                        opacity={0.9}
                                     />
                                     <circle
-                                        cx={quadPoint(
+                                        cx={cubicPoint(
                                             fromSource ? positions[edge.source]! : positions[edge.target]!,
-                                            curve.control,
+                                            fromSource ? trace.c1 : trace.c2,
+                                            fromSource ? trace.c2 : trace.c1,
                                             fromSource ? positions[edge.target]! : positions[edge.source]!,
                                             frame.wipe
                                         ).x}
-                                        cy={quadPoint(
+                                        cy={cubicPoint(
                                             fromSource ? positions[edge.source]! : positions[edge.target]!,
-                                            curve.control,
+                                            fromSource ? trace.c1 : trace.c2,
+                                            fromSource ? trace.c2 : trace.c1,
                                             fromSource ? positions[edge.target]! : positions[edge.source]!,
                                             frame.wipe
                                         ).y}
-                                        r={1.9}
+                                        r={1.4}
                                         fill="#ffffff"
-                                        filter={SVG_GLOW}
+                                        filter={GLOW_FILTER}
                                     />
                                 </>
                             )}
@@ -288,7 +305,7 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                     );
                 })}
 
-                {/* Neurons: small dots; the firing one throws a blinding white flash. */}
+                {/* Neurons: tiny dots; the firing one throws a thin white glare. */}
                 {shownNodes.map(node => {
                     const p = positions[node.id];
                     if (!p) return null;
@@ -298,25 +315,22 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                     return (
                         <g key={node.id}>
                             <title>{node.title}</title>
-                            {isFiring && (
-                                <circle
-                                    cx={p.x}
-                                    cy={p.y}
-                                    r={dotRadius * (1 + frame.wipe * 2.6)}
-                                    fill="none"
-                                    stroke="#ffffff"
-                                    strokeWidth={0.9}
-                                    filter={SVG_GLOW}
-                                    opacity={(1 - frame.wipe) * 0.85}
-                                />
-                            )}
                             <circle
                                 cx={p.x}
                                 cy={p.y}
-                                r={isFiring ? dotRadius + 0.5 : dotRadius}
-                                fill={isFiring ? '#ffffff' : lit ? '#007AFF' : 'rgba(134,146,168,0.5)'}
-                                filter={isFiring ? SVG_GLOW : undefined}
-                                opacity={isFiring ? 1 : lit ? 0.95 : 0.55}
+                                r={isFiring ? dotRadius + 0.6 : dotRadius}
+                                fill={isFiring ? '#ffffff' : lit ? ACTIVE_BLUE : NODE_IDLE}
+                                filter={isFiring ? GLOW_FILTER : undefined}
+                                opacity={isFiring ? 1 : lit ? 0.95 : 0.6}
+                            />
+                            <circle
+                                cx={p.x}
+                                cy={p.y}
+                                r={isFiring ? dotRadius + 1.4 : dotRadius * 2}
+                                fill="none"
+                                stroke="#ffffff"
+                                strokeWidth={0.35}
+                                opacity={isFiring ? (1 - frame.wipe) * 0.5 : 0}
                             />
                         </g>
                     );
