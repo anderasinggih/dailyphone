@@ -24,6 +24,7 @@ import {
     CircleDashed,
     Megaphone,
     Reply,
+    CornerUpLeft,
     X,
     Pencil,
     Sliders,
@@ -108,6 +109,8 @@ interface Message {
     role: 'user' | 'assistant';
     content: string;
     action_status?: 'pending' | 'executing' | 'executed' | 'rejected' | null;
+    replyToId?: string | null;
+    replyToRole?: 'user' | 'assistant' | null;
     timestamp: string;
     attachments?: { name: string; kind: string }[];
 }
@@ -286,6 +289,43 @@ function playCompletionChime(soundEnabled: boolean): void {
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    const scrollToMessage = (id: string) => {
+        const el = document.querySelector(`[data-message-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.style.boxShadow = '0 0 0 2.5px rgba(0,122,255,0.55)';
+        el.style.borderRadius = '16px';
+        window.setTimeout(() => {
+            el.style.boxShadow = '';
+            el.style.borderRadius = '';
+        }, 1600);
+    };
+
+    const replySnippet = (content: string) => {
+        const clean = content
+            .replace(/```action_proposal[\s\S]*?```/g, '')
+            .replace(/```ai_memo[\s\S]*?```/g, '')
+            .replace(/```[\s\S]*?```/g, '')
+            .trim();
+        return clean.length > 50 ? clean.slice(0, 50) + '…' : (clean || '(attachment)');
+    };
+
+    const renderReplyChip = (m: Message) => {
+        if (!m.replyToId) return null;
+        return (
+            <button
+                type="button"
+                onClick={() => scrollToMessage(m.replyToId!)}
+                title="Jump to replied message"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted/70 border border-border/50 text-[10.5px] font-medium text-muted-foreground hover:text-primary hover:bg-primary/10 hover:border-primary/30 transition cursor-pointer max-w-[90%]"
+            >
+                <CornerUpLeft className="h-3 w-3 text-primary/70 shrink-0" />
+                <span className="shrink-0">Reply to {m.replyToRole === 'user' ? 'You' : 'AI'}:</span>
+                <span className="truncate max-w-[180px] text-muted-foreground/80">{replySnippet(m.content)}</span>
+            </button>
+        );
     };
 
     // Auto-grow the composer textarea up to ~4 lines (80px @ leading-5)
@@ -467,6 +507,8 @@ function playCompletionChime(soundEnabled: boolean): void {
             id: tempId,
             role: 'user',
             content: rawQuery || '📎 ' + uploaded.map(a => a.original_name).join(', '),
+            replyToId: replyingTo?.id ?? null,
+            replyToRole: replyingTo?.role ?? null,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             attachments: uploaded.map(a => ({ name: a.original_name, kind: a.kind })),
         };
@@ -936,7 +978,8 @@ function playCompletionChime(soundEnabled: boolean): void {
 
                                 if (isUser) {
                                     return (
-                                        <div key={m.id} className="flex flex-col items-end max-w-3xl mx-auto space-y-1">
+                                        <div key={m.id} data-message-id={m.id} className="flex flex-col items-end max-w-3xl mx-auto space-y-1">
+                                            {renderReplyChip(m)}
                                             <div className="max-w-[85%] sm:max-w-[75%] rounded-3xl bg-primary text-primary-foreground px-4 py-2.5 shadow-2xs">
                                                 {m.attachments && m.attachments.length > 0 && (
                                                     <div className="flex flex-wrap gap-1.5 mb-1.5">
@@ -991,7 +1034,8 @@ function playCompletionChime(soundEnabled: boolean): void {
 
                                 // AI Assistant Message: Clean, flat, open ChatGPT-style layout (no bubble, no avatar box, full spacious text)
                                 return (
-                                    <div key={m.id} className="max-w-3xl mx-auto text-foreground">
+                                    <div key={m.id} data-message-id={m.id} className="max-w-3xl mx-auto text-foreground">
+                                        {renderReplyChip(m)}
                                         <div className="space-y-3">
                                             {textContent && (
                                                 <div className="text-[13px] leading-relaxed">
