@@ -201,12 +201,13 @@ class GeminiAssistantService
             ? "No registered customers yet"
             : $recentCustomers->map(fn($c) => "- [ID: {$c->id}] {$c->name} | Phone: {$c->phone} | Address: {$c->address}")->implode("\n");
 
-        // Recently Deleted / Trashed Units (Soft deleted)
-        $trashedStocks = Stock::onlyTrashed()->with(['store'])->orderBy('deleted_at', 'desc')->limit(10)->get();
-        $trashedStockStr = $trashedStocks->isEmpty()
-            ? "None (No recently deleted units in trash)"
-            : $trashedStocks->map(function($t) {
-                $st = $t->store ? $t->store->name : '-';
+        // Recently Deleted / Trashed Units (Soft deleted in Trash Bin)
+        $trashedCount = Stock::onlyTrashed()->count();
+        $trashedStocks = Stock::onlyTrashed()->with(['store'])->orderBy('deleted_at', 'desc')->limit(50)->get();
+        $trashedStockStr = $trashedCount === 0
+            ? "Kosong (0 unit di keranjang sampah)"
+            : "Total {$trashedCount} unit di keranjang sampah (Trash Bin):\n" . $trashedStocks->map(function($t) {
+                $st = $t->store ? $t->store->name : 'PERENG STORE';
                 $imei = $t->imei_1 ? " | IMEI: {$t->imei_1}" : "";
                 $sn = $t->serial_number ? " | SN: {$t->serial_number}" : "";
                 return "- [ID: {$t->id}] {$t->name}{$imei}{$sn} | Branch: {$st} | Deleted at: {$t->deleted_at}";
