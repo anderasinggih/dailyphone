@@ -105,6 +105,16 @@ class GeminiAssistantService
     }
 
     /**
+     * Tool combos (Google Search + function calling in one request, plus tool
+     * context circulation) are a Preview feature supported on Gemini 3 models
+     * only. Image-capable models and older 2.x models keep standard behaviour.
+     */
+    protected function isGemini3Model(string $model): bool
+    {
+        return (bool) preg_match('/^gemini-3/', trim($model));
+    }
+
+    /**
      * Persist a base64 inline image returned by an image-capable model into the
      * ai_generated store and return its download metadata (or null on failure).
      */
@@ -454,25 +464,29 @@ CONTEXT;
         // the plain prompt when disabled or unsupported by the selected model
         // (image-capable Nano Banana models skip tools/grounding).
         //
-        // Gemini refuses to mix `googleSearch` with `functionDeclarations` in a
-        // single request without the Preview-only tool_combo flag, so the two
-        // are mutually exclusive here: function calling wins (it is what keeps
-        // store answers honest), and grounding only applies when tools are off.
+        // On Gemini 3 the two can run TOGETHER via tool combos (Preview): the
+        // model grounds itself in real-time web data first, then calls the
+        // store tools. This needs toolConfig.includeServerSideToolInvocations
+        // and re-sending every part of the model turn verbatim. Older models
+        // keep the old mutually-exclusive rule (function calling wins).
         $useModel = !empty($model) ? $model : $this->model;
         $isImageModel = $this->isImageModel($useModel);
         $toolsEnabled = !$isImageModel && (bool)($settings?->ai_tools_enabled ?? true);
+        $groundingRequested = !$isImageModel && (bool)($settings?->ai_grounding_enabled ?? true);
+        $comboWanted = $toolsEnabled
+            && $groundingRequested
+            && (bool)($settings?->ai_tool_combo ?? true);
+        $comboSupported = $comboWanted && $this->isGemini3Model($useModel);
 
         $toolService = app(\App\Services\AiToolService::class);
         $tools = [];
         if ($toolsEnabled) {
             $tools = $toolService->declarations();
         }
-        $groundingEnabled = !$isImageModel
-            && (bool)($settings?->ai_grounding_enabled ?? true)
-            && $tools === [];
-        if ($groundingEnabled) {
+        if ($groundingRequested && ($tools === [] || $comboSupported)) {
             $tools[] = ['googleSearch' => new \stdClass()];
         }
+        $toolCombo = $comboSupported && $tools !== [];
 
         // Confidence floor (item 13): when the embedding index WAS used and the
         // best semantic match falls below the configured threshold, the model is
@@ -838,6 +852,11 @@ PROMPT;
         if ($tools !== []) {
             $payload['tools'] = $tools;
         }
+        if ($toolCombo) {
+            // Tool context circulation: lets Google Search (server-side) and
+            // custom function calls share context in one request (Preview).
+            $payload['toolConfig'] = ['includeServerSideToolInvocations' => true];
+        }
 
         // The static system preamble is long and stays identical across turns
         // of a session, so modern Gemini models (2.5+) already cache it
@@ -892,49 +911,45 @@ PROMPT;
                 break;
             }
 
-            $modelParts = [];
+            // Replay the full model turn verbatim: with tool combos the API
+            // returns server-side Google Search toolCall/toolResponse parts
+            // next to functionCall parts, and every one of them (keeping ids
+            // and thought signatures) must be echoed for context circulation.
+            $modelParts = $this->echoModelTurnParts($turnResult, $calls);
             $replyParts = [];
             foreach ($calls as $call) {
                 $name = (string)($call['name'] ?? '');
                 $args = is_array($call['args'] ?? null) ? $call['args'] : [];
 
-                // Gemini 3 requires the model's thought_signature to be replayed
-                // on the same functionCall part; echo the part verbatim rather
-                // than rebuilding it so the signature (and any id) survives.
-                $fnPart = $call['part'] ?? null;
-                if (is_array($fnPart) && !empty($fnPart['functionCall'])) {
-                    if (is_array($fnPart['functionCall']['args'] ?? null)) {
-                        $fnPart['functionCall']['args'] = (object)$fnPart['functionCall']['args'];
-                    }
-                    if (empty($fnPart['thoughtSignature']) && !empty($call['thoughtSignature'])) {
-                        $fnPart['thoughtSignature'] = (string)$call['thoughtSignature'];
-                    }
-                    $modelParts[] = $fnPart;
-                } else {
-                    $modelPart = [
-                        'functionCall' => ['name' => $name, 'args' => (object)$args],
-                    ];
-                    if (!empty($call['thoughtSignature'])) {
-                        $modelPart['thoughtSignature'] = (string)$call['thoughtSignature'];
-                    }
-                    $modelParts[] = $modelPart;
-                }
+                // Gemini 3 tags each function call with a stable id that must be
+                // mirrored inside the matching functionResponse part.
+                $callId = (isset($call['part']) && is_array($call['part'])
+                    && isset($call['part']['functionCall']['id']))
+                    ? (string)$call['part']['functionCall']['id'] : '';
 
                 if ($name === 'submit_action_proposal') {
                     if ($proposalArgs === null) {
                         $proposalArgs = $args;
                     }
-                    $replyParts[] = [
+                    $frPart = [
                         'functionResponse' => [
                             'name' => $name,
                             'response' => ['payload' => ['accepted' => true, 'message' => 'Proposal shown to the user for review. Do not repeat it as text or as another call.']],
                         ],
                     ];
+                    if ($callId !== '') {
+                        $frPart['functionResponse']['id'] = $callId;
+                    }
+                    $replyParts[] = $frPart;
                     continue;
                 }
 
                 $toolCallsLog[] = $name;
-                $replyParts[] = $toolService->call($name, $args, $user)['parts'][0];
+                $frPart = $toolService->call($name, $args, $user)['parts'][0];
+                if ($callId !== '' && is_array($frPart['functionResponse'] ?? null)) {
+                    $frPart['functionResponse']['id'] = $callId;
+                }
+                $replyParts[] = $frPart;
             }
 
             $conversation[] = ['role' => 'model', 'parts' => $modelParts];
@@ -1022,14 +1037,16 @@ PROMPT;
                     $raw = null;
                     $images = [];
                     $calls = [];
+                    $modelParts = [];
                     $usage = null;
                     $grounding = null;
-                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding);
+                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding, $modelParts);
 
                     return [
                         'success' => true,
                         'text' => $text,
                         'calls' => $calls,
+                        'modelParts' => $modelParts,
                         'usage' => $usage,
                         'grounding' => $grounding,
                         'images' => $images,
@@ -1088,10 +1105,72 @@ PROMPT;
             'success' => true,
             'text' => $text . $imageMd,
             'calls' => $calls,
+            'modelParts' => array_values((array)$parts),
             'usage' => $response->json('usageMetadata'),
             'grounding' => $response->json('groundingMetadata'),
             'images' => $images,
         ];
+    }
+
+    /**
+     * Replay the assistant's function-calling turn back to the model. When tool
+     * combination is active the API returns server-side toolCall/toolResponse
+     * parts (Google Search) next to functionCall parts; ALL of them must be
+     * echoed verbatim, ids and thought signatures included, or context
+     * circulation breaks. Falls back to reconstructing just the functionCall
+     * parts when no verbatim parts were captured (older turn shape).
+     */
+    protected function echoModelTurnParts(array $turnResult, array $calls): array
+    {
+        $parts = $turnResult['modelParts'] ?? [];
+        if (is_array($parts) && $parts !== []) {
+            $signatureSeen = '';
+            foreach ($parts as $part) {
+                if (!empty($part['thoughtSignature'])) {
+                    $signatureSeen = (string)$part['thoughtSignature'];
+                    break;
+                }
+            }
+            if ($signatureSeen === '') {
+                foreach ($calls as $call) {
+                    if (!empty($call['thoughtSignature'])) {
+                        $signatureSeen = (string)$call['thoughtSignature'];
+                        break;
+                    }
+                }
+            }
+            $out = [];
+            foreach ($parts as $part) {
+                if (isset($part['functionCall']) && is_array($part['functionCall'])
+                    && is_array($part['functionCall']['args'] ?? null)) {
+                    $part['functionCall']['args'] = (object)$part['functionCall']['args'];
+                }
+                if ($signatureSeen !== ''
+                    && isset($part['functionCall'])
+                    && is_array($part['functionCall'])
+                    && empty($part['thoughtSignature'])) {
+                    $part['thoughtSignature'] = $signatureSeen;
+                    $signatureSeen = '';
+                }
+                $out[] = $part;
+            }
+            return array_values($out);
+        }
+
+        $out = [];
+        foreach ($calls as $call) {
+            $part = [
+                'functionCall' => [
+                    'name' => (string)($call['name'] ?? ''),
+                    'args' => (object)($call['args'] ?? []),
+                ],
+            ];
+            if (!empty($call['thoughtSignature'])) {
+                $part['thoughtSignature'] = (string)$call['thoughtSignature'];
+            }
+            $out[] = $part;
+        }
+        return $out;
     }
 
     /**
@@ -1350,7 +1429,7 @@ SYSTEM;
      * accumulators so the function-calling loop and observability logging work
      * on streamed turns exactly like they do on blocking ones.
      */
-    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null, ?array &$calls = null, ?array &$usage = null, ?array &$grounding = null): string
+    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null, ?array &$calls = null, ?array &$usage = null, ?array &$grounding = null, ?array &$modelParts = null): string
     {
         $body = $response->toPsrResponse()->getBody();
 
@@ -1364,13 +1443,16 @@ SYSTEM;
         if ($calls === null) {
             $calls = [];
         }
+        if ($modelParts === null) {
+            $modelParts = [];
+        }
         $runId = date('Ymd_His') . '_' . uniqid();
         $imgIndex = 0;
         // Gemini 3 may stream a thought_signature on its own part (empty text)
         // just before the functionCall part that must carry it on the next turn.
         $pendingSignature = '';
 
-        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$calls, &$usage, &$grounding, &$imgIndex, &$pendingSignature, $runId): void {
+        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$calls, &$usage, &$grounding, &$imgIndex, &$pendingSignature, &$modelParts, $runId): void {
             if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
@@ -1385,6 +1467,10 @@ SYSTEM;
             }
             $delta = '';
             foreach (($json['candidates'][0]['content']['parts'] ?? []) as $part) {
+                // Every part of the model turn is echoed back verbatim on the
+                // next request so tool context circulation (toolCall/toolResponse
+                // for server-side Google Search) and thought signatures survive.
+                $modelParts[] = $part;
                 $partSignature = isset($part['thoughtSignature']) ? (string)$part['thoughtSignature'] : '';
                 if (!empty($part['inlineData']) && is_array($part['inlineData'])) {
                     $m = $this->persistInlineImage($part['inlineData'], $runId, $imgIndex++);

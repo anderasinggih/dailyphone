@@ -92,6 +92,7 @@ class GeneralSettingsController extends Controller
                 'ai_embedding_model' => 'nullable|string',
                 'ai_tools_enabled' => 'nullable|boolean',
                 'ai_grounding_enabled' => 'nullable|boolean',
+                'ai_tool_combo' => 'nullable|boolean',
                 'ai_retrieval_top_k' => 'nullable|integer|min:3|max:80',
                 'ai_retrieval_min_score' => 'nullable|numeric|min:0|max:1',
                 'ai_context_token_budget' => 'nullable|integer|min:1000|max:1000000',
@@ -114,6 +115,8 @@ class GeneralSettingsController extends Controller
                 ? $request->boolean('ai_tools_enabled') : true;
             $data['ai_grounding_enabled'] = $request->has('ai_grounding_enabled')
                 ? $request->boolean('ai_grounding_enabled') : true;
+            $data['ai_tool_combo'] = $request->has('ai_tool_combo')
+                ? $request->boolean('ai_tool_combo') : true;
 
             if ($request->filled('ai_api_key')) {
                 $data['ai_api_key'] = $request->input('ai_api_key');
