@@ -134,22 +134,22 @@ export default function Assistant({
                 ctx.resume();
             }
 
-            // Create Master Gain and Reverb Delay network
+            // Clean master volume
             const masterGain = ctx.createGain();
-            masterGain.gain.setValueAtTime(0.7, ctx.currentTime); // Louder, crisp volume
+            masterGain.gain.setValueAtTime(0.28, ctx.currentTime);
 
-            // Multi-tap feedback delay for rich spatial reverb tail
+            // Gentle spatial reverb delay (soft natural tail without doubling notes)
             const delay = ctx.createDelay();
-            delay.delayTime.setValueAtTime(0.08, ctx.currentTime);
+            delay.delayTime.setValueAtTime(0.12, ctx.currentTime);
 
             const feedback = ctx.createGain();
-            feedback.gain.setValueAtTime(0.42, ctx.currentTime);
+            feedback.gain.setValueAtTime(0.25, ctx.currentTime);
 
             const filter = ctx.createBiquadFilter();
             filter.type = 'lowpass';
-            filter.frequency.setValueAtTime(4500, ctx.currentTime);
+            filter.frequency.setValueAtTime(3200, ctx.currentTime);
 
-            // Reverb Loop: delay -> filter -> feedback -> delay
+            // Delay loop: delay -> filter -> feedback -> delay
             delay.connect(filter);
             filter.connect(feedback);
             feedback.connect(delay);
@@ -162,41 +162,25 @@ export default function Assistant({
                 const osc = ctx.createOscillator();
                 const noteGain = ctx.createGain();
 
-                // Sine with warm overtone harmonic
                 osc.type = 'sine';
                 osc.frequency.setValueAtTime(freq, startTime);
 
-                // Attack and natural bell decay
+                // Smooth bell envelope: quick soft attack, natural exponential decay
                 noteGain.gain.setValueAtTime(0.0001, startTime);
-                noteGain.gain.exponentialRampToValueAtTime(gainVal, startTime + 0.025);
+                noteGain.gain.exponentialRampToValueAtTime(gainVal, startTime + 0.02);
                 noteGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
 
                 osc.connect(noteGain);
                 noteGain.connect(masterGain);
 
-                // Subtle harmonic overtone for depth
-                const harmonic = ctx.createOscillator();
-                const harmGain = ctx.createGain();
-                harmonic.type = 'sine';
-                harmonic.frequency.setValueAtTime(freq * 2, startTime);
-                harmGain.gain.setValueAtTime(0.0001, startTime);
-                harmGain.gain.exponentialRampToValueAtTime(gainVal * 0.28, startTime + 0.02);
-                harmGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration * 0.6);
-
-                harmonic.connect(harmGain);
-                harmGain.connect(masterGain);
-
                 osc.start(startTime);
                 osc.stop(startTime + duration);
-                harmonic.start(startTime);
-                harmonic.stop(startTime + duration * 0.6);
             };
 
             const now = ctx.currentTime;
-            // Apple-style luxurious chime with rich reverb decay (Eb5 -> Bb5 -> Eb6 sparkle)
-            playNote(622.25, now, 0.45, 0.40);         // Eb5
-            playNote(932.33, now + 0.12, 0.75, 0.48);   // Bb5
-            playNote(1244.50, now + 0.22, 0.90, 0.25);  // Eb6 shimmering tail
+            // The original beloved 2-tone chime (Eb5 -> Bb5) with gentle reverb decay
+            playNote(622.25, now, 0.40, 0.35);         // Eb5
+            playNote(932.33, now + 0.11, 0.65, 0.42);   // Bb5
         } catch (e) {
             // Audio context not allowed or unsupported
         }
@@ -830,7 +814,7 @@ export default function Assistant({
                                                     }
                                                 }
                                             } catch {
-                                                console.error('Failed to parse action_proposal JSON:', e);
+                                                // Ignore incomplete JSON stream cut-offs
                                             }
                                         }
                                     }
