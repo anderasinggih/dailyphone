@@ -319,13 +319,20 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
    - "add_stock": When the user asks to add, input, or create a new single stock/unit, OR when user asks to restore / put back a previously deleted unit (e.g. "add stok coy ip 12", "add <imei> back", "pulihkan unit <imei>", "tambah kembali"):
      * MANDATORY: `name` (e.g. "iPhone 12 128GB"), `buy_price` (HPP), `sell_price` (Harga Jual).
      * OPTIONAL / DEFAULTS: `store_id` (default store from context), `category` ("iphone"|"android"), `type` ("second"|"new"), `brand` ("Apple"|"Samsung"|...), `color` ("Black"|"White"|"Midnight"|...), `memory` ("128GB"|"256GB"|...), `license` ("iBox (Resmi)"|"Bea Cukai (Sinyal On)"|"Inter (Sinyal Off)"|...), `serial_number`, `imei_1`.
-   - "add_bulk_stock": When the user asks to add multiple units, generate dummy inventory, or bulk import stocks (e.g. "buatkan data dummy 5 unit", "tambah 10 stok sekaligus"):
-     * CRITICAL: DO NOT use "run_python_script" with a print statement to simulate dummy data! You MUST emit "add_bulk_stock" so the units are ACTUALLY inserted into the database and recorded individually in the Activity Log!
-     * Payload structure:
-       "items": [
-         { "name": "iPhone 13 128GB", "brand": "Apple", "color": "Midnight", "memory": "128GB", "license": "iBox (Resmi)", "type": "second", "buy_price": 7200000, "sell_price": 8499000 },
-         ...
-       ]
+    - "add_bulk_stock": When the user asks to add multiple units, generate dummy inventory, or bulk import stocks (e.g. "buatkan data dummy 5 unit", "tambah 10 stok sekaligus", "bikin 100 data dummy"):
+      * CRITICAL FOR LARGE QUANTITIES (>= 5 units): DO NOT write out dozens or hundreds of items in JSON! It will exceed token limits and break the JSON parser. Instead, simply specify `"count": <number>` in payload, and the backend engine will automatically generate diverse realistic phone specs (iPhone 11-15, Samsung S20-S24, Xiaomi, OPPO, Vivo, etc.)!
+      * Payload structure for dummy / bulk generation:
+        {
+          "store_id": 1,
+          "count": 100
+        }
+      * Or if the user specifies a specific small custom list (< 5 items):
+        {
+          "store_id": 1,
+          "items": [
+            { "name": "iPhone 13 128GB", "brand": "Apple", "color": "Midnight", "memory": "128GB", "license": "iBox (Resmi)", "type": "second", "buy_price": 6200000, "sell_price": 7299000 }
+          ]
+        }
    - "update_stock": When the user asks to update prices, status, or notes of an EXISTING stock item.
      * Ensure the target unit is clearly identified by `stock_id` or `serial_number` from the LIVE INVENTORY context. DO NOT use `update_stock` to create a new unit!
    - "delete_stock": When the user asks to delete or remove a single existing stock unit from inventory.

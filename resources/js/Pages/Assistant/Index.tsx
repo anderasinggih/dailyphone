@@ -739,20 +739,38 @@ export default function Assistant({
                                 let textContent = m.content;
                                 let proposalData: ActionProposalData | null = null;
 
-                                if (!isUser && (m.content.includes('```action_proposal') || m.content.includes('```json\n{\n  "action":') || m.content.includes('```json\n{"action":'))) {
-                                    // Try matching properly closed codeblock first, fallback to unclosed codeblock if still streaming or cut off
+                                if (!isUser && (
+                                    m.content.includes('```action_proposal') ||
+                                    m.content.includes('```json') ||
+                                    m.content.includes('"action":')
+                                )) {
+                                    // Try matching properly closed codeblock first, fallback to unclosed codeblock or raw JSON object
                                     let jsonStr: string | null = null;
                                     let matchedBlock: string | null = null;
 
-                                    const closedMatch = m.content.match(/```(?:action_proposal|json)\s*([\s\S]*?)\s*```/);
+                                    const closedMatch = m.content.match(/```(?:action_proposal|json)?\s*(\{[\s\S]*?\})\s*```/);
                                     if (closedMatch && closedMatch[1]) {
                                         jsonStr = closedMatch[1];
                                         matchedBlock = closedMatch[0];
                                     } else {
-                                        const openMatch = m.content.match(/```(?:action_proposal|json)\s*(\{[\s\S]*)/);
+                                        const openMatch = m.content.match(/```(?:action_proposal|json)?\s*(\{[\s\S]*)/);
                                         if (openMatch && openMatch[1]) {
                                             jsonStr = openMatch[1].trim();
                                             matchedBlock = openMatch[0];
+                                        } else {
+                                            // Handle raw JSON without codeblock
+                                            const rawJsonMatch = m.content.match(/(\{[\s\S]*"action"\s*:\s*"[^"]+"[\s\S]*\})/);
+                                            if (rawJsonMatch && rawJsonMatch[1]) {
+                                                jsonStr = rawJsonMatch[1].trim();
+                                                matchedBlock = rawJsonMatch[0];
+                                            } else {
+                                                // Even if unclosed raw JSON at the end of message
+                                                const unclosedRaw = m.content.match(/(\{[\s\S]*"action"\s*:\s*"[^"]+"[\s\S]*)/);
+                                                if (unclosedRaw && unclosedRaw[1]) {
+                                                    jsonStr = unclosedRaw[1].trim();
+                                                    matchedBlock = unclosedRaw[0];
+                                                }
+                                            }
                                         }
                                     }
 

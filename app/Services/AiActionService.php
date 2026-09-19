@@ -343,6 +343,63 @@ class AiActionService
     protected function executeAddBulkStock(array $payload, User $user): array
     {
         $items = $payload['items'] ?? [];
+        $targetCount = isset($payload['count']) ? max(1, min(500, (int)$payload['count'])) : 0;
+
+        // If targetCount is specified (e.g. 100) or items is empty, generate realistic smartphone items
+        if ($targetCount > 0 && count($items) < $targetCount) {
+            $existingCount = count($items);
+            $needed = $targetCount - $existingCount;
+
+            $dummyCatalogs = [
+                // iPhones
+                ['name' => 'iPhone 15 Pro Max 256GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Natural Titanium', 'memory' => '256GB', 'license' => 'iBox (Resmi)', 'buy_price' => 14500000, 'sell_price' => 16999000],
+                ['name' => 'iPhone 15 Pro Max 512GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Black Titanium', 'memory' => '512GB', 'license' => 'iBox (Resmi)', 'buy_price' => 16000000, 'sell_price' => 18499000],
+                ['name' => 'iPhone 15 Pro 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Blue Titanium', 'memory' => '128GB', 'license' => 'iBox (Resmi)', 'buy_price' => 12500000, 'sell_price' => 14499000],
+                ['name' => 'iPhone 15 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Pink', 'memory' => '128GB', 'license' => 'iBox (Resmi)', 'buy_price' => 8800000, 'sell_price' => 10299000],
+                ['name' => 'iPhone 15 Plus 256GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Black', 'memory' => '256GB', 'license' => 'iBox (Resmi)', 'buy_price' => 10500000, 'sell_price' => 11999000],
+                ['name' => 'iPhone 14 Pro Max 256GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Deep Purple', 'memory' => '256GB', 'license' => 'iBox (Resmi)', 'buy_price' => 11500000, 'sell_price' => 13499000],
+                ['name' => 'iPhone 14 Pro 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Space Black', 'memory' => '128GB', 'license' => 'iBox (Resmi)', 'buy_price' => 9800000, 'sell_price' => 11499000],
+                ['name' => 'iPhone 14 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Starlight', 'memory' => '128GB', 'license' => 'Bea Cukai (Sinyal On)', 'buy_price' => 7200000, 'sell_price' => 8499000],
+                ['name' => 'iPhone 13 Pro Max 256GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Sierra Blue', 'memory' => '256GB', 'license' => 'iBox (Resmi)', 'buy_price' => 9500000, 'sell_price' => 10999000],
+                ['name' => 'iPhone 13 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Midnight', 'memory' => '128GB', 'license' => 'iBox (Resmi)', 'buy_price' => 6200000, 'sell_price' => 7299000],
+                ['name' => 'iPhone 12 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'Blue', 'memory' => '128GB', 'license' => 'Inter (Sinyal Off)', 'buy_price' => 4500000, 'sell_price' => 5499000],
+                ['name' => 'iPhone 11 128GB', 'brand' => 'Apple', 'category' => 'iphone', 'type' => 'second', 'color' => 'White', 'memory' => '128GB', 'license' => 'Inter (Sinyal Off)', 'buy_price' => 3500000, 'sell_price' => 4299000],
+                // Samsungs
+                ['name' => 'Samsung Galaxy S24 Ultra 512GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'second', 'color' => 'Titanium Gray', 'memory' => '512GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 13500000, 'sell_price' => 15999000],
+                ['name' => 'Samsung Galaxy S24+ 256GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'second', 'color' => 'Amber Yellow', 'memory' => '256GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 9800000, 'sell_price' => 11499000],
+                ['name' => 'Samsung Galaxy S24 256GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'second', 'color' => 'Onyx Black', 'memory' => '256GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 8500000, 'sell_price' => 9999000],
+                ['name' => 'Samsung Galaxy Z Fold 5 512GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'second', 'color' => 'Phantom Black', 'memory' => '512GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 12000000, 'sell_price' => 14299000],
+                ['name' => 'Samsung Galaxy Z Flip 5 256GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'second', 'color' => 'Mint', 'memory' => '256GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 7800000, 'sell_price' => 8999000],
+                ['name' => 'Samsung Galaxy A55 5G 256GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'new', 'color' => 'Awesome Navy', 'memory' => '256GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 5200000, 'sell_price' => 5999000],
+                ['name' => 'Samsung Galaxy A35 5G 256GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'new', 'color' => 'Awesome Iceblue', 'memory' => '256GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 4200000, 'sell_price' => 4999000],
+                ['name' => 'Samsung Galaxy A15 5G 128GB', 'brand' => 'Samsung', 'category' => 'android', 'type' => 'new', 'color' => 'Optimistic Blue', 'memory' => '128GB', 'license' => 'SEIN (Resmi)', 'buy_price' => 2500000, 'sell_price' => 2999000],
+                // Xiaomi & POCO
+                ['name' => 'Xiaomi 14 256GB', 'brand' => 'Xiaomi', 'category' => 'android', 'type' => 'second', 'color' => 'Black', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 7500000, 'sell_price' => 8799000],
+                ['name' => 'Xiaomi 13T 256GB', 'brand' => 'Xiaomi', 'category' => 'android', 'type' => 'second', 'color' => 'Meadow Green', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 4800000, 'sell_price' => 5699000],
+                ['name' => 'POCO F6 256GB', 'brand' => 'POCO', 'category' => 'android', 'type' => 'new', 'color' => 'Black', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 4500000, 'sell_price' => 5199000],
+                ['name' => 'POCO X6 Pro 256GB', 'brand' => 'POCO', 'category' => 'android', 'type' => 'new', 'color' => 'Yellow', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 3900000, 'sell_price' => 4599000],
+                ['name' => 'Xiaomi Redmi Note 13 Pro 256GB', 'brand' => 'Xiaomi', 'category' => 'android', 'type' => 'new', 'color' => 'Midnight Black', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 3200000, 'sell_price' => 3799000],
+                // OPPO, Vivo, Realme
+                ['name' => 'OPPO Reno 12 Pro 512GB', 'brand' => 'OPPO', 'category' => 'android', 'type' => 'new', 'color' => 'Nebula Silver', 'memory' => '512GB', 'license' => 'Resmi Indonesia', 'buy_price' => 7500000, 'sell_price' => 8499000],
+                ['name' => 'OPPO Reno 11 Pro 256GB', 'brand' => 'OPPO', 'category' => 'android', 'type' => 'second', 'color' => 'Pearl White', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 5000000, 'sell_price' => 5999000],
+                ['name' => 'Vivo X100 Pro 512GB', 'brand' => 'Vivo', 'category' => 'android', 'type' => 'second', 'color' => 'Asteroid Black', 'memory' => '512GB', 'license' => 'Resmi Indonesia', 'buy_price' => 10500000, 'sell_price' => 12499000],
+                ['name' => 'Vivo V30 Pro 512GB', 'brand' => 'Vivo', 'category' => 'android', 'type' => 'second', 'color' => 'Equinox Black', 'memory' => '512GB', 'license' => 'Resmi Indonesia', 'buy_price' => 5800000, 'sell_price' => 6799000],
+                ['name' => 'Realme 12 Pro+ 512GB', 'brand' => 'Realme', 'category' => 'android', 'type' => 'new', 'color' => 'Submarine Blue', 'memory' => '512GB', 'license' => 'Resmi Indonesia', 'buy_price' => 5000000, 'sell_price' => 5899000],
+                ['name' => 'Infinix Zero 30 5G 256GB', 'brand' => 'Infinix', 'category' => 'android', 'type' => 'new', 'color' => 'Rome Green', 'memory' => '256GB', 'license' => 'Resmi Indonesia', 'buy_price' => 3200000, 'sell_price' => 3799000],
+            ];
+
+            $catalogCount = count($dummyCatalogs);
+            $storeId = $payload['store_id'] ?? null;
+
+            for ($i = 0; $i < $needed; $i++) {
+                $template = $dummyCatalogs[$i % $catalogCount];
+                if ($storeId) {
+                    $template['store_id'] = $storeId;
+                }
+                $items[] = $template;
+            }
+        }
+
         if (empty($items) || !is_array($items)) {
             return [
                 'success' => false,
