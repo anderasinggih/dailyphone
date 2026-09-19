@@ -13,6 +13,12 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // Any legacy 'all' rows must be converted first, otherwise MySQL
+        // rejects narrowing the enum and fails with "Data truncated".
+        DB::table('dynamic_parameters')
+            ->where('category', 'all')
+            ->update(['category' => 'global']);
+
         Schema::table('dynamic_parameters', function (Blueprint $table) {
             $table->enum('category', ['iphone', 'android', 'global'])->change();
         });

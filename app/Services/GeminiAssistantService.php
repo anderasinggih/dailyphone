@@ -7,6 +7,7 @@ use App\Models\Stock;
 use App\Models\Sale;
 use App\Models\Store;
 use App\Models\Buyer;
+use App\Models\DynamicParameter;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -215,6 +216,7 @@ class GeminiAssistantService
 
         $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
         $userRole = $user ? $user->role : 'user';
+        $parameterContext = $this->generateParametersContext();
 
         return <<<CONTEXT
 SYSTEM CONTEXT & LIVE STORE DATA:
@@ -247,7 +249,50 @@ OPERATIONAL AUDIT DATA:
 {$voidAuditStr}
 - Pending Inter-Store Transfers: {$pendingTransferCount} pending
 {$transferStr}
+
+LIVE PARAMETER & DROPDOWN OPTIONS REFERENCE (AUTHORITATIVE):
+Use the EXACT values below as the complete, current list of selectable options in the system. NEVER invent, guess, or add options that are not listed here. When the user asks "what are the options/dropdowns/pilihannya", answer from this list.
+{$parameterContext}
 CONTEXT;
+    }
+
+    /**
+     * Build the live, authoritative list of dropdown options & dynamic
+     * parameters that the AI can reference instead of guessing.
+     */
+    public function generateParametersContext(): string
+    {
+        $lines = [];
+
+        // 1. Dynamic parameters with their active values (Brand, Warna, Kapasitas Memori, Tipe Lisensi, dll.)
+        $parameters = DynamicParameter::with(['values' => function ($q) {
+            $q->where('is_active', true)->orderBy('value');
+        }])->orderBy('name')->get();
+
+        if ($parameters->isNotEmpty()) {
+            foreach ($parameters as $param) {
+                $values = $param->values->map(fn($v) => $v->value)->implode(', ');
+                $lines[] = "- {$param->name} [{$param->category}]: {$values}";
+            }
+        } else {
+            $lines[] = '- No dynamic parameters configured yet.';
+        }
+
+        // 2. Money note categories (income vs expense)
+        $inCats = \App\Models\MoneyNoteCategory::where('type', 'in')->orderBy('name')->pluck('name')->implode(', ');
+        $outCats = \App\Models\MoneyNoteCategory::where('type', 'out')->orderBy('name')->pluck('name')->implode(', ');
+        $lines[] = "- Money Note Category (Income / in): {$inCats}";
+        $lines[] = "- Money Note Category (Expense / out): {$outCats}";
+
+        // 3. Stock type (condition) & status options
+        $lines[] = '- Stock Type (Kondisi Unit) [type]: new (New / Baru), second (Pre-owned / Second)';
+        $lines[] = '- Stock Status [status]: available (Available / Ready), transit (Transit / Transfer Proposed), sold (Sold / Terjual), trashed (Trash Bin / Dihapus Sementara)';
+
+        // 4. Payment methods
+        $lines[] = '- Sale Payment Method [payment_method]: cash (Cash / Tunai), online (Online: Transfer Bank / QRIS). If a bank name or detail is provided, put it in payment_detail (e.g. "BCA", "Mandiri", "QRIS").';
+        $lines[] = '- Store Branches [store_id] are listed in SYSTEM CONTEXT above (use their exact Store ID & name).';
+
+        return implode("\n", $lines);
     }
 
     /**
