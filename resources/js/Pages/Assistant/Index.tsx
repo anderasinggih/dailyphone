@@ -34,6 +34,56 @@ import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData } from '@/Components/AiActionProposalCard';
 
+interface AccessedNeuron {
+    id: number;
+    title: string;
+    kind: 'rule' | 'knowledge';
+}
+
+// Consume an application/x-ndjson streaming response from the Assistant chat
+// endpoint. Progress events are forwarded to handlers as they arrive; the last
+// 'done' / 'error' event is returned once the stream closes.
+async function consumeNdjson(
+    res: Response,
+    handlers: { onPhase?: (label: string) => void; onNeurons?: (nodes: AccessedNeuron[]) => void }
+): Promise<any> {
+    if (!res.body) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let last: any = null;
+
+    const digest = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        let evt: any;
+        try {
+            evt = JSON.parse(trimmed);
+        } catch {
+            return;
+        }
+        if (!evt || typeof evt !== 'object') return;
+        if (evt.type === 'phase' && handlers.onPhase) handlers.onPhase(String(evt.label || 'Thinking...'));
+        else if (evt.type === 'neurons' && handlers.onNeurons) handlers.onNeurons(Array.isArray(evt.nodes) ? evt.nodes : []);
+        if (evt.type === 'done' || evt.type === 'error') last = evt;
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+            digest(line);
+        }
+    }
+    if (buffer.trim()) {
+        digest(buffer);
+    }
+    return last;
+}
+
 interface Message {
     id: string;
     role: 'user' | 'assistant';
@@ -105,13 +155,10 @@ export default function Assistant({
         initialMessages && initialMessages.length > 0 ? initialMessages : [welcomeMessage]
     );
     const [inputQuery, setInputQuery] = useState('');
-    const [activeQueryForThinking, setActiveQueryForThinking] = useState('');
     const [replyingTo, setReplyingTo] = useState<Message | null>(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [thinkingStep, setThinkingStep] = useState<string>('Thinking...');
-    const [thinkingStepsList, setThinkingStepsList] = useState<string[]>([]);
-    const [currentStepIdx, setCurrentStepIdx] = useState<number>(0);
-    const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(true);
+    const [livePhases, setLivePhases] = useState<string[]>([]);
+    const [accessedNodes, setAccessedNodes] = useState<AccessedNeuron[]>([]);
     const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // sidebar closed by default
     const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -200,86 +247,21 @@ export default function Assistant({
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages, isLoading, thinkingStep]);
+    }, [messages, isLoading, livePhases, accessedNodes]);
 
-    // Dynamic context-aware English thinking steps like Gemini / Antigravity
+    // Elapsed timer while the assistant is thinking. The real progress (live
+    // phases + accessed neurons) streams from the backend via NDJSON.
     useEffect(() => {
         if (!isLoading) {
             setThinkingSeconds(0);
             return;
         }
 
-        // Determine context-aware steps based on user query
-        const q = (activeQueryForThinking || inputQuery || '').toLowerCase();
-        let dynamicSteps: string[] = [];
-
-        if (q.includes('delete') || q.includes('hapus') || q.includes('drop') || q.includes('remove')) {
-            dynamicSteps = [
-                'Thinking...',
-                'Parsing deletion intent & safety constraints...',
-                'Validating inventory records and unique unit identifiers...',
-                'Generating safe action proposal for administrative review...',
-                'Formatting confirmation payload...'
-            ];
-        } else if (q.includes('update') || q.includes('edit') || q.includes('ubah') || q.includes('ganti') || q.includes('harga') || q.includes('price')) {
-            dynamicSteps = [
-                'Thinking...',
-                'Analyzing modification parameters and price structures...',
-                'Locating active inventory items across store branches...',
-                'Preparing parameter validation schema...',
-                'Synthesizing proposal details...'
-            ];
-        } else if (q.includes('jual') || q.includes('sell') || q.includes('transaksi') || q.includes('sale') || q.includes('laku')) {
-            dynamicSteps = [
-                'Thinking...',
-                'Scanning Point of Sale transaction records...',
-                'Cross-referencing payment receipts & shift logs...',
-                'Aggregating revenue and margin figures...',
-                'Compiling financial summary...'
-            ];
-        } else if (q.includes('stok') || q.includes('stock') || q.includes('unit') || q.includes('hp') || q.includes('iphone') || q.includes('ready')) {
-            dynamicSteps = [
-                'Thinking...',
-                'Scanning inventory database across all retail branches...',
-                'Filtering unit models, battery health, and physical grades...',
-                'Checking pricing tiers and warehouse allocation...',
-                'Formulating inventory availability report...'
-            ];
-        } else if (q.includes('shift') || q.includes('kasir') || q.includes('karyawan') || q.includes('staff') || q.includes('absen') || q.includes('payroll')) {
-            dynamicSteps = [
-                'Thinking...',
-                'Querying employee attendance & active cash shift logs...',
-                'Calculating operational hours and grace periods...',
-                'Evaluating cash drawer reconciliations...',
-                'Preparing personnel overview...'
-            ];
-        } else {
-            dynamicSteps = [
-                'Thinking...',
-                'Processing user query & conversational context...',
-                'Querying store knowledge base and relational schema...',
-                'Synthesizing findings and business constraints...',
-                'Finalizing response...'
-            ];
-        }
-
-        setThinkingStepsList(dynamicSteps);
-        let stepIndex = 0;
-        setCurrentStepIdx(0);
-        setThinkingStep(dynamicSteps[0]);
-
-        const stepInterval = setInterval(() => {
-            stepIndex = (stepIndex + 1) % dynamicSteps.length;
-            setCurrentStepIdx(stepIndex);
-            setThinkingStep(dynamicSteps[stepIndex]);
-        }, 1400);
-
         const timerInterval = setInterval(() => {
             setThinkingSeconds(prev => prev + 1);
         }, 1000);
 
         return () => {
-            clearInterval(stepInterval);
             clearInterval(timerInterval);
         };
     }, [isLoading]);
@@ -418,7 +400,6 @@ export default function Assistant({
         if (!rawQuery || isLoading) return;
 
         let query = rawQuery;
-        let displayedContent = rawQuery;
 
         if (replyingTo) {
             const cleanQuote = replyingTo.content.replace(/```action_proposal[\s\S]*?```/g, '').trim();
@@ -435,46 +416,19 @@ export default function Assistant({
         };
 
         setMessages(prev => [...prev, userMsg]);
-        setActiveQueryForThinking(rawQuery);
         setInputQuery('');
         setReplyingTo(null);
         setIsLoading(true);
+        setLivePhases([]);
+        setAccessedNodes([]);
 
-        try {
-            const response = await fetch(route('assistant.chat'), {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
-                },
-                body: JSON.stringify({
-                    message: query,
-                    session_id: currentSessionId,
-                })
-            });
-
-            if (!response.ok) {
-                const text = await response.text();
-                let errorMsg = `Server error (${response.status})`;
-                try {
-                    const parsed = JSON.parse(text);
-                    if (parsed.message) errorMsg = parsed.message;
-                    if (parsed.reply) errorMsg = parsed.reply;
-                } catch {
-                    // response is HTML error page
-                }
-                throw new Error(errorMsg);
-            }
-
-            const data = await response.json();
-
-            const isProposal = data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('```json\n{\n  "action":'));
+        const applyReply = (data: any) => {
+            const looksLikeProposal = !!data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('"action":'));
             const assistantMsg: Message = {
                 id: data.message_id || 'assistant-' + Date.now(),
                 role: 'assistant',
                 content: data.reply || 'Maaf, terjadi kendala saat memproses jawaban.',
-                action_status: isProposal ? 'pending' : null,
+                action_status: looksLikeProposal ? 'pending' : null,
                 timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             };
 
@@ -497,6 +451,51 @@ export default function Assistant({
                         }, ...prev];
                     }
                 });
+            }
+        };
+
+        try {
+            const response = await fetch(route('assistant.chat'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
+                },
+                body: JSON.stringify({
+                    message: query,
+                    session_id: currentSessionId,
+                })
+            });
+
+            const contentType = response.headers.get('content-type') || '';
+
+            if (!response.ok) {
+                const text = await response.text();
+                let errorMsg = `Server error (${response.status})`;
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed.message) errorMsg = parsed.message;
+                    if (parsed.reply) errorMsg = parsed.reply;
+                } catch {
+                    // response is HTML error page
+                }
+                throw new Error(errorMsg);
+            }
+
+            if (contentType.includes('ndjson')) {
+                // Live stream: phases + accessed neurons show while thinking.
+                const last = await consumeNdjson(response, {
+                    onPhase: label => setLivePhases(prev => [...prev, label]),
+                    onNeurons: nodes => setAccessedNodes(nodes),
+                });
+                if (!last || last.type === 'error') {
+                    throw new Error(last?.reply || 'No response from the server');
+                }
+                applyReply(last);
+            } else {
+                const data = await response.json();
+                applyReply(data);
             }
         } catch (error: any) {
             setMessages(prev => [
@@ -924,39 +923,65 @@ export default function Assistant({
                             })}
 
                             {isLoading && (
-                                <div className="max-w-3xl mx-auto py-2 text-xs select-none">
-                                    {/* Ultra Clean & Simple: No containers, no neon badges, just simple loader + text */}
+                                <div className="max-w-3xl mx-auto py-2 text-xs select-none space-y-2">
+                                    {/* Ultra Clean & Simple: no containers, just a spinner + live progress */}
                                     <div className="flex items-center gap-2 text-muted-foreground font-mono">
                                         <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
                                         <span className="font-semibold text-foreground">Thinking...</span>
                                         <span className="text-[11px] text-muted-foreground/60 font-mono">({thinkingSeconds}s)</span>
                                     </div>
 
-                                    {/* Direct Minimalist Milestone Steps with simple strike-through */}
-                                    {thinkingStepsList.length > 0 && (
-                                        <div className="pl-5 pt-1.5 space-y-1 font-mono text-[11px]">
-                                            {thinkingStepsList.map((step, idx) => {
-                                                const isDone = idx < currentStepIdx;
-                                                const isCurrent = idx === currentStepIdx;
+                                    {/* Live milestones streamed from the backend */}
+                                    {livePhases.length > 0 && (
+                                        <div className="pl-5 space-y-1 font-mono text-[11px]">
+                                            {livePhases.map((phase, idx) => {
+                                                const isDone = idx < livePhases.length - 1;
+                                                const isCurrent = idx === livePhases.length - 1;
 
                                                 return (
-                                                    <div 
+                                                    <div
                                                         key={idx}
                                                         className={`flex items-center gap-2 transition-all ${
-                                                            isDone 
-                                                                ? 'text-muted-foreground/40 line-through' 
-                                                                : isCurrent 
-                                                                ? 'text-foreground font-medium' 
+                                                            isDone
+                                                                ? 'text-muted-foreground/40 line-through'
+                                                                : isCurrent
+                                                                ? 'text-foreground font-medium'
                                                                 : 'text-muted-foreground/30'
                                                         }`}
                                                     >
                                                         <span className="text-[10px]">
                                                             {isDone ? '✓' : isCurrent ? '›' : '•'}
                                                         </span>
-                                                        <span>{step}</span>
+                                                        <span>{phase}</span>
                                                     </div>
                                                 );
                                             })}
+                                        </div>
+                                    )}
+
+                                    {/* Neurons the AI is tapping into, shown live while thinking */}
+                                    {accessedNodes.length > 0 && (
+                                        <div className="pl-2 space-y-1.5">
+                                            <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-muted-foreground/70 uppercase">
+                                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                                                Accessing neurons ({accessedNodes.length})
+                                            </div>
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {accessedNodes.map(n => (
+                                                    <span
+                                                        key={n.id}
+                                                        title={n.title}
+                                                        className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-primary/[0.06] dark:bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-foreground/90"
+                                                    >
+                                                        {n.kind === 'rule' ? (
+                                                            <ShieldCheck className="h-2.5 w-2.5 text-primary shrink-0" />
+                                                        ) : (
+                                                            <Brain className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+                                                        )}
+                                                        <span className="truncate max-w-[160px]">{n.title}</span>
+                                                    </span>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
                                 </div>

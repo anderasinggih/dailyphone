@@ -298,7 +298,7 @@ CONTEXT;
     /**
      * Send chat conversation to Gemini.
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null): array
     {
         if (!$this->isConfigured()) {
             return [
@@ -310,7 +310,9 @@ CONTEXT;
         $userRole = $user ? $user->role : 'user';
         $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
         $storeContext = $this->generateStoreContext($user);
-        $trainingNotesStr = $this->generateTrainingNotesContext();
+        $queryText = $query !== null ? trim($query) : $this->lastUserText($messages);
+        $neurons = $this->resolveNeurons($queryText);
+        $trainingNotesStr = $this->generateTrainingNotesContext($queryText);
         $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : "";
         $sessionRulesPrompt = !empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n" . $sessionRules . "\n" : "";
 
@@ -579,6 +581,7 @@ PROMPT;
                     return [
                         'success' => true,
                         'reply' => trim($text),
+                        'neurons' => $neurons,
                     ];
                 }
 
@@ -596,18 +599,113 @@ PROMPT;
     }
 
     /**
-     * Load the persistent AI training memory (rules first, then recent notes)
-     * to include in every chat system prompt so the AI "remembers" across
-     * sessions, stores, and users. Each memory also lists its typed synapses,
-     * so the AI can navigate the neuron map along meaningful paths.
+     * The exact neurons that will be injected into the model context for a
+     * query — every active rule first, then knowledge notes ranked by relevance
+     * to the query text. Used to render "accessing neurons" live while thinking.
      */
-    public function generateTrainingNotesContext(): string
+    public function resolveNeurons(?string $query = null): array
     {
-        $notes = \App\Models\AiTrainingNote::where('is_active', true)
-            ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
+        return $this->selectTrainingNotes($query)
+            ->map(function ($n) {
+                return [
+                    'id' => (int)$n->id,
+                    'title' => $this->neuronLabel($n),
+                    'kind' => $n->kind === 'rule' ? 'rule' : 'knowledge',
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Choose which training notes reach the model: rules are always loaded
+     * (they are directives), knowledge notes are ranked by token relevance to
+     * the current query so the prompt stays tight and the access list honest.
+     */
+    protected function selectTrainingNotes(?string $query): \Illuminate\Support\Collection
+    {
+        $rules = \App\Models\AiTrainingNote::where('is_active', true)
+            ->where('kind', 'rule')
             ->orderBy('updated_at', 'desc')
-            ->limit(64)
             ->get();
+
+        $knowledge = \App\Models\AiTrainingNote::where('is_active', true)
+            ->where('kind', 'knowledge')
+            ->get();
+
+        $tokens = app(\App\Services\AiMemoryGraphService::class)->tokenize(trim((string)$query));
+
+        if ($tokens === []) {
+            return $rules->merge($knowledge->sortByDesc('updated_at')->take(10)->values());
+        }
+
+        $scored = $knowledge->map(function ($n) use ($tokens) {
+            return ['note' => $n, 'score' => $this->scoreAgainst($n, $tokens)];
+        });
+
+        $matched = $scored->filter(fn ($s) => $s['score'] > 0)
+            ->sortByDesc('score')
+            ->take(12)
+            ->pluck('note')
+            ->values();
+
+        $selected = $matched->isNotEmpty()
+            ? $matched
+            : $knowledge->sortByDesc('updated_at')->take(6)->values();
+
+        return $rules->merge($selected);
+    }
+
+    protected function scoreAgainst($note, array $tokens): int
+    {
+        $title = strtolower((string)$note->title);
+        $content = strtolower((string)$note->content);
+        $related = strtolower(implode(' ', (array)($note->related_keywords ?? [])));
+
+        $score = 0;
+        foreach ($tokens as $token) {
+            if ($token !== '' && str_contains($title, $token)) {
+                $score += 3;
+            }
+            if ($token !== '' && str_contains($related, $token)) {
+                $score += 2;
+            }
+            if ($token !== '' && str_contains($content, $token)) {
+                $score += 1;
+            }
+        }
+        return $score;
+    }
+
+    protected function neuronLabel($note): string
+    {
+        $title = trim((string)($note->title ?? ''));
+        if ($title !== '') {
+            return mb_strimwidth($title, 0, 60, '…');
+        }
+        $compact = preg_replace('/\s+/', ' ', trim((string)$note->content)) ?: '';
+        return mb_strimwidth($compact, 0, 56, '…');
+    }
+
+    protected function lastUserText(array $messages): string
+    {
+        foreach (array_reverse($messages) as $msg) {
+            if (($msg['role'] ?? '') === 'user') {
+                return trim((string)($msg['content'] ?? ''));
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Build the persistent AI training memory block (rules first, then the
+     * knowledge notes most relevant to the current query) so the AI "remembers"
+     * across sessions, stores, and users. Each memory also lists its typed
+     * synapses, so the AI can navigate the neuron map along meaningful paths.
+     */
+    public function generateTrainingNotesContext(?string $query = null): string
+    {
+        $notes = $this->selectTrainingNotes($query);
 
         if ($notes->isEmpty()) {
             return "- (empty - no training memories yet)";

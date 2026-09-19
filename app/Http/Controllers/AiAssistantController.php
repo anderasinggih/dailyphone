@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AiAssistantController extends Controller
 {
@@ -97,8 +98,10 @@ class AiAssistantController extends Controller
 
     /**
      * Process user chat message within a session and remember context.
+     * Streams newline-delimited JSON progress events so the Assistant UI can
+     * render "accessing neurons" live while the model is thinking.
      */
-    public function chat(Request $request): JsonResponse
+    public function chat(Request $request): JsonResponse|StreamedResponse
     {
         $request->validate([
             'message' => 'required|string',
@@ -134,7 +137,7 @@ class AiAssistantController extends Controller
         }
 
         // 1. Save user message in this session
-        $userChat = \App\Models\AiChat::create([
+        \App\Models\AiChat::create([
             'user_id' => $user->id,
             'session_id' => $sessionId,
             'role' => 'user',
@@ -156,46 +159,78 @@ class AiAssistantController extends Controller
             ];
         })->toArray();
 
-        try {
-            // 3. Send to Gemini with full session memory & custom session rules/training
-            $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules);
+        // Release the session lock before streaming so long requests do not
+        // block other tabs / requests for the same user.
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
 
-            // 4. Save AI reply to database in this session
-            if (!empty($result['reply'])) {
-                // Persist any training memos the AI wrote, then hide the raw block
-                $this->persistTrainingMemos($result['reply'], $user);
-                $result['reply'] = $this->stripTrainingMemos($result['reply']);
+        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel) {
+            $emit = function (array $payload): void {
+                echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+                if (ob_get_level() > 0) {
+                    ob_flush();
+                }
+                flush();
+            };
 
-                $hasProposal = str_contains($result['reply'], '```action_proposal') || str_contains($result['reply'], '```json' . "\n" . '{' . "\n" . '  "action":');
-                $aiChat = \App\Models\AiChat::create([
-                    'user_id' => $user->id,
-                    'session_id' => $sessionId,
-                    'role' => 'assistant',
-                    'content' => $result['reply'],
-                    'action_status' => $hasProposal ? 'pending' : null,
+            try {
+                $emit(['type' => 'phase', 'label' => 'Loading live store network…']);
+
+                $neurons = $this->geminiService->resolveNeurons($userText);
+                $emit(['type' => 'phase', 'label' => count($neurons) > 0 ? 'Tapping ' . count($neurons) . ' memory neurons…' : 'Scanning memory network…']);
+                $emit(['type' => 'neurons', 'nodes' => $neurons]);
+
+                $emit(['type' => 'phase', 'label' => 'Reasoning & drafting response…']);
+
+                // 3. Send to Gemini with full session memory & custom session rules/training
+                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText);
+
+                // 4. Save AI reply to database in this session
+                if (!empty($result['reply'])) {
+                    // Persist any training memos the AI wrote, then hide the raw block
+                    $this->persistTrainingMemos($result['reply'], $user);
+                    $result['reply'] = $this->stripTrainingMemos($result['reply']);
+
+                    $hasProposal = str_contains($result['reply'], '```action_proposal') || str_contains($result['reply'], '```json' . "\n" . '{' . "\n" . '  "action":');
+                    $aiChat = \App\Models\AiChat::create([
+                        'user_id' => $user->id,
+                        'session_id' => $sessionId,
+                        'role' => 'assistant',
+                        'content' => $result['reply'],
+                        'action_status' => $hasProposal ? 'pending' : null,
+                    ]);
+
+                    $result['message_id'] = (string)$aiChat->id;
+                    $result['timestamp'] = $aiChat->created_at->format('H:i');
+                }
+
+                // Touch session updated_at to keep recent sessions on top
+                $session->touch();
+
+                $result['session_id'] = $sessionId;
+                $result['session_title'] = $session->title;
+                $result['neurons'] = $neurons;
+
+                $emit(['type' => 'done'] + $result);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('AI Chat Error: ' . $e->getMessage(), [
+                    'exception' => $e
                 ]);
 
-                $result['message_id'] = (string)$aiChat->id;
-                $result['timestamp'] = $aiChat->created_at->format('H:i');
+                $emit([
+                    'type' => 'error',
+                    'success' => false,
+                    'reply' => 'Maaf, sistem mengalami kendala: ' . $e->getMessage()
+                ]);
             }
+        };
 
-            // Touch session updated_at to keep recent sessions on top
-            $session->touch();
-
-            $result['session_id'] = $sessionId;
-            $result['session_title'] = $session->title;
-
-            return response()->json($result);
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::error('AI Chat Error: ' . $e->getMessage(), [
-                'exception' => $e
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'reply' => 'Maaf, sistem mengalami kendala: ' . $e->getMessage()
-            ], 200);
-        }
+        return response()->stream($stream, 200, [
+            'Content-Type' => 'application/x-ndjson; charset=utf-8',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'X-Accel-Buffering' => 'no',
+        ]);
     }
 
     /**
