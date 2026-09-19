@@ -1,0 +1,68 @@
+name: Deploy to Arenhost Shared Hosting
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🚚 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐘 Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, bcmath, fileinfo
+          coverage: none
+
+      - name: 📦 Install Composer Dependencies
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader --no-progress --no-interaction
+
+      - name: ⚡ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 🔨 Install NPM & Build Production Assets
+        run: |
+          npm ci
+          npm run build
+
+      - name: 🚀 Deploy to Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }} # Opsional jika private key memiliki passphrase
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            # Masuk ke direktori project di shared hosting
+            cd ${{ secrets.SSH_PROJECT_PATH }} || exit 1
+
+            # Tarik kode terbaru dari GitHub
+            git pull origin main
+
+            # Install vendor dependencies jika ada update package
+            composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+            # Jalankan migrasi database
+            php artisan migrate --force
+
+            # Bersihkan dan buat cache baru untuk kecepatan maksimal
+            php artisan optimize:clear
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+
+            # Pastikan storage link tetap aktif
+            php artisan storage:link || true
+
+            echo "✅ Deployment ke Arenhost Berhasil Selesai!"
