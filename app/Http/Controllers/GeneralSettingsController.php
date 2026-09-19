@@ -47,6 +47,67 @@ class GeneralSettingsController extends Controller
             abort(403);
         }
 
+        $section = $request->input('section');
+        $settings = GeneralSetting::first() ?? new GeneralSetting();
+
+        if ($section === 'company') {
+            $validated = $request->validate([
+                'company_name' => 'required|string|max:255',
+                'notification_emails' => 'nullable|string',
+            ]);
+            $settings->fill($validated);
+            $settings->save();
+            return redirect()->back()->with('success', 'Company identity and notification settings saved.');
+        }
+
+        if ($section === 'work_policy') {
+            $validated = $request->validate([
+                'work_start_time' => 'required|string',
+                'work_end_time' => 'required|string',
+                'grace_period_minutes' => 'required|integer|min:0',
+            ]);
+            $settings->fill($validated);
+            $settings->save();
+            return redirect()->back()->with('success', 'Working hours and late grace policy saved.');
+        }
+
+        if ($section === 'geofence') {
+            $validated = $request->validate([
+                'geofence_lock_enabled' => 'required|boolean',
+            ]);
+            $settings->fill($validated);
+            $settings->save();
+            return redirect()->back()->with('success', 'Geofence security lock preference saved.');
+        }
+
+        if ($section === 'ai') {
+            $validated = $request->validate([
+                'ai_enabled' => 'nullable|boolean',
+                'ai_provider' => 'nullable|string',
+                'ai_api_key' => 'nullable|string',
+                'ai_model' => 'nullable|string',
+                'ai_system_instruction' => 'nullable|string',
+            ]);
+
+            $data = $request->only([
+                'ai_enabled',
+                'ai_provider',
+                'ai_model',
+                'ai_system_instruction',
+            ]);
+
+            if ($request->filled('ai_api_key')) {
+                $data['ai_api_key'] = $request->input('ai_api_key');
+            } elseif ($request->has('clear_ai_api_key') && $request->boolean('clear_ai_api_key')) {
+                $data['ai_api_key'] = null;
+            }
+
+            $settings->fill($data);
+            $settings->save();
+            return redirect()->back()->with('success', 'AI Intelligence configuration saved.');
+        }
+
+        // Fallback for full update
         $request->validate([
             'company_name' => 'required|string|max:255',
             'work_start_time' => 'required|string',
@@ -61,7 +122,6 @@ class GeneralSettingsController extends Controller
             'ai_system_instruction' => 'nullable|string',
         ]);
 
-        $settings = GeneralSetting::first() ?? new GeneralSetting();
         $data = $request->only([
             'company_name',
             'work_start_time',
@@ -84,7 +144,7 @@ class GeneralSettingsController extends Controller
         $settings->fill($data);
         $settings->save();
 
-        return redirect()->back()->with('success', 'General and AI settings updated successfully.');
+        return redirect()->back()->with('success', 'Settings updated successfully.');
     }
 
     public function storeSchedule(Request $request): RedirectResponse

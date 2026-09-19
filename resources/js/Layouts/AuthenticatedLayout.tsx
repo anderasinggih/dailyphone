@@ -33,11 +33,9 @@ export default function Authenticated({
     const user = usePage().props.auth.user;
 
     const [showMobileMore, setShowMobileMore] = useState(false);
-    const [showMobileSettings, setShowMobileSettings] = useState(false);
 
     const toggleMobileMore = () => {
         setShowMobileMore(!showMobileMore);
-        setShowMobileSettings(false);
     };
 
     const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -276,29 +274,19 @@ export default function Authenticated({
                             </button>
 
                             {user.role === 'superadmin' && (
-                                <div className="relative inline-block align-middle">
-                                    <Dropdown>
-                                        <Dropdown.Trigger>
-                                            <button
-                                                type="button"
-                                                className={navLink(
-                                                    !!route().current('users.index') ||
-                                                    !!route().current('settings.parameters') ||
-                                                    !!route().current('settings.general')
-                                                )}
-                                                title="Settings"
-                                            >
-                                                <SettingsIcon className="h-4 w-4" />
-                                                <span>Settings</span>
-                                            </button>
-                                        </Dropdown.Trigger>
-                                        <Dropdown.Content>
-                                            <Dropdown.Link href={route('users.index')}>Users</Dropdown.Link>
-                                            <Dropdown.Link href={route('settings.parameters')}>Parameters</Dropdown.Link>
-                                            <Dropdown.Link href={route('settings.general')}>General Settings</Dropdown.Link>
-                                        </Dropdown.Content>
-                                    </Dropdown>
-                                </div>
+                                <Link
+                                    href={route('settings.general')}
+                                    prefetch
+                                    className={navLink(
+                                        !!route().current('settings.general') ||
+                                        !!route().current('settings.parameters') ||
+                                        !!route().current('users.index')
+                                    )}
+                                    title="Settings"
+                                >
+                                    <SettingsIcon className="h-4 w-4" />
+                                    <span>Settings</span>
+                                </Link>
                             )}
 
                             <div className="relative">
@@ -421,85 +409,50 @@ export default function Authenticated({
 
                         {/* Menu Items */}
                         <div className="p-1.5 max-h-[320px] overflow-y-auto space-y-0.5">
-                            {!showMobileSettings ? (
-                                <>
-                                    {getMoreMenuItems().map((item) => {
-                                        const Icon = item.icon;
-                                        return (
-                                            <Link
-                                                key={item.name}
-                                                href={item.href}
-                                                onClick={() => {
-                                                    setShowMobileMore(false);
-                                                    setShowMobileSettings(false);
-                                                }}
-                                                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl transition ${
-                                                    item.current
-                                                        ? 'bg-primary/10 text-primary'
-                                                        : 'hover:bg-muted text-foreground'
-                                                }`}
-                                            >
-                                                <div className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                                    item.current ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-                                                }`}>
-                                                    <Icon className="h-3.5 w-3.5" />
-                                                </div>
-                                                <span className="text-xs font-semibold flex-1">{item.name}</span>
-                                                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40" />
-                                            </Link>
-                                        );
-                                    })}
-
-                                    {user.role === 'superadmin' && (
-                                        <button
-                                            onClick={() => setShowMobileSettings(true)}
-                                            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-muted text-foreground transition"
-                                        >
-                                            <div className="h-7 w-7 rounded-lg bg-muted flex items-center justify-center text-muted-foreground shrink-0">
-                                                <SettingsIcon className="h-3.5 w-3.5" />
-                                            </div>
-                                            <span className="text-xs font-semibold flex-1 text-left">Settings</span>
-                                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40" />
-                                        </button>
-                                    )}
-                                </>
-                            ) : (
-                                <>
-                                    <button
-                                        onClick={() => setShowMobileSettings(false)}
-                                        className="flex items-center gap-1.5 px-2 py-1 text-primary text-xs font-semibold mb-1"
+                            {getMoreMenuItems().map((item) => {
+                                const Icon = item.icon;
+                                return (
+                                    <Link
+                                        key={item.name}
+                                        href={item.href}
+                                        onClick={() => setShowMobileMore(false)}
+                                        className={`flex items-center gap-2.5 px-3 py-2 rounded-xl transition ${
+                                            item.current
+                                                ? 'bg-primary/10 text-primary'
+                                                : 'hover:bg-muted text-foreground'
+                                        }`}
                                     >
-                                        ← Back to Menu
-                                    </button>
-                                    {[
-                                        { name: 'Users', href: route('users.index'), icon: UserCog, current: !!route().current('users.index') },
-                                        { name: 'Parameters', href: route('settings.parameters'), icon: SettingsIcon, current: !!route().current('settings.parameters') },
-                                        { name: 'General', href: route('settings.general'), icon: SettingsIcon, current: !!route().current('settings.general') },
-                                    ].map((item) => {
-                                        const Icon = item.icon;
-                                        return (
-                                            <Link
-                                                key={item.name}
-                                                href={item.href}
-                                                onClick={() => {
-                                                    setShowMobileMore(false);
-                                                    setShowMobileSettings(false);
-                                                }}
-                                                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl transition ${
-                                                    item.current ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-foreground'
-                                                }`}
-                                            >
-                                                <div className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                                    item.current ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-                                                }`}>
-                                                    <Icon className="h-3.5 w-3.5" />
-                                                </div>
-                                                <span className="text-xs font-semibold flex-1">{item.name}</span>
-                                                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40" />
-                                            </Link>
-                                        );
-                                    })}
-                                </>
+                                        <div className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                            item.current ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+                                        }`}>
+                                            <Icon className="h-3.5 w-3.5" />
+                                        </div>
+                                        <span className="text-xs font-semibold flex-1">{item.name}</span>
+                                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40" />
+                                    </Link>
+                                );
+                            })}
+
+                            {user.role === 'superadmin' && (
+                                <Link
+                                    href={route('settings.general')}
+                                    onClick={() => setShowMobileMore(false)}
+                                    className={`flex items-center gap-2.5 px-3 py-2 rounded-xl transition ${
+                                        route().current('settings.general') || route().current('settings.parameters')
+                                            ? 'bg-primary/10 text-primary'
+                                            : 'hover:bg-muted text-foreground'
+                                    }`}
+                                >
+                                    <div className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                        route().current('settings.general') || route().current('settings.parameters')
+                                            ? 'bg-primary text-primary-foreground'
+                                            : 'bg-muted text-muted-foreground'
+                                    }`}>
+                                        <SettingsIcon className="h-3.5 w-3.5" />
+                                    </div>
+                                    <span className="text-xs font-semibold flex-1">Settings</span>
+                                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40" />
+                                </Link>
                             )}
                         </div>
 
