@@ -523,6 +523,7 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
         }
       * The backend runs the script offline and returns its stdout as "output".
       * FILE GENERATION: any file the script writes into its working directory (use `os.getcwd()` or the `OUTPUT_DIR` environment variable) is automatically saved and offered to the user as a downloadable file. To generate, simply write files there and print a confirmation line. Available libraries (already installed): `csv`, `json`, `openpyxl` (.xlsx), `reportlab` & `fpdf` (.pdf), `PIL`/`Pillow` (.png/.jpg), plus all stdlib.
+      * IMPORTANT: never assume a third-party module is installed. Wrap optional imports (`openpyxl`, `fpdf`, `reportlab`, `PIL`) in try/except ImportError; if the module is missing, fall back to a pure-standard-library alternative (e.g. generate a `.csv` or `.txt` instead of `.xlsx`/`.pdf`) and tell the user which format you produced.
       * Keep the script SHORT and safe: no network calls, no database access, no subprocesses, no deleting/reading files outside the working directory. Never touch the Daily Phone database (it is MySQL, not SQLite — sqlite3 will fail). NEVER write a script to fake/simulate stock mutations or deletes; those MUST use the native actions above.
       * "changes": a summary row like { "field": "Generate File", "old": "-", "new": "stok-report.xlsx" } (or { "field": "Kalkulasi", "old": "-", "new": "Hasil nilai X" }).
 
