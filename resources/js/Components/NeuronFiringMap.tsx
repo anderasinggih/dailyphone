@@ -29,11 +29,13 @@ const GOLDEN = 2.39996323;
 // Keep the circuit airy: a compact slice of the accessed network is drawn.
 const MAX_NODES = 9;
 
-// Ignition pacing is eased (fast mid-run, finishing soft at the edges) so the
-// energy snaps quickly and glides — never a stiff metronome.
-const STEP_MIN = 150;
-const STEP_MAX = 420;
-const LOOP_PAUSE = 1300;
+// Ignition pacing: fast, snapping mid-pulses and slightly softer at the edges.
+// The next neuron starts while the previous pulse is still travelling (OVERLAP),
+// so the web ripples as one continuous cascading wave instead of a metronome.
+const STEP_MIN = 100;
+const STEP_MAX = 260;
+const OVERLAP = 0.64;
+const LOOP_PAUSE = 850;
 
 const GLOW_BLUR = '1.2';
 const GLOW_FILTER = 'url(#dp-glow)';
@@ -43,27 +45,143 @@ const CABLE_DIM = 'rgba(0,122,255,0.16)';
 const CABLE_ONE = 'rgba(0,122,255,0.4)';
 const CABLE_FULL = 'rgba(0,122,255,0.75)';
 const NODE_IDLE = 'rgba(134,146,168,0.4)';
+const NODE_SATELLITE = 'rgba(134,146,168,0.22)';
 
 function hashSeed(id: number, salt: number): number {
     const x = Math.sin(id * 127.1 + salt * 311.7) * 43758.5453;
     return x - Math.floor(x);
 }
 
-function easeInOutSine(t: number): number {
-    return -(Math.cos(Math.PI * t) - 1) / 2;
+function smootherstep(t: number): number {
+    const x = Math.min(1, Math.max(0, t));
+    return x * x * x * (x * (x * 6 - 15) + 10);
 }
 
-function computePositions(nodes: NeuronFiringNode[]): Record<number, Point> {
-    const positions: Record<number, Point> = {};
-    const radius = nodes.length > 6 ? 26 : 20;
-    nodes.forEach((node, i) => {
-        const spread = (hashSeed(node.id, 3) - 0.5) * 7;
-        const angle = i * GOLDEN;
-        positions[node.id] = {
-            x: Math.cos(angle) * (radius + spread),
-            y: Math.sin(angle) * (radius + spread),
-        };
+// Split the nodes into weakly-connected components using the real synapses, so
+// the brain is laid out as one cohesive core plus (rare) idle satellites —
+// never a meaningless scatter of unrelated dots pretending to be connected.
+function connectedComponents(
+    nodeIds: number[],
+    edges: NeuronFiringEdge[]
+): number[][] {
+    const adj: Record<number, Set<number>> = {};
+    nodeIds.forEach(id => (adj[id] = new Set()));
+    edges.forEach(e => {
+        if (adj[e.source]) adj[e.source].add(e.target);
+        if (adj[e.target]) adj[e.target].add(e.source);
     });
+
+    const seen = new Set<number>();
+    const comps: number[][] = [];
+    for (const id of nodeIds) {
+        if (seen.has(id)) continue;
+        const stack = [id];
+        seen.add(id);
+        const comp: number[] = [];
+        while (stack.length) {
+            const cur = stack.pop()!;
+            comp.push(cur);
+            for (const nb of adj[cur]) {
+                if (!seen.has(nb)) {
+                    seen.add(nb);
+                    stack.push(nb);
+                }
+            }
+        }
+        comps.push(comp);
+    }
+    return comps;
+}
+
+// A tiny galaxy per component (hub at the center, neighbors on depth rings),
+// then every galaxy is packed on a golden spiral — main core at the heart,
+// satellites pushed to the rim so they visually read as "offline".
+function computePositions(nodes: NeuronFiringNode[], edges: NeuronFiringEdge[]): Record<number, Point> {
+    const positions: Record<number, Point> = {};
+    const ids = nodes.map(n => n.id);
+    const degree: Record<number, number> = {};
+    ids.forEach(id => (degree[id] = edges.filter(e => e.source === id || e.target === id).length));
+
+    const comps = connectedComponents(ids, edges).sort((a, b) => b.length - a.length);
+
+    const placeComponent = (comp: number[]): Record<number, Point> => {
+        const adj: Record<number, Set<number>> = {};
+        comp.forEach(id => (adj[id] = new Set()));
+        comp.forEach(id => {
+            edges.forEach(e => {
+                if (e.source === id && adj[e.target]) adj[id].add(e.target);
+                if (e.target === id && adj[e.source]) adj[id].add(e.source);
+            });
+        });
+
+        let hub = comp[0]!;
+        comp.forEach(id => {
+            if (degree[id] > (degree[hub] ?? 0)) hub = id;
+        });
+
+        const depth: Record<number, number> = { [hub]: 0 };
+        const queue = [hub];
+        while (queue.length) {
+            const cur = queue.shift()!;
+            for (const nb of adj[cur]) {
+                if (depth[nb] === undefined) {
+                    depth[nb] = (depth[cur] ?? 0) + 1;
+                    queue.push(nb);
+                }
+            }
+        }
+
+        const byDepth: Record<number, number[]> = {};
+        comp.forEach(id => (byDepth[depth[id] ?? 0] ||= []).push(id));
+
+        const points: Record<number, Point> = { [hub]: { x: 0, y: 0 } };
+        Object.keys(byDepth).forEach(ds => {
+            const d = +ds;
+            const ring = byDepth[d]!;
+            ring.forEach((id, i) => {
+                if (id === hub) return;
+                const angle = d * 1.33 + (i * 2 * Math.PI) / ring.length;
+                const r = 5.2 * d + 1;
+                const jx = (hashSeed(id, 3) - 0.5) * 2.4;
+                const jy = (hashSeed(id, 5) - 0.5) * 2.4;
+                points[id] = { x: Math.cos(angle) * r + jx, y: Math.sin(angle) * r + jy };
+            });
+        });
+        return points;
+    };
+
+    // Pack: pivot core at the origin, the rest fanning out along a golden spiral.
+    comps.forEach((comp, ci) => {
+        const points = placeComponent(comp);
+        let cx = 0;
+        let cy = 0;
+        if (ci > 0) {
+            const isSingle = comp.length === 1;
+            // Keep lone satellites at the rim, clearly detached from the core.
+            cx = Math.cos(ci * GOLDEN) * (isSingle ? 40 : 17 + 5.6 * ci);
+            cy = Math.sin(ci * GOLDEN) * (isSingle ? 40 : 17 + 5.6 * ci);
+        }
+        comp.forEach(id => {
+            const p = points[id];
+            positions[id] = p ? { x: p.x + cx, y: p.y + cy } : { x: cx, y: cy };
+        });
+    });
+
+    // Normalize so every node sits comfortably inside the viewBox (-52..52).
+    const xs = Object.values(positions).map(p => p.x);
+    const ys = Object.values(positions).map(p => p.y);
+    const minX = Math.min(...xs, -40);
+    const maxX = Math.max(...xs, 40);
+    const minY = Math.min(...ys, -40);
+    const maxY = Math.max(...ys, 40);
+    const scale = Math.min(88 / (maxX - minX), 88 / (maxY - minY));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    ids.forEach(id => {
+        const p = positions[id];
+        positions[id] = { x: (p.x - cx) * scale, y: (p.y - cy) * scale };
+    });
+
     return positions;
 }
 
@@ -75,7 +193,7 @@ function traceFrom(a: Point, b: Point, salt: number): { c1: Point; c2: Point; d:
     const dist = Math.hypot(dx, dy) || 1;
     const ux = dx / dist;
     const uy = dy / dist;
-    const amp = Math.min(9, dist * 0.38);
+    const amp = Math.min(6, dist * 0.34);
     const s1 = salt % 2 === 0 ? 1 : -1;
     const s2 = -s1;
     const push = dist * 0.12;
@@ -110,8 +228,8 @@ function measureLength(a: Point, c1: Point, c2: Point, b: Point, samples = 56): 
     return total;
 }
 
-// Breadth-first traversal along real synapses, so the ignition visibly
-// hops from neuron to neuron instead of firing in arbitrary order.
+// Breadth-first traversal along real synapses from the strongest hub, so the
+// ignition visibly hops neuron to neuron along the wires.
 function activationOrder(nodes: NeuronFiringNode[], edges: NeuronFiringEdge[]): number[] {
     if (nodes.length === 0) return [];
 
@@ -122,10 +240,16 @@ function activationOrder(nodes: NeuronFiringNode[], edges: NeuronFiringEdge[]): 
         if (adjacency[e.target]) adjacency[e.target].add(e.source);
     });
 
+    // Start from the hub with the most synapses so the cascade follows the core.
+    let start = nodes[0].id;
+    nodes.forEach(n => {
+        if ((adjacency[n.id]?.size ?? 0) > (adjacency[start]?.size ?? 0)) start = n.id;
+    });
+
     const visited = new Set<number>();
     const order: number[] = [];
-    const queue = [nodes[0].id];
-    visited.add(nodes[0].id);
+    const queue = [start];
+    visited.add(start);
 
     while (queue.length) {
         const current = queue.shift()!;
@@ -156,7 +280,17 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
         [edges, shownIds]
     );
 
-    const positions = useMemo(() => computePositions(shownNodes), [shownNodes]);
+    // Which nodes are actually part of the neural core (have at least one wire)?
+    const coreIds = useMemo(() => {
+        const s = new Set<number>();
+        shownEdges.forEach(e => {
+            s.add(e.source);
+            s.add(e.target);
+        });
+        return s;
+    }, [shownEdges]);
+
+    const positions = useMemo(() => computePositions(shownNodes, shownEdges), [shownNodes, shownEdges]);
     const order = useMemo(() => activationOrder(shownNodes, shownEdges), [shownNodes, shownEdges]);
     const orderKey = order.join(',');
 
@@ -179,10 +313,9 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
         return map;
     }, [shownEdges, positions]);
 
-    const [frame, setFrame] = useState({ lit: 0, current: null as number | null, wipe: 0 });
+    // progress[i] = how far neuron order[i] has travelled (0 → 1) this cycle.
+    const [frame, setFrame] = useState<{ prog: Record<number, number> }>({ prog: {} });
 
-    // One requestAnimationFrame loop drives the whole ignition: step timing is
-    // eased and each energy pulse travels along its trace with interpolation.
     useEffect(() => {
         if (!order.length) return;
 
@@ -191,9 +324,15 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
             const ease = 1 - Math.abs(2 * progress - 1);
             return STEP_MAX - (STEP_MAX - STEP_MIN) * ease;
         });
-        const timeline: number[] = [0];
-        for (let i = 0; i < durations.length; i++) timeline.push(timeline[i] + durations[i]);
-        const total = timeline[timeline.length - 1];
+        // Overlapping cascade: the next neuron ignites before the previous pulse
+        // finishes, so waves chase each other along the wires.
+        const starts: number[] = [];
+        let t = 0;
+        for (let i = 0; i < durations.length; i++) {
+            starts.push(t);
+            t += durations[i] * OVERLAP;
+        }
+        const total = starts[durations.length - 1] + durations[durations.length - 1];
 
         let raf = 0;
         let cycleStart = performance.now();
@@ -203,16 +342,21 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
 
             if (elapsed >= total + LOOP_PAUSE) {
                 cycleStart = now;
-                setFrame({ lit: 0, current: null, wipe: 0 });
+                setFrame({ prog: {} });
             } else if (elapsed < total) {
-                let i = 0;
-                while (i < timeline.length - 1 && elapsed >= timeline[i + 1]) i++;
-                const stepStart = timeline[i];
-                const stepDur = durations[i];
-                const local = Math.min(1, (elapsed - stepStart) / stepDur);
-                setFrame({ lit: i + 1, current: order[i], wipe: easeInOutSine(local) });
+                const prog: Record<number, number> = {};
+                for (let i = 0; i < order.length; i++) {
+                    if (elapsed < starts[i]) break;
+                    const id = order[i];
+                    const local = Math.min(1, (elapsed - starts[i]) / durations[i]);
+                    const hidden = local <= 0.02;
+                    prog[id] = hidden ? 0 : smootherstep(local);
+                }
+                setFrame({ prog });
             } else {
-                setFrame({ lit: order.length, current: null, wipe: 0 });
+                const full: Record<number, number> = {};
+                order.forEach(id => (full[id] = 1));
+                setFrame({ prog: full });
             }
 
             raf = requestAnimationFrame(loop);
@@ -225,13 +369,10 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
     if (shownNodes.length === 0) return null;
 
     const dotRadius = shownNodes.length > 6 ? 1.6 : 1.9;
-    const litSet = new Set(order.slice(0, frame.lit));
-    const wipeActive = frame.current !== null && frame.wipe > 0 && frame.wipe < 1;
-    const firingEdges = new Set(
-        wipeActive ? shownEdges.filter(e => e.source === frame.current || e.target === frame.current) : []
-    );
-    // Soft fade-in/out along the pulse so each wave glides instead of slashing.
-    const pulseOpacity = Math.sin(Math.PI * frame.wipe);
+    const isMid = (id: number) => {
+        const p = frame.prog[id];
+        return p !== undefined && p > 0 && p < 1;
+    };
 
     return (
         <div className="w-full max-w-[190px]">
@@ -252,13 +393,16 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                 {shownEdges.map((edge, idx) => {
                     const trace = traces[`${edge.source}-${edge.target}`];
                     if (!trace) return null;
-                    const sourceLit = litSet.has(edge.source);
-                    const targetLit = litSet.has(edge.target);
-                    const charged = Number(sourceLit) + Number(targetLit);
-                    const firing = firingEdges.has(edge) && wipeActive;
-                    const fromSource = frame.current === edge.source;
+                    const srcP = frame.prog[edge.source] ?? 0;
+                    const tgtP = frame.prog[edge.target] ?? 0;
+                    const srcMid = srcP > 0 && srcP < 1;
+                    const tgtMid = tgtP > 0 && tgtP < 1;
+                    const charged = (srcP > 0 ? 1 : 0) + (tgtP > 0 ? 1 : 0);
+                    const firing = srcMid || tgtMid;
+                    const fromSource = srcMid ? true : !tgtMid;
+                    const wipe = srcMid ? srcP : tgtP;
 
-                    const grown = firing ? Math.max(0, frame.wipe * trace.length) : 0;
+                    const grown = firing && wipe ? Math.max(0, wipe * trace.length) : 0;
 
                     return (
                         <g key={`${edge.source}-${edge.target}`}>
@@ -284,7 +428,8 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                                     style={{ animation: 'dp-flow 1100ms linear infinite' }}
                                 />
                             )}
-                            {/* White energy pulse racing along the trace. */}
+                            {/* White energy pulses racing along the trace — several
+                                can travel at once when the cascade overlaps. */}
                             {grown > 0 && (
                                 <>
                                     <path
@@ -295,7 +440,8 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                                         strokeLinecap="round"
                                         strokeDasharray={`${grown.toFixed(2)} ${trace.length.toFixed(2)}`}
                                         filter={GLOW_FILTER}
-                                        opacity={0.95 * pulseOpacity}
+                                        opacity={0.95 * Math.sin(Math.PI * Math.min(1, wipe))}
+                                        style={{ pointerEvents: 'none' }}
                                     />
                                     <circle
                                         cx={cubicPoint(
@@ -303,19 +449,20 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                                             fromSource ? trace.c1 : trace.c2,
                                             fromSource ? trace.c2 : trace.c1,
                                             fromSource ? positions[edge.target]! : positions[edge.source]!,
-                                            frame.wipe
+                                            wipe
                                         ).x}
                                         cy={cubicPoint(
                                             fromSource ? positions[edge.source]! : positions[edge.target]!,
                                             fromSource ? trace.c1 : trace.c2,
                                             fromSource ? trace.c2 : trace.c1,
                                             fromSource ? positions[edge.target]! : positions[edge.source]!,
-                                            frame.wipe
+                                            wipe
                                         ).y}
                                         r={1.2}
                                         fill="#ffffff"
                                         filter={GLOW_FILTER}
-                                        opacity={pulseOpacity}
+                                        opacity={Math.sin(Math.PI * Math.min(1, wipe))}
+                                        style={{ pointerEvents: 'none' }}
                                     />
                                 </>
                             )}
@@ -323,12 +470,31 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                     );
                 })}
 
-                {/* Neurons: tiny dots; the firing one throws a thin white glare. */}
+                {/* Neurons: tiny dots; firing ones throw a thin white glare. */}
                 {shownNodes.map(node => {
                     const p = positions[node.id];
                     if (!p) return null;
-                    const lit = litSet.has(node.id);
-                    const isFiring = frame.current === node.id && frame.wipe > 0;
+                    const inCore = coreIds.has(node.id);
+                    const prog = frame.prog[node.id] ?? 0;
+                    const lit = prog > 0;
+                    const firing = isMid(node.id);
+
+                    // Satellites (no synapse in the drawn slice) stay calm and
+                    // faint on the rim — present, but clearly outside the live core.
+                    if (!inCore) {
+                        return (
+                            <g key={node.id}>
+                                <title>{node.title}</title>
+                                <circle
+                                    cx={p.x}
+                                    cy={p.y}
+                                    r={dotRadius * 0.8}
+                                    fill={NODE_SATELLITE}
+                                    opacity={0.5}
+                                />
+                            </g>
+                        );
+                    }
 
                     return (
                         <g key={node.id}>
@@ -336,19 +502,19 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                             <circle
                                 cx={p.x}
                                 cy={p.y}
-                                r={isFiring ? dotRadius + 0.4 + frame.wipe * 0.5 : dotRadius}
-                                fill={isFiring ? '#ffffff' : lit ? ACTIVE_BLUE : NODE_IDLE}
-                                filter={isFiring ? GLOW_FILTER : undefined}
-                                opacity={isFiring ? 1 : lit ? 0.95 : 0.6}
+                                r={firing ? dotRadius + 0.4 + frame.prog[node.id]! * 0.5 : dotRadius}
+                                fill={firing ? '#ffffff' : lit ? ACTIVE_BLUE : NODE_IDLE}
+                                filter={firing ? GLOW_FILTER : undefined}
+                                opacity={firing ? 1 : lit ? 0.95 : 0.6}
                             />
                             <circle
                                 cx={p.x}
                                 cy={p.y}
-                                r={isFiring ? dotRadius + 1.4 : dotRadius * 2}
+                                r={firing ? dotRadius + 1.4 : dotRadius * 2}
                                 fill="none"
                                 stroke="#ffffff"
                                 strokeWidth={0.35}
-                                opacity={isFiring ? (1 - frame.wipe) * 0.5 : 0}
+                                opacity={firing ? (1 - frame.prog[node.id]!) * 0.5 : 0}
                             />
                         </g>
                     );

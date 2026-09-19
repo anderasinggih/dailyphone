@@ -526,7 +526,10 @@ function playCompletionChime(soundEnabled: boolean): void {
                     onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
                 });
                 if (!last || last.type === 'error') {
-                    throw new Error(last?.reply || 'No response from the server');
+                    throw new Error(
+                        last?.reply ||
+                        'The server did not reply — the file may be too large or the AI is busy. Try again, split the file into smaller parts, or wait a moment.'
+                    );
                 }
                 applyReply(last);
             } else {

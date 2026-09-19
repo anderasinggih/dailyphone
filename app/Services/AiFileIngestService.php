@@ -109,7 +109,7 @@ class AiFileIngestService
         try {
             switch (true) {
                 case $mime === 'application/pdf' || $ext === 'pdf':
-                    return '';
+                    return $this->truncate($this->extractPdf($path), $max);
 
                 case $ext === 'xlsx' || $ext === 'xlsm':
                     return $this->truncate($this->extractXlsx($path), $max);
@@ -475,6 +475,132 @@ class AiFileIngestService
         }
         $text = strip_tags($docXml);
         return $this->cleanText(html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /**
+     * Best-effort plain-text extraction from a PDF: inflate every FlateDecode
+     * content stream, then pick out the literal strings shown by the text-showing
+     * operators (Tj / TJ / ' / "). Works without any external binary or library;
+     * scanned/image-only PDFs yield '' and are still sent as inline data instead.
+     */
+    protected function extractPdf(string $path): string
+    {
+        $raw = @file_get_contents($path);
+        if ($raw === false || trim($raw) === '') {
+            return '';
+        }
+
+        $pages = [];
+        if (preg_match_all('/stream[\r\n]+(.*?)[\r\n]+endstream/s', $raw, $matches)) {
+            foreach ($matches[1] as $stream) {
+                $body = ltrim($stream);
+                $decoded = @gzuncompress($body);
+                if ($decoded === false) {
+                    $decoded = @gzinflate($body);
+                }
+                if ($decoded === false) {
+                    $decoded = @gzdecode($body);
+                }
+                if ($decoded === false) {
+                    $decoded = $body;
+                }
+                $text = $this->pdfContentToText($decoded);
+                if (trim($text) !== '') {
+                    $pages[] = $text;
+                }
+            }
+        }
+
+        if ($pages === []) {
+            $text = $this->pdfContentToText($raw);
+            if (trim($text) !== '') {
+                $pages[] = $text;
+            }
+        }
+
+        return $this->cleanText(implode("\n\n", $pages));
+    }
+
+    /**
+     * Convert one decoded PDF content stream into readable text by keeping only
+     * literal strings that are actually rendered by a text-showing operator.
+     */
+    protected function pdfContentToText(string $decoded): string
+    {
+        $len = strlen($decoded);
+        $literals = [];
+        $i = 0;
+        while ($i < $len) {
+            if ($decoded[$i] !== '(') {
+                $i++;
+                continue;
+            }
+            $start = $i;
+            $j = $i + 1;
+            $depth = 1;
+            $buf = '';
+            while ($j < $len && $depth > 0) {
+                $c = $decoded[$j];
+                if ($c === '\\' && $j + 1 < $len) {
+                    $buf .= $this->pdfEscape($decoded[$j + 1]);
+                    $j += 2;
+                    continue;
+                }
+                if ($c === '(') {
+                    $depth++;
+                } elseif ($c === ')') {
+                    $depth--;
+                    if ($depth === 0) {
+                        $j++;
+                        break;
+                    }
+                }
+                $buf .= $c;
+                $j++;
+            }
+            $literals[] = ['start' => $start, 'end' => $j, 'text' => trim($buf)];
+            $i = $j;
+        }
+
+        // Keep only the literals that a text-showing operator (Tj / TJ / ' / ")
+        // renders, ignoring dictionary strings far from any of them.
+        $shown = [];
+        $lastShownEnd = null;
+        foreach ($literals as $lit) {
+            $window = substr($decoded, $lit['end'], 140);
+            if (!preg_match('/^.{0,140}?(?:ET|\b(Tj|TJ|\'|"))/s', $window, $mm) || empty($mm[1])) {
+                continue;
+            }
+
+            // A Td/TD/T*/Tm/ET between two shown strings means a new line.
+            $gapHasBreak = $lastShownEnd !== null
+                && preg_match('/\b(E[TL]|T[dDm]|T\*)\b/', substr($decoded, $lastShownEnd, $lit['start'] - $lastShownEnd));
+            $shown[] = ($gapHasBreak ? "\n" : ' ') . $lit['text'];
+            $lastShownEnd = $lit['end'];
+        }
+
+        if ($shown === []) {
+            return '';
+        }
+
+        $joined = implode('', $shown);
+        return preg_replace('/\s+/', ' ', $joined);
+    }
+
+    /**
+     * Un-escape a single PDF literal-string escaped character (\n \t \( \) \\ and octal \NNN).
+     */
+    protected function pdfEscape(string $char): string
+    {
+        return match ($char) {
+            'n' => "\n",
+            'r' => "\r",
+            't' => "\t",
+            'b' => "\b",
+            'f' => "\f",
+            '(', ')', '\\' => $char,
+            default => ctype_digit($char) ? chr((int)octdec($char)) : ' ',
+        };
     }
 
     protected function extractZip(string $path): string

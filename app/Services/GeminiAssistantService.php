@@ -74,9 +74,8 @@ class GeminiAssistantService
         // Try requested model first, then fallback to high-availability active models
         $candidateModels = array_unique(array_filter([
             $requestedModel,
+            'gemini-3.6-flash',
             'gemini-3.5-flash-lite',
-            'gemini-3.1-flash-lite',
-            'gemini-2.5-flash',
             'gemini-3.5-flash',
             'gemini-flash-latest',
         ]));
@@ -588,14 +587,22 @@ PROMPT;
             ]
         ];
 
-        $candidateModels = array_unique(array_filter([
-            $this->model,
-            'gemini-3.5-flash-lite',
-            'gemini-3.1-flash-lite',
-            'gemini-2.5-flash',
-            'gemini-3.5-flash',
-            'gemini-flash-latest',
-        ]));
+        // Some Gemini models accept PDF inline_data and others reject it with
+        // "Request contains an invalid argument" — so when the user attached a
+        // PDF we put a PDF-capable model first, otherwise we honour the
+        // configured model. The list is capped so a busy request never spirals
+        // into long serial retries that kill the stream (and resemble "no
+        // response from the server" for the user).
+        $hasPdf = $includeAttachments->contains(fn ($a) => (string)($a->kind ?? '') === 'pdf');
+        $pdfModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
+
+        $candidateModels = array_values(array_unique(array_filter(array_merge(
+            $hasPdf ? $pdfModels : [],
+            [$this->model],
+            ['gemini-3.6-flash'],
+            $hasPdf ? [] : $pdfModels
+        ))));
+        $candidateModels = array_slice($candidateModels, 0, 4);
 
         $lastErrorMsg = '';
 
@@ -604,7 +611,7 @@ PROMPT;
                 // 8192 output tokens can take well over 30s; keep the client from
                 // racing ahead of slow completions.
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
-                $response = Http::timeout(90)->post($url, $payload);
+                $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
 
                 if ($response->successful()) {
                     $text = $response->json('candidates.0.content.parts.0.text', '');
@@ -642,12 +649,20 @@ PROMPT;
         foreach ($attachments as $att) {
             $name = $att->original_name ?? 'attachment';
             $isVisual = in_array($att->kind ?? '', ['image', 'pdf'], true);
+            $text = trim((string)($att->extracted_text ?? ''));
 
+            // Server-extracted text (CSV/XLSX/DOCX/PDF/ZIP/...) is cheaper and
+            // faster for the model than re-parsing blobs, so prefer it. Images
+            // always go as inline data; PDFs only fall back to inline data when
+            // no text could be extracted.
+            $sendInline = false;
             if ($isVisual && $inline < $maxInline) {
                 $fullPath = storage_path('app/private/' . $att->storage_path);
                 if (is_file($fullPath) && filesize($fullPath) > 0) {
                     $mime = $att->mime_type ?: 'image/jpeg';
-                    if (str_starts_with($mime, 'image/') || $mime === 'application/pdf') {
+                    $isImage = str_starts_with($mime, 'image/');
+                    $isPdf = $mime === 'application/pdf';
+                    if ($text === '' && ($isImage || $isPdf)) {
                         $bytes = file_get_contents($fullPath);
                         if ($bytes !== false && strlen($bytes) <= 10 * 1024 * 1024) {
                             $parts[] = [
@@ -664,12 +679,11 @@ PROMPT;
                 }
             }
 
-            $text = trim((string)($att->extracted_text ?? ''));
             $body .= "\n--- FILE: {$name} (" . ($att->mime_type ?: 'unknown') . ' / ' . number_format((int)$att->size_bytes) . " bytes) ---\n";
-            $body .= $text === '' ? '(tidak ada teks yang bisa diekstrak dari file ini)' . "\n" : mb_substr($text, 0, 40000) . "\n";
+            $body .= $text === '' ? '(tidak ada teks yang bisa diekstrak dari file ini)' . "\n" : mb_substr($text, 0, 60000) . "\n";
         }
 
-        $parts[0]['text'] .= mb_substr($body, 0, 200000);
+        $parts[0]['text'] .= mb_substr($body, 0, 220000);
 
         return $parts;
     }

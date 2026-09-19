@@ -234,6 +234,11 @@ class AiAssistantController extends Controller
         }
 
         $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments) {
+            // Large attachments (PDF books, archives) can make the Gemini round
+            // trip take minutes; make sure PHP's execution clock never cuts the
+            // stream mid-flight, otherwise the client sees an empty response.
+            @set_time_limit(600);
+
             $emit = function (array $payload): void {
                 echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
                 if (ob_get_level() > 0) {

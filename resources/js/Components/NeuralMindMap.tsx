@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react';
+import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import {
     ZoomIn,
     ZoomOut,
@@ -517,31 +517,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         return map;
     }, [links, selectedId]);
 
-    // Screen position of the selected node so the detail card can anchor below it.
-    const selNodeScreen = useMemo(() => {
-        if (!selectedNode) return null;
-        const p = positions[selectedNode.id];
-        if (!p) return null;
-        return { x: p.x * view.k + view.x, y: p.y * view.k + view.y };
-    }, [selectedNode, positions, view]);
-
     const detailRef = useRef<HTMLDivElement>(null);
-    const [detailHeight, setDetailHeight] = useState(0);
-
-    useLayoutEffect(() => {
-        if (detailRef.current) {
-            setDetailHeight(detailRef.current.offsetHeight);
-        }
-    }, [selectedId, containerSize.w]);
-
-    const cardW = Math.max(240, containerSize.w - 24);
-    const detailWidth = Math.min(430, cardW);
-    const detailLeft = selNodeScreen
-        ? Math.max(12, Math.min(selNodeScreen.x - detailWidth / 2, containerSize.w - detailWidth - 12))
-        : 12;
-    const belowTop = selNodeScreen ? selNodeScreen.y + (NODE_H / 2) * view.k + 14 : 0;
-    const aboveTop = selNodeScreen ? selNodeScreen.y - (NODE_H / 2) * view.k - 14 : 0;
-    const placeAbove = selNodeScreen ? belowTop + detailHeight > containerSize.h - 10 : false;
 
     const searching = searchQuery.trim().length > 0;
 
@@ -786,20 +762,17 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                     </svg>
                 )}
 
-                {/* Node detail — anchored right below the clicked node */}
-                {selectedNode && selNodeScreen && (
+                {/* Node detail — anchored to the bottom of the map container as a
+                    sheet, so it never covers the graph or the clicked node. */}
+                {selectedNode && (
                     <div
                         ref={detailRef}
-                        className="absolute z-20 rounded-2xl bg-card/95 dark:bg-card/90 backdrop-blur-2xl border border-border/70 shadow-2xl p-4 space-y-3 animate-in fade-in duration-150"
-                        style={{
-                            left: detailLeft,
-                            top: placeAbove ? aboveTop : belowTop,
-                            width: detailWidth,
-                            transform: placeAbove ? 'translateY(-100%)' : 'none',
-                        }}
+                        className="absolute inset-x-3 bottom-3 z-20 rounded-2xl bg-card/95 dark:bg-card/90 backdrop-blur-2xl border border-border/70 shadow-2xl p-4 space-y-3 animate-in slide-in-from-bottom-2 fade-in duration-150"
                         onPointerDown={e => e.stopPropagation()}
                         onDoubleClick={e => e.stopPropagation()}
                     >
+                        <div className="mx-auto h-1 w-10 rounded-full bg-muted-foreground/25" />
+
                         <div className="flex items-start justify-between gap-2">
                             <div className="flex items-center gap-2 min-w-0">
                                 <span
