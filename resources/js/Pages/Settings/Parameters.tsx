@@ -41,9 +41,23 @@ const CATEGORY_OPTIONS = [
     { key: 'android', label: 'Android' },
 ];
 
-function AddParameterForm() {
+const SUGGESTED_PARAMS = [
+    'Brand',
+    'Warna (Color)',
+    'Kapasitas Memori (Memory)',
+    'Tipe Lisensi (License)',
+    'Kondisi Unit (Condition)',
+    'Supplier',
+    'Kelengkapan Aksesoris',
+    'Status Garansi',
+];
+
+function AddParameterForm({ existingNames = [] }: { existingNames?: string[] }) {
     const [name, setName] = useState('');
     const [category, setCategory] = useState('global');
+
+    const usedNames = new Set(existingNames.map(n => n.toLowerCase().trim()));
+    const available = SUGGESTED_PARAMS.filter(s => !usedNames.has(s.split(' (')[0].toLowerCase()));
 
     const submit = () => {
         if (!name.trim()) return;
@@ -90,6 +104,25 @@ function AddParameterForm() {
                 >
                     <Plus className="h-3.5 w-3.5" /> Create
                 </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-border/30">
+                <span className="text-[10px] font-bold text-muted-foreground mr-1 shrink-0">Quick add fields:</span>
+                {available.length === 0 ? (
+                    <span className="text-[10px] text-muted-foreground/70">All suggested fields already exist.</span>
+                ) : available.map(s => (
+                    <button
+                        key={s}
+                        type="button"
+                        onClick={() => setName(s)}
+                        className={`rounded-lg px-2.5 py-1 text-[10px] font-semibold border transition shrink-0 ${
+                            name === s
+                                ? 'border-primary bg-primary/10 text-primary'
+                                : 'border-border/60 bg-muted/40 text-muted-foreground hover:border-primary/50 hover:text-foreground'
+                        }`}
+                    >
+                        + {s}
+                    </button>
+                ))}
             </div>
         </div>
     );
@@ -198,7 +231,7 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                     </div>
 
                     {isAdding && (
-                        <AddParameterForm />
+                        <AddParameterForm existingNames={safeParameters.map(p => p.name)} />
                     )}
 
                     {safeParameters.length === 0 ? (
@@ -209,7 +242,7 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                                 <p className="text2">Create your first parameter below, then add color, memory, license, or any other options to it.</p>
                             </div>
                             <div className="mx-auto max-w-3xl text-left">
-                                <AddParameterForm />
+                                <AddParameterForm existingNames={safeParameters.map(p => p.name)} />
                             </div>
                         </div>
                     ) : (
