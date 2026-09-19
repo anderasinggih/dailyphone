@@ -18,14 +18,12 @@ export default function Login({
 
     useEffect(() => {
         if (typeof window === 'undefined') return;
-        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        const apply = (e: MediaQueryListEvent | MediaQueryList) => {
-            if (e.matches) document.documentElement.classList.add('dark');
-            else document.documentElement.classList.remove('dark');
-        };
-        apply(mediaQuery);
-        mediaQuery.addEventListener('change', apply);
-        return () => mediaQuery.removeEventListener('change', apply);
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
     }, []);
 
     const submit: FormEventHandler = (e) => {
@@ -72,8 +70,8 @@ export default function Login({
                     <div className="apple-card p-4 space-y-3.5 bg-card/95 backdrop-blur-md">
                         {/* Email Input */}
                         <div>
-                            <label htmlFor="email" className="block text-[11px] font-semibold text-muted-foreground mb-1 tracking-wide">
-                                EMAIL ADDRESS
+                            <label htmlFor="email" className="block text-xs font-semibold text-foreground mb-1">
+                                Email
                             </label>
                             <input
                                 id="email"
@@ -84,7 +82,7 @@ export default function Login({
                                 required
                                 placeholder="admin@housephone.com"
                                 onChange={(e) => setData('email', e.target.value)}
-                                className="w-full rounded-xl border border-border/70 bg-background/80 px-3.5 py-2.5 text-xs font-medium text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
+                                className="w-full rounded-xl border border-border/80 bg-background px-3.5 py-2.5 text-xs font-medium text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
                             />
                             {errors.email && (
                                 <p className="text-[11px] font-medium text-destructive mt-1">{errors.email}</p>
@@ -93,8 +91,8 @@ export default function Login({
 
                         {/* Password Input */}
                         <div>
-                            <label htmlFor="password" className="block text-[11px] font-semibold text-muted-foreground mb-1 tracking-wide">
-                                PASSWORD
+                            <label htmlFor="password" className="block text-xs font-semibold text-foreground mb-1">
+                                Password
                             </label>
                             <div className="relative">
                                 <input
@@ -106,7 +104,7 @@ export default function Login({
                                     required
                                     placeholder="••••••••"
                                     onChange={(e) => setData('password', e.target.value)}
-                                    className="w-full rounded-xl border border-border/70 bg-background/80 px-3.5 py-2.5 pr-10 text-xs font-medium text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-mono"
+                                    className="w-full rounded-xl border border-border/80 bg-background px-3.5 py-2.5 pr-10 text-xs font-medium text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-mono"
                                 />
                                 <button
                                     type="button"

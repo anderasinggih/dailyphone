@@ -1,7 +1,6 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, useForm, router, Link } from '@inertiajs/react';
 import { 
-    Settings, 
     Building2, 
     Clock, 
     ShieldCheck, 
@@ -9,18 +8,11 @@ import {
     Sliders, 
     Users, 
     Store as StoreIcon, 
-    Plus, 
     Trash2, 
     Eye, 
     EyeOff, 
-    CheckCircle2, 
-    AlertCircle, 
     ChevronRight,
     ChevronLeft,
-    Mail,
-    Bell,
-    Layers,
-    ExternalLink,
     MapPin,
     Check
 } from 'lucide-react';
@@ -236,192 +228,244 @@ export default function General({ settings, schedules, employees, stores }: Gene
         <AuthenticatedLayout>
             <Head title="Settings" />
 
-            <div className="py-6 sm:py-10">
-                <div className="mx-auto max-w-xl px-4 sm:px-6">
+            <div className="py-6 sm:py-8">
+                <div className="mx-auto max-w-5xl px-4 sm:px-6">
 
                     {/* ══════════════════════════════════════════════════════════════════
-                        ROOT PAGE: iOS Grouped Settings Menu
+                        ROOT PAGE: Responsive Clean Settings Grid & List
                     ══════════════════════════════════════════════════════════════════ */}
                     {currentPage === 'root' && (
                         <div className="space-y-6 animate-in fade-in duration-200">
-                            {/* iOS Navigation Header */}
-                            <div className="px-1 pt-1 pb-1">
-                                <h1 className="text-3xl font-bold tracking-tight text-foreground">
+                            {/* Navigation Header */}
+                            <div className="flex flex-col gap-1">
+                                <h1 className="h1 text-foreground">
                                     Settings
                                 </h1>
+                                <p className="text2 text-muted-foreground">
+                                    Manage store preferences, attendance rules, AI assistant, and master data.
+                                </p>
                             </div>
 
-                            {/* Section 1: Core System & Store Preferences */}
-                            <div>
-                                <div className="apple-section-header">Store & Identity</div>
-                                <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                    {/* Company & Identity */}
-                                    <button
-                                        type="button"
-                                        onClick={() => navigateTo('company')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-blue-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <Building2 className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Company & Notifications
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                            <span className="text-xs text-muted-foreground font-normal">
-                                                {settings.company_name || 'Daily Phone'}
-                                            </span>
-                                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
-                                        </div>
-                                    </button>
+                            {/* Responsive 2-Column Grid on Laptop/Desktop */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                                
+                                {/* Column 1: Store & Identity + Master Data */}
+                                <div className="space-y-6">
+                                    <div>
+                                        <div className="apple-section-header">Store & Identity</div>
+                                        <div className="apple-card overflow-hidden divide-y divide-border/60">
+                                            {/* Company & Identity */}
+                                            <button
+                                                type="button"
+                                                onClick={() => navigateTo('company')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <Building2 className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Company & Notifications
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Store profile & invoice alerts
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="text2 text-muted-foreground font-normal">
+                                                        {settings.company_name || 'Daily Phone'}
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </button>
 
-                                    {/* Working Hours */}
-                                    <button
-                                        type="button"
-                                        onClick={() => navigateTo('work_policy')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <Clock className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Working Hours & Policy
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                            <span className="text-xs text-muted-foreground font-mono">
-                                                {(settings.work_start_time || '09:00').substring(0, 5)} - {(settings.work_end_time || '18:00').substring(0, 5)}
-                                            </span>
-                                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
-                                        </div>
-                                    </button>
+                                            {/* Working Hours */}
+                                            <button
+                                                type="button"
+                                                onClick={() => navigateTo('work_policy')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <Clock className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Working Hours & Policy
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Shift hours & grace tolerance
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="caption text-muted-foreground font-mono">
+                                                        {(settings.work_start_time || '09:00').substring(0, 5)} - {(settings.work_end_time || '18:00').substring(0, 5)}
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </button>
 
-                                    {/* Security & Geofence */}
-                                    <button
-                                        type="button"
-                                        onClick={() => navigateTo('geofence')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <ShieldCheck className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Security & Geofence
-                                            </span>
+                                            {/* Security & Geofence */}
+                                            <button
+                                                type="button"
+                                                onClick={() => navigateTo('geofence')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <ShieldCheck className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Security & Geofence
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            GPS attendance lock
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="text2 text-muted-foreground font-normal">
+                                                        {settings.geofence_lock_enabled ? 'Active' : 'Disabled'}
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </button>
                                         </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                            <span className="text-xs text-muted-foreground font-normal">
-                                                {settings.geofence_lock_enabled ? 'Enforced' : 'Disabled'}
-                                            </span>
-                                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                    </div>
+
+                                    {/* Master Data Shortcuts */}
+                                    <div>
+                                        <div className="apple-section-header">Master Data Management</div>
+                                        <div className="apple-card overflow-hidden divide-y divide-border/60">
+                                            <Link
+                                                href={route('settings.parameters')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <Sliders className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Product & Unit Parameters
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Brands, categories, storage & licenses
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
+                                            </Link>
+
+                                            <Link
+                                                href={route('stores.index')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <StoreIcon className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Store Branches & GPS Radii
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Manage physical branch locations
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
+                                            </Link>
+
+                                            <Link
+                                                href={route('users.index')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <Users className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Users & Staff Accounts
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Roles, permissions & credentials
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
+                                            </Link>
                                         </div>
-                                    </button>
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* Section 2: Intelligence & Operations */}
-                            <div>
-                                <div className="apple-section-header">Services & Operations</div>
-                                <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                    {/* AI Assistant */}
-                                    <button
-                                        type="button"
-                                        onClick={() => navigateTo('ai')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-indigo-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <Sparkles className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                AI Assistant (Intelligence)
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                            <span className="text-xs text-muted-foreground font-normal">
-                                                {settings.ai_enabled ? 'Active' : 'Off'}
-                                            </span>
-                                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
-                                        </div>
-                                    </button>
+                                {/* Column 2: Intelligence & Operations */}
+                                <div className="space-y-6">
+                                    <div>
+                                        <div className="apple-section-header">Services & Operations</div>
+                                        <div className="apple-card overflow-hidden divide-y divide-border/60">
+                                            {/* AI Assistant */}
+                                            <button
+                                                type="button"
+                                                onClick={() => navigateTo('ai')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <Sparkles className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            AI Assistant (Intelligence)
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Gemini LLM model & API keys
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="text2 text-muted-foreground font-normal">
+                                                        {settings.ai_enabled ? 'Active' : 'Off'}
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </button>
 
-                                    {/* Shift Schedules */}
-                                    <button
-                                        type="button"
-                                        onClick={() => navigateTo('shifts')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-rose-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <Users className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Staff Shift Schedules
-                                            </span>
+                                            {/* Shift Schedules */}
+                                            <button
+                                                type="button"
+                                                onClick={() => navigateTo('shifts')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <Users className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Staff Shift Schedules
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Individual branch shift rules
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="caption text-muted-foreground font-mono">
+                                                        {schedules.length} custom
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </button>
                                         </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                            <span className="text-xs text-muted-foreground font-mono">
-                                                {schedules.length} custom
-                                            </span>
-                                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
-                                        </div>
-                                    </button>
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* Section 3: Master Data Shortcuts */}
-                            <div>
-                                <div className="apple-section-header">Master Data Management</div>
-                                <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                    <Link
-                                        href={route('settings.parameters')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-sky-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <Sliders className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Product & Unit Parameters
-                                            </span>
-                                        </div>
-                                        <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
-                                    </Link>
-
-                                    <Link
-                                        href={route('stores.index')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <StoreIcon className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Store Branches & GPS Radii
-                                            </span>
-                                        </div>
-                                        <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
-                                    </Link>
-
-                                    <Link
-                                        href={route('users.index')}
-                                        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 active:bg-muted/60 transition group"
-                                    >
-                                        <div className="flex items-center gap-3.5 min-w-0">
-                                            <div className="h-7 w-7 rounded-lg bg-purple-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                <Users className="h-4 w-4" />
-                                            </div>
-                                            <span className="text-[15px] font-medium text-foreground truncate">
-                                                Users & Staff Accounts
-                                            </span>
-                                        </div>
-                                        <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
-                                    </Link>
-                                </div>
                             </div>
                         </div>
                     )}
@@ -430,72 +474,61 @@ export default function General({ settings, schedules, employees, stores }: Gene
                         SUBPAGE 1: Company & Notifications
                     ══════════════════════════════════════════════════════════════════ */}
                     {currentPage === 'company' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
+                        <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
                             {/* Top Navigation Bar with Back button */}
-                            <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                            <div className="flex items-center justify-between border-b border-border/40 pb-4">
                                 <button
                                     type="button"
                                     onClick={() => navigateTo('root')}
-                                    className="inline-flex items-center gap-1 text-[15px] font-medium text-primary hover:opacity-80 active:scale-95 transition -ml-1"
+                                    className="inline-flex items-center gap-1 text2 font-medium text-primary hover:opacity-80 active:scale-95 transition"
                                 >
-                                    <ChevronLeft className="h-5 w-5 -mr-1" />
+                                    <ChevronLeft className="h-5 w-5 -ml-1" />
                                     <span>Settings</span>
                                 </button>
-                                <h2 className="text-sm font-semibold text-foreground">
+                                <h2 className="h3 text-foreground">
                                     Company & Notifications
                                 </h2>
                                 <div className="w-16"></div>
                             </div>
 
                             <form onSubmit={submitCompany} className="space-y-6">
-                                <div>
-                                    <div className="apple-section-header">Store Identity</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <div className="px-4 py-3">
-                                            <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                                                Company / Store Name
-                                            </label>
-                                            <input
-                                                type="text"
-                                                value={companyForm.data.company_name}
-                                                onChange={e => companyForm.setData('company_name', e.target.value)}
-                                                placeholder="Daily Phone"
-                                                className="w-full bg-transparent text-[15px] font-medium text-foreground focus:outline-none placeholder:text-muted-foreground/50 py-1"
-                                            />
-                                        </div>
-                                    </div>
-                                    <p className="px-2 pt-1.5 text-[11px] text-muted-foreground">
+                                <div className="space-y-2">
+                                    <label className="text1 text-foreground block font-medium">
+                                        Company / Store Name
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={companyForm.data.company_name}
+                                        onChange={e => companyForm.setData('company_name', e.target.value)}
+                                        placeholder="Daily Phone"
+                                        className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                    />
+                                    <p className="caption text-muted-foreground">
                                         Displayed on printed receipts, digital invoices, and customer notifications.
                                     </p>
                                 </div>
 
-                                <div>
-                                    <div className="apple-section-header">Alert Recipient</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <div className="px-4 py-3">
-                                            <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                                                Alert Forwarding Email
-                                            </label>
-                                            <input
-                                                type="email"
-                                                value={companyForm.data.notification_emails}
-                                                onChange={e => companyForm.setData('notification_emails', e.target.value)}
-                                                placeholder="owner@dailyphone.com"
-                                                className="w-full bg-transparent text-[15px] font-medium text-foreground focus:outline-none placeholder:text-muted-foreground/50 py-1"
-                                            />
-                                        </div>
-                                    </div>
-                                    <p className="px-2 pt-1.5 text-[11px] text-muted-foreground">
+                                <div className="space-y-2">
+                                    <label className="text1 text-foreground block font-medium">
+                                        Alert Forwarding Email
+                                    </label>
+                                    <input
+                                        type="email"
+                                        value={companyForm.data.notification_emails}
+                                        onChange={e => companyForm.setData('notification_emails', e.target.value)}
+                                        placeholder="owner@dailyphone.com"
+                                        className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                    />
+                                    <p className="caption text-muted-foreground">
                                         End-of-shift petty cash reconciliations and digital payslips are forwarded here.
                                     </p>
                                 </div>
 
-                                {/* Section-specific Save Button */}
                                 <div className="pt-2">
                                     <button
                                         type="submit"
                                         disabled={companyForm.processing}
-                                        className="w-full apple-btn-primary py-3 text-sm font-semibold shadow-sm"
+                                        className="w-full apple-btn-primary py-3 text2 font-semibold shadow-xs"
                                     >
                                         {companyForm.processing ? 'Saving...' : 'Save Company Details'}
                                     </button>
@@ -508,83 +541,78 @@ export default function General({ settings, schedules, employees, stores }: Gene
                         SUBPAGE 2: Working Hours & Policy
                     ══════════════════════════════════════════════════════════════════ */}
                     {currentPage === 'work_policy' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
+                        <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
                             {/* Top Navigation Bar with Back button */}
-                            <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                            <div className="flex items-center justify-between border-b border-border/40 pb-4">
                                 <button
                                     type="button"
                                     onClick={() => navigateTo('root')}
-                                    className="inline-flex items-center gap-1 text-[15px] font-medium text-primary hover:opacity-80 active:scale-95 transition -ml-1"
+                                    className="inline-flex items-center gap-1 text2 font-medium text-primary hover:opacity-80 active:scale-95 transition"
                                 >
-                                    <ChevronLeft className="h-5 w-5 -mr-1" />
+                                    <ChevronLeft className="h-5 w-5 -ml-1" />
                                     <span>Settings</span>
                                 </button>
-                                <h2 className="text-sm font-semibold text-foreground">
+                                <h2 className="h3 text-foreground">
                                     Working Hours & Policy
                                 </h2>
                                 <div className="w-16"></div>
                             </div>
 
                             <form onSubmit={submitWorkPolicy} className="space-y-6">
-                                <div>
-                                    <div className="apple-section-header">Default Store Schedule</div>
-                                    <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                        <div className="flex items-center justify-between px-4 py-3">
-                                            <span className="text-[15px] font-medium text-foreground">Clock-In Time</span>
+                                <div className="space-y-4">
+                                    <h3 className="h3 text-foreground">Default Store Schedule</h3>
+                                    
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">Clock-In Time</label>
                                             <input
                                                 type="time"
                                                 step="1"
                                                 value={workPolicyForm.data.work_start_time}
                                                 onChange={e => workPolicyForm.setData('work_start_time', e.target.value)}
-                                                className="bg-muted/40 px-3 py-1.5 rounded-lg text-sm font-mono font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                             />
                                         </div>
 
-                                        <div className="flex items-center justify-between px-4 py-3">
-                                            <span className="text-[15px] font-medium text-foreground">Clock-Out Time</span>
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">Clock-Out Time</label>
                                             <input
                                                 type="time"
                                                 step="1"
                                                 value={workPolicyForm.data.work_end_time}
                                                 onChange={e => workPolicyForm.setData('work_end_time', e.target.value)}
-                                                className="bg-muted/40 px-3 py-1.5 rounded-lg text-sm font-mono font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                             />
                                         </div>
                                     </div>
-                                    <p className="px-2 pt-1.5 text-[11px] text-muted-foreground">
+                                    <p className="caption text-muted-foreground">
                                         Applied as the baseline shift schedule for all employees across branches.
                                     </p>
                                 </div>
 
-                                <div>
-                                    <div className="apple-section-header">Attendance Tolerance</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <div className="flex items-center justify-between px-4 py-3">
-                                            <span className="text-[15px] font-medium text-foreground">Late Grace Period</span>
-                                            <div className="flex items-center gap-2">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    max="120"
-                                                    value={workPolicyForm.data.grace_period_minutes}
-                                                    onChange={e => workPolicyForm.setData('grace_period_minutes', parseInt(e.target.value) || 0)}
-                                                    className="w-20 bg-muted/40 px-3 py-1.5 rounded-lg text-sm font-mono font-medium text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary"
-                                                />
-                                                <span className="text-xs text-muted-foreground font-medium">min</span>
-                                            </div>
-                                        </div>
+                                <div className="space-y-2">
+                                    <label className="text1 text-foreground block font-medium">Late Grace Period</label>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max="120"
+                                            value={workPolicyForm.data.grace_period_minutes}
+                                            onChange={e => workPolicyForm.setData('grace_period_minutes', parseInt(e.target.value) || 0)}
+                                            className="w-32 rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                        />
+                                        <span className="text2 text-muted-foreground font-medium">Minutes</span>
                                     </div>
-                                    <p className="px-2 pt-1.5 text-[11px] text-muted-foreground">
-                                        Staff clocking in within this window will not be flagged as tardy.
+                                    <p className="caption text-muted-foreground">
+                                        Staff clocking in within this window will not be flagged as late or tardy.
                                     </p>
                                 </div>
 
-                                {/* Section-specific Save Button */}
                                 <div className="pt-2">
                                     <button
                                         type="submit"
                                         disabled={workPolicyForm.processing}
-                                        className="w-full apple-btn-primary py-3 text-sm font-semibold shadow-sm"
+                                        className="w-full apple-btn-primary py-3 text2 font-semibold shadow-xs"
                                     >
                                         {workPolicyForm.processing ? 'Saving...' : 'Save Policy'}
                                     </button>
@@ -597,71 +625,70 @@ export default function General({ settings, schedules, employees, stores }: Gene
                         SUBPAGE 3: Security & Geofence
                     ══════════════════════════════════════════════════════════════════ */}
                     {currentPage === 'geofence' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
+                        <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
                             {/* Top Navigation Bar with Back button */}
-                            <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                            <div className="flex items-center justify-between border-b border-border/40 pb-4">
                                 <button
                                     type="button"
                                     onClick={() => navigateTo('root')}
-                                    className="inline-flex items-center gap-1 text-[15px] font-medium text-primary hover:opacity-80 active:scale-95 transition -ml-1"
+                                    className="inline-flex items-center gap-1 text2 font-medium text-primary hover:opacity-80 active:scale-95 transition"
                                 >
-                                    <ChevronLeft className="h-5 w-5 -mr-1" />
+                                    <ChevronLeft className="h-5 w-5 -ml-1" />
                                     <span>Settings</span>
                                 </button>
-                                <h2 className="text-sm font-semibold text-foreground">
+                                <h2 className="h3 text-foreground">
                                     Security & Geofence
                                 </h2>
                                 <div className="w-16"></div>
                             </div>
 
                             <div className="space-y-6">
-                                <div>
-                                    <div className="apple-section-header">Attendance Boundaries</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <div className="flex items-center justify-between px-4 py-3.5">
-                                            <div className="space-y-0.5 pr-4">
-                                                <div className="text-[15px] font-medium text-foreground">
-                                                    Enforce GPS Geofence Lock
-                                                </div>
-                                                <div className="text-[12px] text-muted-foreground">
-                                                    Restricts shift clock-in to branch store radius.
-                                                </div>
+                                <div className="apple-card p-5 space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <div className="space-y-1 pr-4">
+                                            <div className="text1 font-semibold text-foreground">
+                                                Enforce GPS Geofence Lock
                                             </div>
-                                            {/* Native Apple Switch */}
-                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={geofenceForm.data.geofence_lock_enabled}
-                                                    onChange={e => submitGeofence(e.target.checked)}
-                                                    className="sr-only peer"
-                                                />
-                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
-                                            </label>
+                                            <div className="text2 text-muted-foreground">
+                                                Restricts shift clock-in to branch store radius.
+                                            </div>
                                         </div>
+                                        {/* Toggle switch */}
+                                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                            <input
+                                                type="checkbox"
+                                                checked={geofenceForm.data.geofence_lock_enabled}
+                                                onChange={e => submitGeofence(e.target.checked)}
+                                                className="sr-only peer"
+                                            />
+                                            <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                        </label>
                                     </div>
-                                    <p className="px-2 pt-1.5 text-[11px] text-muted-foreground">
+                                    <p className="caption text-muted-foreground pt-2 border-t border-border/40">
                                         When active, staff devices must be physically detected within the store radius to clock in or out.
                                     </p>
                                 </div>
 
-                                <div>
-                                    <div className="apple-section-header">Store Coordinates</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <Link
-                                            href={route('stores.index')}
-                                            className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-muted/40 transition group"
-                                        >
-                                            <div className="flex items-center gap-3">
-                                                <div className="h-7 w-7 rounded-lg bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                    <MapPin className="h-4 w-4" />
-                                                </div>
-                                                <span className="text-[15px] font-medium text-foreground">
+                                <div className="apple-card p-5">
+                                    <Link
+                                        href={route('stores.index')}
+                                        className="w-full flex items-center justify-between group"
+                                    >
+                                        <div className="flex items-center gap-3.5">
+                                            <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                <MapPin className="h-4 w-4" />
+                                            </div>
+                                            <div>
+                                                <span className="text1 font-medium text-foreground block">
                                                     Calibrate Store GPS Radii
                                                 </span>
+                                                <span className="caption text-muted-foreground">
+                                                    View and adjust coordinates for each branch
+                                                </span>
                                             </div>
-                                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
-                                        </Link>
-                                    </div>
+                                        </div>
+                                        <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition shrink-0" />
+                                    </Link>
                                 </div>
                             </div>
                         </div>
@@ -671,137 +698,130 @@ export default function General({ settings, schedules, employees, stores }: Gene
                         SUBPAGE 4: AI Assistant (Intelligence)
                     ══════════════════════════════════════════════════════════════════ */}
                     {currentPage === 'ai' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
+                        <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
                             {/* Top Navigation Bar with Back button */}
-                            <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                            <div className="flex items-center justify-between border-b border-border/40 pb-4">
                                 <button
                                     type="button"
                                     onClick={() => navigateTo('root')}
-                                    className="inline-flex items-center gap-1 text-[15px] font-medium text-primary hover:opacity-80 active:scale-95 transition -ml-1"
+                                    className="inline-flex items-center gap-1 text2 font-medium text-primary hover:opacity-80 active:scale-95 transition"
                                 >
-                                    <ChevronLeft className="h-5 w-5 -mr-1" />
+                                    <ChevronLeft className="h-5 w-5 -ml-1" />
                                     <span>Settings</span>
                                 </button>
-                                <h2 className="text-sm font-semibold text-foreground">
+                                <h2 className="h3 text-foreground">
                                     AI Assistant (Intelligence)
                                 </h2>
                                 <div className="w-16"></div>
                             </div>
 
                             <form onSubmit={submitAi} className="space-y-6">
-                                <div>
-                                    <div className="apple-section-header">Service Activation</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <div className="flex items-center justify-between px-4 py-3.5">
-                                            <span className="text-[15px] font-medium text-foreground">
-                                                Enable Assistant
-                                            </span>
-                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={aiForm.data.ai_enabled}
-                                                    onChange={e => aiForm.setData('ai_enabled', e.target.checked)}
-                                                    className="sr-only peer"
-                                                />
-                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
-                                            </label>
-                                        </div>
+                                <div className="apple-card p-5 flex items-center justify-between">
+                                    <div className="space-y-1">
+                                        <span className="text1 font-semibold text-foreground block">
+                                            Enable AI Assistant
+                                        </span>
+                                        <span className="text2 text-muted-foreground block">
+                                            Power natural language stock & sales querying
+                                        </span>
                                     </div>
+                                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input
+                                            type="checkbox"
+                                            checked={aiForm.data.ai_enabled}
+                                            onChange={e => aiForm.setData('ai_enabled', e.target.checked)}
+                                            className="sr-only peer"
+                                        />
+                                        <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                    </label>
                                 </div>
 
-                                <div>
-                                    <div className="apple-section-header">Engine & Credentials</div>
-                                    <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                        <div className="px-4 py-3">
-                                            <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                                                Gemini Model
-                                            </label>
-                                            <select
-                                                value={aiForm.data.ai_model}
-                                                onChange={e => aiForm.setData('ai_model', e.target.value)}
-                                                className="w-full bg-transparent text-[15px] font-medium text-foreground focus:outline-none py-1"
-                                            >
-                                                <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Recommended)</option>
-                                                <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Fast)</option>
-                                                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                                                <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-                                                <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-                                            </select>
-                                        </div>
+                                <div className="space-y-4">
+                                    <h3 className="h3 text-foreground">Engine & Credentials</h3>
+                                    
+                                    <div className="space-y-2">
+                                        <label className="text1 text-foreground block font-medium">
+                                            Gemini Model
+                                        </label>
+                                        <select
+                                            value={aiForm.data.ai_model}
+                                            onChange={e => aiForm.setData('ai_model', e.target.value)}
+                                            className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                        >
+                                            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Recommended)</option>
+                                            <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Fast)</option>
+                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                            <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                                            <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                                        </select>
+                                    </div>
 
-                                        <div className="px-4 py-3">
-                                            <div className="flex items-center justify-between mb-1">
-                                                <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                                                    Gemini API Key
-                                                </label>
-                                                {settings.ai_api_key && (
-                                                    <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                                                        <Check className="h-3 w-3" /> Configured
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <div className="relative">
-                                                <input
-                                                    type={showApiKey ? 'text' : 'password'}
-                                                    placeholder={settings.ai_api_key ? '••••••••••••••••••••••••' : 'AIzaSy...'}
-                                                    value={aiForm.data.ai_api_key}
-                                                    onChange={e => aiForm.setData('ai_api_key', e.target.value)}
-                                                    className="w-full bg-transparent text-[14px] font-mono text-foreground focus:outline-none placeholder:text-muted-foreground/50 py-1 pr-8"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowApiKey(!showApiKey)}
-                                                    className="absolute right-0 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
-                                                >
-                                                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                                                </button>
-                                            </div>
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Gemini API Key
+                                            </label>
+                                            {settings.ai_api_key && (
+                                                <span className="caption font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                                    <Check className="h-3 w-3" /> Configured
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="relative">
+                                            <input
+                                                type={showApiKey ? 'text' : 'password'}
+                                                placeholder={settings.ai_api_key ? '••••••••••••••••••••••••' : 'AIzaSy...'}
+                                                value={aiForm.data.ai_api_key}
+                                                onChange={e => aiForm.setData('ai_api_key', e.target.value)}
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs pr-10"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowApiKey(!showApiKey)}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
+                                            >
+                                                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                            </button>
                                         </div>
                                     </div>
 
                                     {/* Test Connection Button */}
-                                    <div className="flex items-center gap-2 pt-2 px-1">
+                                    <div className="flex items-center gap-3 pt-1">
                                         <button
                                             type="button"
                                             onClick={handleTestConnection}
                                             disabled={testingConnection || (!aiForm.data.ai_api_key && !settings.ai_api_key)}
-                                            className="px-3 py-1.5 rounded-lg border border-border bg-card text-xs font-semibold text-foreground hover:bg-muted/50 transition disabled:opacity-50 flex items-center gap-1.5"
+                                            className="px-4 py-2 rounded-xl border border-border/80 bg-card text2 font-semibold text-foreground hover:bg-muted/50 transition disabled:opacity-50 flex items-center gap-2 shadow-2xs"
                                         >
-                                            <Sparkles className="h-3.5 w-3.5 text-primary" />
+                                            <Sparkles className="h-4 w-4 text-primary" />
                                             {testingConnection ? 'Testing...' : 'Test Connection'}
                                         </button>
                                         {testResult && (
-                                            <span className={`text-xs font-medium ${testResult.success ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                            <span className={`text2 font-medium ${testResult.success ? 'text-emerald-600' : 'text-rose-600'}`}>
                                                 {testResult.message}
                                             </span>
                                         )}
                                     </div>
                                 </div>
 
-                                <div>
-                                    <div className="apple-section-header">Store Directives</div>
-                                    <div className="apple-card overflow-hidden">
-                                        <div className="px-4 py-3">
-                                            <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                                                Global Custom Instructions
-                                            </label>
-                                            <textarea
-                                                rows={3}
-                                                placeholder="e.g. Always prioritize battery health check and warranty policy..."
-                                                value={aiForm.data.ai_system_instruction}
-                                                onChange={e => aiForm.setData('ai_system_instruction', e.target.value)}
-                                                className="w-full bg-transparent text-[14px] text-foreground focus:outline-none placeholder:text-muted-foreground/50 py-1 resize-none"
-                                            />
-                                        </div>
-                                    </div>
+                                <div className="space-y-2">
+                                    <label className="text1 text-foreground block font-medium">
+                                        Global Custom Instructions
+                                    </label>
+                                    <textarea
+                                        rows={3}
+                                        placeholder="e.g. Always prioritize battery health check and warranty policy..."
+                                        value={aiForm.data.ai_system_instruction}
+                                        onChange={e => aiForm.setData('ai_system_instruction', e.target.value)}
+                                        className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs resize-none"
+                                    />
                                 </div>
 
-                                {/* Section-specific Save Button */}
                                 <div className="pt-2">
                                     <button
                                         type="submit"
                                         disabled={aiForm.processing}
-                                        className="w-full apple-btn-primary py-3 text-sm font-semibold shadow-sm"
+                                        className="w-full apple-btn-primary py-3 text2 font-semibold shadow-xs"
                                     >
                                         {aiForm.processing ? 'Saving...' : 'Save AI Configuration'}
                                     </button>
@@ -814,18 +834,18 @@ export default function General({ settings, schedules, employees, stores }: Gene
                         SUBPAGE 5: Staff Shift Schedules
                     ══════════════════════════════════════════════════════════════════ */}
                     {currentPage === 'shifts' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
+                        <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
                             {/* Top Navigation Bar with Back button */}
-                            <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                            <div className="flex items-center justify-between border-b border-border/40 pb-4">
                                 <button
                                     type="button"
                                     onClick={() => navigateTo('root')}
-                                    className="inline-flex items-center gap-1 text-[15px] font-medium text-primary hover:opacity-80 active:scale-95 transition -ml-1"
+                                    className="inline-flex items-center gap-1 text2 font-medium text-primary hover:opacity-80 active:scale-95 transition"
                                 >
-                                    <ChevronLeft className="h-5 w-5 -mr-1" />
+                                    <ChevronLeft className="h-5 w-5 -ml-1" />
                                     <span>Settings</span>
                                 </button>
-                                <h2 className="text-sm font-semibold text-foreground">
+                                <h2 className="h3 text-foreground">
                                     Staff Shift Schedules
                                 </h2>
                                 <div className="w-16"></div>
@@ -833,94 +853,98 @@ export default function General({ settings, schedules, employees, stores }: Gene
 
                             {/* Add Custom Schedule Form */}
                             <form onSubmit={submitSchedule} className="space-y-4">
-                                <div className="apple-section-header">Add Employee Custom Schedule</div>
-                                <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                    <div className="px-4 py-3">
-                                        <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                                            Employee
-                                        </label>
-                                        <select
-                                            value={scheduleForm.data.user_id}
-                                            onChange={e => scheduleForm.setData('user_id', e.target.value)}
-                                            className="w-full bg-transparent text-[15px] font-medium text-foreground focus:outline-none py-1"
-                                        >
-                                            <option value="">Select Employee...</option>
-                                            {employees.map(emp => (
-                                                <option key={emp.id} value={emp.id}>{emp.name}</option>
-                                            ))}
-                                        </select>
+                                <h3 className="h3 text-foreground">Add Employee Custom Schedule</h3>
+                                <div className="apple-card p-5 space-y-4">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Employee
+                                            </label>
+                                            <select
+                                                value={scheduleForm.data.user_id}
+                                                onChange={e => scheduleForm.setData('user_id', e.target.value)}
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            >
+                                                <option value="">Select Employee...</option>
+                                                {employees.map(emp => (
+                                                    <option key={emp.id} value={emp.id}>{emp.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Store Branch
+                                            </label>
+                                            <select
+                                                value={scheduleForm.data.store_id}
+                                                onChange={e => scheduleForm.setData('store_id', e.target.value)}
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            >
+                                                <option value="">Select Branch...</option>
+                                                {stores.map(st => (
+                                                    <option key={st.id} value={st.id}>{st.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
                                     </div>
 
-                                    <div className="px-4 py-3">
-                                        <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                                            Store Branch
-                                        </label>
-                                        <select
-                                            value={scheduleForm.data.store_id}
-                                            onChange={e => scheduleForm.setData('store_id', e.target.value)}
-                                            className="w-full bg-transparent text-[15px] font-medium text-foreground focus:outline-none py-1"
-                                        >
-                                            <option value="">Select Branch...</option>
-                                            {stores.map(st => (
-                                                <option key={st.id} value={st.id}>{st.name}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div className="grid grid-cols-2 divide-x divide-border/60">
-                                        <div className="px-4 py-3">
-                                            <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
                                                 Clock In
                                             </label>
                                             <input
                                                 type="time"
                                                 value={scheduleForm.data.work_start_time}
                                                 onChange={e => scheduleForm.setData('work_start_time', e.target.value)}
-                                                className="w-full bg-transparent text-sm font-mono text-foreground focus:outline-none py-1"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                             />
                                         </div>
-                                        <div className="px-4 py-3">
-                                            <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
                                                 Clock Out
                                             </label>
                                             <input
                                                 type="time"
                                                 value={scheduleForm.data.work_end_time}
                                                 onChange={e => scheduleForm.setData('work_end_time', e.target.value)}
-                                                className="w-full bg-transparent text-sm font-mono text-foreground focus:outline-none py-1"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                             />
                                         </div>
                                     </div>
-                                </div>
 
-                                <button
-                                    type="submit"
-                                    disabled={scheduleForm.processing || !scheduleForm.data.user_id || !scheduleForm.data.store_id}
-                                    className="w-full apple-btn-primary py-3 text-sm font-semibold shadow-sm"
-                                >
-                                    {scheduleForm.processing ? 'Saving...' : 'Add Schedule'}
-                                </button>
+                                    <div className="pt-2">
+                                        <button
+                                            type="submit"
+                                            disabled={scheduleForm.processing || !scheduleForm.data.user_id || !scheduleForm.data.store_id}
+                                            className="w-full apple-btn-primary py-3 text2 font-semibold shadow-xs disabled:opacity-50"
+                                        >
+                                            {scheduleForm.processing ? 'Saving...' : 'Add Schedule'}
+                                        </button>
+                                    </div>
+                                </div>
                             </form>
 
                             {/* Existing Schedules List */}
-                            <div className="pt-2">
-                                <div className="apple-section-header flex items-center justify-between">
-                                    <span>Configured Custom Schedules</span>
-                                    <span className="font-mono text-xs">{schedules.length}</span>
+                            <div className="space-y-3 pt-2">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="h3 text-foreground">Configured Custom Schedules</h3>
+                                    <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">{schedules.length}</span>
                                 </div>
                                 <div className="apple-card overflow-hidden divide-y divide-border/60">
                                     {schedules.length === 0 ? (
-                                        <div className="p-6 text-center text-xs text-muted-foreground">
+                                        <div className="p-8 text-center text2 text-muted-foreground">
                                             No custom schedules. All staff use default working hours.
                                         </div>
                                     ) : (
                                         schedules.map(sch => (
-                                            <div key={sch.id} className="flex items-center justify-between px-4 py-3.5">
+                                            <div key={sch.id} className="flex items-center justify-between p-4 hover:bg-muted/20 transition">
                                                 <div className="min-w-0">
-                                                    <div className="text-[15px] font-semibold text-foreground truncate">
+                                                    <div className="text1 font-semibold text-foreground truncate">
                                                         {sch.user?.name || 'Staff Member'}
                                                     </div>
-                                                    <div className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5">
+                                                    <div className="caption text-muted-foreground flex items-center gap-1.5 mt-0.5">
                                                         <span>{sch.store?.name || 'Branch'}</span>
                                                         <span>•</span>
                                                         <span className="font-mono">
@@ -932,7 +956,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                                 <button
                                                     type="button"
                                                     onClick={() => deleteSchedule(sch.id)}
-                                                    className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition shrink-0"
+                                                    className="p-2 rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition shrink-0"
                                                     title="Remove schedule"
                                                 >
                                                     <Trash2 className="h-4 w-4" />

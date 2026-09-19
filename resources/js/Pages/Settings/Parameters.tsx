@@ -1,7 +1,7 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Head, router } from '@inertiajs/react';
+import { Head, router, Link } from '@inertiajs/react';
 import { useState } from 'react';
-import { Settings, Plus, ToggleLeft, ToggleRight, Trash2, Tag, Check, Pencil, X } from 'lucide-react';
+import { Settings, Plus, Trash2, Tag, Check, Pencil, X, ChevronLeft, Sliders } from 'lucide-react';
 
 interface ParameterValue {
     id: number;
@@ -18,7 +18,7 @@ interface Parameter {
 }
 
 interface ParametersProps {
-    parameters: Parameter[];
+    parameters?: Parameter[];
 }
 
 const COLOR_OPTIONS = [
@@ -35,7 +35,8 @@ export function getParamBadgeClass(colorKey?: string | null) {
     return match ? match.badgeClass : 'bg-muted text-foreground border-border';
 }
 
-export default function Parameters({ parameters }: ParametersProps) {
+export default function Parameters({ parameters = [] }: ParametersProps) {
+    const safeParameters = Array.isArray(parameters) ? parameters : [];
     const [newParameterValue, setNewParameterValue] = useState<{ [paramId: number]: string }>({});
     const [newParameterColor, setNewParameterColor] = useState<{ [paramId: number]: string }>({});
 
@@ -97,48 +98,67 @@ export default function Parameters({ parameters }: ParametersProps) {
 
     return (
         <AuthenticatedLayout>
-            <Head title="Parameter Settings" />
+            <Head title="Product & Unit Parameters" />
 
             <div className="py-6 sm:py-8">
-                <div className="mx-auto max-w-none px-4 sm:px-6 lg:px-8 space-y-6">
+                <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
 
-                    <div>
-                        <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
-                            <Settings className="h-6 w-6 text-primary" />
-                            System Parameters
-                        </h2>
-                        <p className="text-xs text-muted-foreground mt-1">
-                            Configure dynamic options, categories, and readable color badges used across the platform.
-                        </p>
+                    {/* Navigation Bar Header */}
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border/40 pb-4">
+                        <div className="flex items-center gap-3">
+                            <Link
+                                href={route('settings.general')}
+                                className="p-2 rounded-xl border border-border/80 bg-card hover:bg-muted text-foreground transition flex items-center justify-center shrink-0 shadow-2xs"
+                                title="Back to Settings"
+                            >
+                                <ChevronLeft className="h-4 w-4" />
+                            </Link>
+                            <div>
+                                <h1 className="h2 flex items-center gap-2">
+                                    <Sliders className="h-5 w-5 text-primary" />
+                                    <span>Product & Unit Parameters</span>
+                                </h1>
+                                <p className="text2 mt-0.5">
+                                    Configure dynamic options, categories, and readable color badges used across the platform.
+                                </p>
+                            </div>
+                        </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                        {parameters.map((param) => {
-                            const isColorable = param.name.toLowerCase().includes('flag') || param.name.toLowerCase().includes('status');
-                            const selectedColor = newParameterColor[param.id] || (isColorable ? 'blue' : 'slate');
+                    {safeParameters.length === 0 ? (
+                        <div className="apple-card p-12 text-center text-muted-foreground space-y-2">
+                            <Sliders className="h-8 w-8 mx-auto text-muted-foreground/50" />
+                            <p className="text1">No parameters found.</p>
+                            <p className="text2">Parameters can be initialized from seed data or settings.</p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-2">
+                            {safeParameters.map((param) => {
+                                const isColorable = param.name.toLowerCase().includes('flag') || param.name.toLowerCase().includes('status');
+                                const selectedColor = newParameterColor[param.id] || (isColorable ? 'blue' : 'slate');
 
-                            return (
-                                <div key={param.id} className="apple-card p-5 text-card-foreground flex flex-col justify-between">
-                                    <div>
-                                        <div className="flex items-center justify-between mb-1">
-                                            <h4 className="text-sm font-bold text-foreground flex items-center gap-1.5">
-                                                <Tag className="h-4 w-4 text-primary" />
-                                                {param.name}
-                                            </h4>
-                                            <span className="rounded-lg bg-primary/10 px-2 py-0.5 text-[10px] font-bold tracking-wider text-primary uppercase">
-                                                {param.category}
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-muted-foreground mb-4">
-                                            Preset values for {param.name.toLowerCase()}.
-                                        </p>
+                                return (
+                                    <div key={param.id} className="apple-card p-5 text-card-foreground flex flex-col justify-between">
+                                        <div>
+                                            <div className="flex items-center justify-between mb-1">
+                                                <h4 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                                                    <Tag className="h-4 w-4 text-primary" />
+                                                    {param.name}
+                                                </h4>
+                                                <span className="rounded-lg bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+                                                    {param.category}
+                                                </span>
+                                            </div>
+                                            <p className="text2 mb-4">
+                                                Preset values for {param.name.toLowerCase()}.
+                                            </p>
 
-                                         {/* Options List */}
-                                        <div className="space-y-2 mb-4 max-h-72 overflow-y-auto pr-1">
-                                            {param.values.length === 0 ? (
-                                                <p className="text-xs text-muted-foreground py-4 text-center">No options added yet.</p>
-                                            ) : (
-                                                param.values.map((val) => {
+                                            {/* Options List */}
+                                            <div className="space-y-2 mb-4 max-h-72 overflow-y-auto pr-1">
+                                                {(!param.values || param.values.length === 0) ? (
+                                                    <p className="text2 py-4 text-center">No options added yet.</p>
+                                                ) : (
+                                                    param.values.map((val) => {
                                                     const badgeClass = getParamBadgeClass(val.color);
                                                     const isEditing = editingValueId === val.id;
 
@@ -290,6 +310,7 @@ export default function Parameters({ parameters }: ParametersProps) {
                             );
                         })}
                     </div>
+                    )}
 
                 </div>
             </div>
