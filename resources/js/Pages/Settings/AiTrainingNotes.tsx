@@ -1,6 +1,6 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, router, Link, usePage, useForm } from '@inertiajs/react';
-import { FormEvent, useMemo } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import {
     ChevronLeft,
     BrainCircuit,
@@ -10,9 +10,12 @@ import {
     BookOpen,
     CircleDot,
     Sparkles,
-    Check
+    Check,
+    List,
+    Network
 } from 'lucide-react';
 import type { PageProps } from '@/types';
+import NeuralMindMap from '@/Components/NeuralMindMap';
 
 interface TrainingNote {
     id: number;
@@ -24,8 +27,29 @@ interface TrainingNote {
     updated_at: string;
 }
 
+interface MindGraphNode {
+    id: number;
+    title: string;
+    content: string;
+    kind: 'rule' | 'knowledge';
+    is_active: boolean;
+    author_name: string | null;
+    degree: number;
+}
+
+interface MindGraphLink {
+    id: number;
+    source: number;
+    target: number;
+    label: string | null;
+}
+
 interface AiTrainingNotesProps {
     notes: TrainingNote[];
+    graph: {
+        nodes: MindGraphNode[];
+        links: MindGraphLink[];
+    };
 }
 
 interface Flash {
@@ -33,9 +57,29 @@ interface Flash {
     error?: string;
 }
 
-export default function AiTrainingNotes({ notes }: AiTrainingNotesProps) {
+const VIEW_KEY = 'dp-ai-training-view';
+
+export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) {
     const { props } = usePage<PageProps<{ flash?: Flash }>>();
     const safeNotes = Array.isArray(notes) ? notes : [];
+    const safeGraph = graph && Array.isArray(graph.nodes) ? graph : { nodes: [], links: [] };
+
+    const [view, setView] = useState<'list' | 'map'>(() => {
+        try {
+            return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'map';
+        } catch {
+            return 'map';
+        }
+    });
+
+    const switchView = (next: 'list' | 'map') => {
+        setView(next);
+        try {
+            localStorage.setItem(VIEW_KEY, next);
+        } catch {
+            // ignore
+        }
+    };
 
     const stats = useMemo(() => {
         const total = safeNotes.length;
@@ -98,11 +142,27 @@ export default function AiTrainingNotes({ notes }: AiTrainingNotesProps) {
                                     <span>AI Training & Memory</span>
                                 </h1>
                                 <p className="text2 mt-0.5">
-                                    Persistent notes the AI reads in every chat. Rules are always prioritized over knowledge.
+                                    The AI's living neuron network — every memory is a node that auto-connects to related ones. Rules are always prioritized over knowledge.
                                 </p>
                             </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex items-center gap-1 p-1 rounded-xl border border-border/50 bg-card/70 backdrop-blur-xl">
+                                <button
+                                    onClick={() => switchView('map')}
+                                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition flex items-center gap-1.5 ${view === 'map' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                                >
+                                    <Network className="h-3.5 w-3.5" />
+                                    Mind Map
+                                </button>
+                                <button
+                                    onClick={() => switchView('list')}
+                                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition flex items-center gap-1.5 ${view === 'list' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                                >
+                                    <List className="h-3.5 w-3.5" />
+                                    List
+                                </button>
+                            </div>
                             <span className="rounded-xl bg-primary/10 text-primary border border-primary/20 px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5">
                                 <Sparkles className="h-3.5 w-3.5" />
                                 Superadmin
@@ -194,86 +254,112 @@ export default function AiTrainingNotes({ notes }: AiTrainingNotesProps) {
                         </form>
                     </div>
 
-                    {/* Notes List */}
-                    <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                            <h3 className="h3 text-foreground">Training Notes</h3>
-                            <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">{stats.total}</span>
-                        </div>
-
-                        {safeNotes.length === 0 ? (
-                            <div className="apple-card p-12 text-center text-muted-foreground space-y-3">
-                                <BrainCircuit className="h-8 w-8 mx-auto text-muted-foreground/50" />
-                                <div className="space-y-1">
-                                    <p className="text1">No training notes yet.</p>
-                                    <p className="text2">Notes are saved automatically when the AI encounters "remember this" instructions in chats, or add one manually above.</p>
+                    {/* Mind Map View */}
+                    {view === 'map' && (
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h3 className="h3 text-foreground">Neuron Mind Map</h3>
+                                    <p className="text2 mt-0.5">
+                                        Drag nodes to arrange, scroll to zoom, click any node to inspect its memory and connections.
+                                    </p>
                                 </div>
+                                <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">
+                                    {safeGraph.links.length} synapses
+                                </span>
                             </div>
-                        ) : (
-                            <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                {safeNotes.map(note => (
-                                    <div
-                                        key={note.id}
-                                        className={`p-4 flex flex-col sm:flex-row sm:items-center gap-3 transition ${note.is_active ? '' : 'bg-muted/30 opacity-70'}`}
-                                    >
-                                        <div className="flex items-start gap-3 min-w-0 flex-1">
-                                            <span className={`mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
-                                                note.kind === 'rule'
-                                                    ? 'bg-primary/10 text-primary border-primary/20'
-                                                    : 'bg-muted text-muted-foreground border-border'
-                                            }`}>
-                                                {note.kind === 'rule' ? '[RULE]' : '[NOTE]'}
-                                            </span>
-                                            <div className="min-w-0">
-                                                <p className="text2 text-foreground break-words whitespace-pre-wrap">
-                                                    {note.content}
-                                                </p>
-                                                <p className="caption text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                                                    <span>{note.author_name || 'System'}</span>
-                                                    {note.author_role && (
-                                                        <>
-                                                            <span>•</span>
-                                                            <span className="capitalize">{note.author_role}</span>
-                                                        </>
-                                                    )}
-                                                    <span>•</span>
-                                                    <span>{note.updated_at}</span>
-                                                    {!note.is_active && (
-                                                        <>
-                                                            <span>•</span>
-                                                            <span className="text-destructive font-semibold">paused</span>
-                                                        </>
-                                                    )}
-                                                </p>
+                            <NeuralMindMap nodes={safeGraph.nodes} links={safeGraph.links} />
+                            {safeNotes.length === 0 && (
+                                <div className="rounded-xl border border-dashed border-border/80 px-4 py-3 text-xs text-muted-foreground text-center">
+                                    The map grows by itself — every time the AI records something new in a chat, a node appears
+                                    and links to related memories.
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Notes List View */}
+                    {view === 'list' && (
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <h3 className="h3 text-foreground">Training Notes</h3>
+                                <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">{stats.total}</span>
+                            </div>
+
+                            {safeNotes.length === 0 ? (
+                                <div className="apple-card p-12 text-center text-muted-foreground space-y-3">
+                                    <BrainCircuit className="h-8 w-8 mx-auto text-muted-foreground/50" />
+                                    <div className="space-y-1">
+                                        <p className="text1">No training notes yet.</p>
+                                        <p className="text2">Notes are saved automatically when the AI encounters "remember this" instructions in chats, or add one manually above.</p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="apple-card overflow-hidden divide-y divide-border/60">
+                                    {safeNotes.map(note => (
+                                        <div
+                                            key={note.id}
+                                            className={`p-4 flex flex-col sm:flex-row sm:items-center gap-3 transition ${note.is_active ? '' : 'bg-muted/30 opacity-70'}`}
+                                        >
+                                            <div className="flex items-start gap-3 min-w-0 flex-1">
+                                                <span className={`mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
+                                                    note.kind === 'rule'
+                                                        ? 'bg-primary/10 text-primary border-primary/20'
+                                                        : 'bg-muted text-muted-foreground border-border'
+                                                }`}>
+                                                    {note.kind === 'rule' ? '[RULE]' : '[NOTE]'}
+                                                </span>
+                                                <div className="min-w-0">
+                                                    <p className="text2 text-foreground break-words whitespace-pre-wrap">
+                                                        {note.content}
+                                                    </p>
+                                                    <p className="caption text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                                                        <span>{note.author_name || 'System'}</span>
+                                                        {note.author_role && (
+                                                            <>
+                                                                <span>•</span>
+                                                                <span className="capitalize">{note.author_role}</span>
+                                                            </>
+                                                        )}
+                                                        <span>•</span>
+                                                        <span>{note.updated_at}</span>
+                                                        {!note.is_active && (
+                                                            <>
+                                                                <span>•</span>
+                                                                <span className="text-destructive font-semibold">paused</span>
+                                                            </>
+                                                        )}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                <button
+                                                    onClick={() => toggleNote(note)}
+                                                    className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
+                                                        note.is_active
+                                                            ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
+                                                            : 'bg-primary/10 text-primary hover:bg-primary/20'
+                                                    }`}
+                                                    title={note.is_active ? 'Pause this note' : 'Activate this note'}
+                                                >
+                                                    <Power className="h-3 w-3" />
+                                                    {note.is_active ? 'Pause' : 'Activate'}
+                                                </button>
+                                                <button
+                                                    onClick={() => deleteNote(note)}
+                                                    className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
+                                                    title="Delete this note permanently"
+                                                >
+                                                    <Trash2 className="h-4 w-4" />
+                                                </button>
                                             </div>
                                         </div>
-
-                                        <div className="flex items-center gap-1.5 shrink-0">
-                                            <button
-                                                onClick={() => toggleNote(note)}
-                                                className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
-                                                    note.is_active
-                                                        ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
-                                                        : 'bg-primary/10 text-primary hover:bg-primary/20'
-                                                }`}
-                                                title={note.is_active ? 'Pause this note' : 'Activate this note'}
-                                            >
-                                                <Power className="h-3 w-3" />
-                                                {note.is_active ? 'Pause' : 'Activate'}
-                                            </button>
-                                            <button
-                                                onClick={() => deleteNote(note)}
-                                                className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
-                                                title="Delete this note permanently"
-                                            >
-                                                <Trash2 className="h-4 w-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                 </div>
             </div>

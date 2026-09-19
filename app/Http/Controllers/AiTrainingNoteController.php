@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\AiTrainingNote;
+use App\Services\AiMemoryGraphService;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
 use Inertia\Inertia;
@@ -23,6 +24,7 @@ class AiTrainingNoteController extends Controller
             ->map(fn($n) => [
                 'id' => $n->id,
                 'kind' => $n->kind,
+                'title' => $n->title,
                 'content' => $n->content,
                 'is_active' => $n->is_active,
                 'author_name' => $n->author_name,
@@ -32,6 +34,7 @@ class AiTrainingNoteController extends Controller
 
         return Inertia::render('Settings/AiTrainingNotes', [
             'notes' => $notes,
+            'graph' => app(AiMemoryGraphService::class)->graphData(),
         ]);
     }
 
@@ -56,6 +59,7 @@ class AiTrainingNoteController extends Controller
                 'author_name' => $request->user()->name,
                 'author_role' => $request->user()->role,
                 'content' => $content,
+                'title' => app(AiMemoryGraphService::class)->titleFromContent($content),
                 'content_hash' => $hash,
                 'kind' => $kind,
                 'is_active' => true,

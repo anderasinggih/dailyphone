@@ -513,6 +513,15 @@ class AiAssistantController extends Controller
                 $kind = 'knowledge';
             }
 
+            // The AI may also propose a short node label and the related
+            // keywords that define where this memory plugs into the neuron map.
+            $title = trim((string)($decoded['title'] ?? ''));
+            $title = $title === '' ? null : mb_substr($title, 0, 200);
+            $related = array_values(array_unique(array_filter(array_map(function ($r) {
+                return strtolower(trim((string)$r));
+            }, (array)($decoded['related'] ?? [])), fn($r) => $r !== '')));
+            $related = array_slice($related, 0, 8);
+
             $hash = md5($content);
             $exists = \App\Models\AiTrainingNote::where('content_hash', $hash)->exists();
             if ($exists) {
@@ -525,6 +534,8 @@ class AiAssistantController extends Controller
                     'author_name' => $user->name,
                     'author_role' => $user->role,
                     'content' => $content,
+                    'title' => $title,
+                    'related_keywords' => $related === [] ? null : $related,
                     'content_hash' => $hash,
                     'kind' => $kind,
                     'is_active' => true,

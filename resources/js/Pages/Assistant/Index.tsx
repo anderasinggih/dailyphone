@@ -27,7 +27,8 @@ import {
     Reply,
     X,
     Pencil,
-    Sliders
+    Sliders,
+    Network
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
@@ -650,13 +651,29 @@ export default function Assistant({
                         </div>
 
                         {/* Footer in Sidebar */}
-                        <div className="p-2.5 border-t border-border/40 text-[10px] text-muted-foreground flex items-center justify-between">
-                            <span className="truncate">{sessionList.length} Sessions saved</span>
+                        <div className="p-2.5 border-t border-border/40 space-y-1.5">
+                            <div className="text-[10px] text-muted-foreground flex items-center justify-between">
+                                <span className="truncate">{sessionList.length} Sessions saved</span>
+                            </div>
                             {userRole === 'superadmin' && (
-                                <Link href={route('settings.general')} className="hover:text-primary transition flex items-center gap-1">
-                                    <Settings className="h-3 w-3" />
-                                    <span>AI Config</span>
-                                </Link>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    <Link
+                                        href={route('settings.ai.training-notes')}
+                                        className="flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                        title="AI memory neuron map"
+                                    >
+                                        <Network className="h-3 w-3" />
+                                        <span>Memory Map</span>
+                                    </Link>
+                                    <Link
+                                        href={route('settings.general')}
+                                        className="flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                        title="AI Config"
+                                    >
+                                        <Settings className="h-3 w-3" />
+                                        <span>AI Config</span>
+                                    </Link>
+                                </div>
                             )}
                         </div>
                     </div>

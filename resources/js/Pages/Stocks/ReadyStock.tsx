@@ -448,29 +448,31 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
         return val.replace(/[^0-9]/g, '');
     };
 
-    const renderBadges = (item: StockItem) => {
-        return (
-            <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[11px] text-muted-foreground font-medium">
-                {item.category !== 'accessories' && item.category !== 'extra' && (
-                    <span className={item.type === 'new' ? 'text-primary font-semibold' : 'text-muted-foreground'}>
-                        {item.type === 'new' ? 'New' : 'Used'}
-                    </span>
-                )}
-                {item.memory?.value && (
-                    <>
-                        <span>•</span>
-                        <span>{item.memory.value}</span>
-                    </>
-                )}
-                {item.license?.value && (
-                    <>
-                        <span>•</span>
-                        <span className="text-primary font-semibold">{item.license.value}</span>
-                    </>
-                )}
-            </div>
-        );
+    const itemMeta = (item: StockItem) => {
+        const meta: Array<{ label: string; primary?: boolean; mono?: boolean }> = [];
+
+        if (item.category !== 'accessories' && item.category !== 'extra') {
+            meta.push({ label: item.type === 'new' ? 'New' : 'Used', primary: item.type === 'new' });
+            if (item.serial_number) meta.push({ label: item.serial_number, mono: true });
+            else if (item.imei_1) meta.push({ label: item.imei_1, mono: true });
+        } else {
+            meta.push({ label: `${item.category}${item.brand?.value ? ` • ${item.brand.value}` : ''}` });
+        }
+        if (item.memory?.value) meta.push({ label: item.memory.value });
+        if (item.license?.value) meta.push({ label: item.license.value, primary: true });
+
+        return meta;
     };
+
+    const renderMetaLine = (item: StockItem) => (
+        <p className="flex items-center gap-1.5 mt-0.5 text-[10px] font-medium text-muted-foreground truncate max-w-xs">
+            {itemMeta(item).map((m, i) => (
+                <span key={i} className={`${m.primary ? 'text-primary font-semibold' : ''}${m.mono ? ' font-mono' : ''}`}>
+                    {i > 0 ? '• ' : ''}{m.label}
+                </span>
+            ))}
+        </p>
+    );
 
     const selectBuyer = (buyer: Buyer) => {
         checkoutForm.setData({

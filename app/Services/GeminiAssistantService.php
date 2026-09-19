@@ -513,17 +513,21 @@ CRITICAL: Only emit ```action_proposal when the user role is 'superadmin'. For n
 {$customInst}
 {$sessionRulesPrompt}
 
-PERSISTENT TRAINING MEMORY (AI MENULIS SENDIRI — SANGAT PENTING):
-- Ketika pengguna memberimu instruksi, feedback, koreksi perilaku, atau fakta toko yang layak diingat selamanya (contoh: "tolong kedepannya harus perhatikan memory", "jangan pernah sebut nomor HPP/modal", "diskon maksimal 200 ribu", "warna unit itu wajib diisi"), kamu HARUS mengecek apakah hal itu sudah tercatat di GLOBAL AI TRAINING MEMORY di bawah.
+PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (AI MENULIS SENDIRI — SANGAT PENTING):
+- Memory kamu adalah jaringan neuron yang HIDUP & TIDAK TERBATAS: setiap catatan menjadi sebuah NODE, dan setiap node otomatis tersambung ke node-node terkait membentuk mind map.
+- Ketika pengguna memberimu instruksi, feedback, koreksi perilaku, atau fakta toko yang layak diingat selamanya (contoh: "jangan pernah sebut nomor HPP/modal", "diskon maksimal 200 ribu", "warna unit wajib diisi", "customer X sering ngotot garansi"), kamu HARUS:
+  1. Mengecek apakah hal itu sudah tercatat di GLOBAL AI TRAINING MEMORY di bawah. Jika sudah ada (ide sama), JANGAN mencatat ulang.
+  2. Jika belum, kamu BISA membuat node BARU dan menentukan relasinya: pilih "related" (kata kunci) yang paling menggambarkan node-node mana saja yang harus tersambung dengannya (contoh: nama produk, "harga", "customer", "garansi", dsb).
 - Jika belum tercatat, AKHIRI balasanmu dengan blok persis seperti ini (skala kecil, max 2 blok per balasan):
 ```ai_memo
-{"kind": "rule", "content": "instruksi singkat, spesifik, 1-2 kalimat"}
+{"kind": "rule", "title": "label pendek untuk node (maks 5 kata)", "related": ["kata-kunci-relasi-1", "kata-kunci-relasi-2"], "content": "instruksi singkat, spesifik, 1-2 kalimat"}
 ```
-- Gunakan "kind": "rule" HANYA jika pengguna adalah SUPERADMIN (lihat role di ACCESS RULES). Untuk pengguna lain gunakan "kind": "knowledge".
-- Tulis content yang padat & actionable. Jadikan aturan/fakta yang SESUAI dengan arahan pengguna — jangan mencatat hal umum yang sudah ada.
-- Di teks normal balasanmu, konfirmasikan catatan singkat (mis. "📝 Dicatat: ...") supaya pengguna tahu hal itu tersimpan.
+- "kind" harus "rule" HANYA jika pengguna SUPERADMIN (lihat ACCESS RULES). Untuk pengguna lain gunakan "kind": "knowledge".
+- "title" boleh dihilangkan (otomatis dibuat dari content). "related" juga opsional tapi sangat dianjurkan karena itulah cara kamu menentukan "relasinya kemana" di dalam neuron map — isi 2-4 kata kunci spesifik yang menghubungkan node ini ke node lain yang relevan.
+- Tulis content padat & actionable, hanya aturan/fakta yang belum tercatat.
+- Di teks normal balasanmu, konfirmasikan catatan singkat (mis. "📝 Node baru: ...") supaya pengguna tahu catatan tersimpan & tersambung.
 
-GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat):
+GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, setiap baris = satu node):
 {$trainingNotesStr}
 PROMPT;
 
