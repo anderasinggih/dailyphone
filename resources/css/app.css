@@ -324,4 +324,10 @@
   .apple-badge-muted {
     color: var(--muted-foreground);
   }
+
+  /* Completely disable and hide default Inertia/NProgress loading indicator */
+  #nprogress {
+    display: none !important;
+    pointer-events: none !important;
+  }
 }
