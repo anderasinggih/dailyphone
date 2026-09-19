@@ -169,11 +169,11 @@ class AiFileIngestService
     {
         $repoUrl = trim($repoUrl);
         if ($repoUrl === '') {
-            return $this->fail('Repo URL tidak boleh kosong.');
+            return $this->fail('Repo URL cannot be empty.');
         }
 
         if (!preg_match('#github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#', $repoUrl, $m) && !preg_match('#^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$#', $repoUrl, $m)) {
-            return $this->fail('URL bukan repository GitHub. Contoh: https://github.com/owner/repo atau owner/repo.');
+            return $this->fail('Not a GitHub repository URL. Example: https://github.com/owner/repo or owner/repo.');
         }
 
         $owner = $m[1];
@@ -190,12 +190,12 @@ class AiFileIngestService
             $extractDir = Storage::disk('local')->path($baseDir . '/src');
 
             if (!$this->downloadArchive($owner, $repo, $zipPath)) {
-                return $this->fail("Gagal mengunduh arsip repository {$owner}/{$repo} dari GitHub. Pastikan repo bersifat publik.");
+                return $this->fail("Failed to download the {$owner}/{$repo} repository from GitHub. Make sure it is public.");
             }
 
             $zip = new ZipArchive();
             if ($zip->open($zipPath) !== true) {
-                return $this->fail('Arsip repository tidak valid.');
+                return $this->fail('Repository archive is not valid.');
             }
             @mkdir($extractDir, 0755, true);
             $zip->extractTo($extractDir);
@@ -206,8 +206,8 @@ class AiFileIngestService
             return [
                 'success' => $saved > 0,
                 'message' => $saved > 0
-                    ? "🧠 Berhasil mempelajari {$saved} file dari repo {$owner}/{$repo} dan menyimpannya sebagai node neuron memory."
-                    : "Repo {$owner}/{$repo} dibaca tapi tidak ada file teks baru yang layak disimpan (mungkin sudah pernah dipelajari sebelumnya).",
+                    ? "Learned {$saved} files from repo {$owner}/{$repo} and saved them as AI memory nodes."
+                    : "Repo {$owner}/{$repo} was read but no new text files were worth saving (they may have already been learned before).",
                 'repo' => "https://github.com/{$owner}/{$repo}",
                 'notes_count' => $saved,
                 'files_scanned' => $total,
@@ -217,7 +217,7 @@ class AiFileIngestService
                 'repo' => $repoUrl,
                 'user_id' => $user->id,
             ]);
-            return $this->fail('Terjadi kesalahan saat mempelajari repo: ' . $e->getMessage());
+            return $this->fail('Something went wrong while learning the repo: ' . $e->getMessage());
         } finally {
             if ($token !== '') {
                 try {

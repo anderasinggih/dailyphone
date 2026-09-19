@@ -1,8 +1,9 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, router, Link, usePage, useForm } from '@inertiajs/react';
-import { FormEvent, useMemo } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import {
     ChevronLeft,
+    ChevronDown,
     Layers,
     GitBranch,
     FileCode2,
@@ -50,6 +51,26 @@ export default function AiSkillsLibrary({ repos }: AiSkillsLibraryProps) {
 
     const form = useForm({ repo: '' });
 
+    const [expandedRepos, setExpandedRepos] = useState<Set<string>>(new Set());
+
+    const toggleRepo = (label: string) => {
+        setExpandedRepos(prev => {
+            const next = new Set(prev);
+            if (next.has(label)) {
+                next.delete(label);
+            } else {
+                next.add(label);
+            }
+            return next;
+        });
+    };
+
+    const allExpanded = safeRepos.length > 0 && safeRepos.every(r => expandedRepos.has(r.label));
+
+    const toggleAllRepos = () => {
+        setExpandedRepos(allExpanded ? new Set() : new Set(safeRepos.map(r => r.label)));
+    };
+
     const stats = useMemo(() => {
         const files = safeRepos.flatMap(r => r.files);
         return {
@@ -87,6 +108,15 @@ export default function AiSkillsLibrary({ repos }: AiSkillsLibraryProps) {
         router.post(route('settings.ai.skills.store'), { repo: repo.label }, {
             preserveScroll: true,
         });
+    };
+
+    const deleteRepo = (repo: SkillRepo) => {
+        if (confirm(`Delete the whole repo "${repo.label}" and all ${repo.total} skill files from AI memory? Node connections are cleaned up automatically.`)) {
+            router.delete(route('settings.ai.skills.destroy-repo'), {
+                data: { repo: repo.label },
+                preserveScroll: true,
+            });
+        }
     };
 
     return (
@@ -208,98 +238,141 @@ export default function AiSkillsLibrary({ repos }: AiSkillsLibraryProps) {
                         </div>
                     ) : (
                         <div className="space-y-4">
-                            {safeRepos.map(repo => (
-                                <div key={repo.label} className="apple-card overflow-hidden">
-                                    {/* Repo header */}
-                                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4 border-b border-border/40 bg-muted/20">
-                                        <div className="flex items-center gap-3 min-w-0 flex-1">
-                                            <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
-                                                <GitBranch className="h-4 w-4" />
-                                            </div>
-                                            <div className="min-w-0">
-                                                <p className="text-sm font-semibold text-foreground truncate flex items-center gap-1.5">
-                                                    {repo.label}
-                                                    <a
-                                                        href={repo.url}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="inline-flex items-center text-muted-foreground hover:text-primary transition"
-                                                        title="Open on GitHub"
-                                                    >
-                                                        <ExternalLink className="h-3 w-3" />
-                                                    </a>
-                                                </p>
-                                                <p className="caption text-muted-foreground mt-0.5">
-                                                    {repo.total} files · {repo.active} active
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <button
-                                            onClick={() => rescanRepo(repo)}
-                                            className="rounded-xl border border-border/60 bg-background/70 px-3 py-1.5 text-[11px] font-semibold text-foreground hover:border-primary/50 hover:text-primary transition flex items-center gap-1.5 shrink-0"
-                                            title="Re-learn every file of this repo (duplicates are skipped)"
-                                        >
-                                            <RefreshCw className="h-3.5 w-3.5" />
-                                            Rescan
-                                        </button>
-                                    </div>
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                    <h3 className="h3 text-foreground inline-flex items-center gap-2">
+                                        <GitBranch className="h-4 w-4 text-primary" />
+                                        Skill Repositories
+                                    </h3>
+                                    <p className="text2 mt-0.5">
+                                        Repos stay collapsed by default — expand one to inspect, pause or delete its files.
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={toggleAllRepos}
+                                    className="rounded-lg border border-border/60 bg-card px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground hover:text-primary hover:border-primary/40 transition shrink-0"
+                                >
+                                    {allExpanded ? 'Collapse all' : 'Expand all'}
+                                </button>
+                            </div>
 
-                                    {/* Files */}
-                                    <div className="divide-y divide-border/60">
-                                        {repo.files.map(file => (
-                                            <div
-                                                key={file.id}
-                                                className={`p-4 flex flex-col sm:flex-row sm:items-center gap-3 transition ${file.is_active ? '' : 'bg-muted/30 opacity-70'}`}
-                                            >
-                                                <div className="flex items-start gap-3 min-w-0 flex-1">
-                                                    <span className="mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border bg-muted text-muted-foreground border-border">
-                                                        FILE
-                                                    </span>
-                                                    <div className="min-w-0">
-                                                        <p className="text2 text-foreground truncate">{file.title}</p>
-                                                        <p className="caption text-muted-foreground mt-1 truncate">
-                                                            {String(file.content).slice(0, 220)}
+                            {safeRepos.map(repo => {
+                                const expanded = expandedRepos.has(repo.label);
+                                return (
+                                    <div key={repo.label} className="apple-card overflow-hidden">
+                                        {/* Repo header */}
+                                        <div className={`flex flex-col sm:flex-row sm:items-center gap-3 p-4 border-b border-border/40 ${expanded ? 'bg-muted/20' : 'bg-card/40'}`}>
+                                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                                                <button
+                                                    onClick={() => toggleRepo(repo.label)}
+                                                    className="flex items-center gap-3 min-w-0 flex-1 text-left group"
+                                                    title={expanded ? 'Collapse repo files' : 'Expand repo files'}
+                                                >
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <GitBranch className="h-4 w-4" />
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <p className="text-sm font-semibold text-foreground truncate">
+                                                            {repo.label}
                                                         </p>
-                                                        <p className="caption text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                                                            <span>{file.author_name || 'System'}</span>
-                                                            <span>•</span>
-                                                            <span>{file.updated_at}</span>
-                                                            {!file.is_active && (
-                                                                <>
-                                                                    <span>•</span>
-                                                                    <span className="text-destructive font-semibold">paused</span>
-                                                                </>
-                                                            )}
+                                                        <p className="caption text-muted-foreground mt-0.5">
+                                                            {repo.total} files · {repo.active} active
                                                         </p>
                                                     </div>
-                                                </div>
-
-                                                <div className="flex items-center gap-1.5 shrink-0">
-                                                    <button
-                                                        onClick={() => toggleFile(file)}
-                                                        className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
-                                                            file.is_active
-                                                                ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
-                                                                : 'bg-primary/10 text-primary hover:bg-primary/20'
-                                                        }`}
-                                                        title={file.is_active ? 'Pause this skill file' : 'Activate this skill file'}
-                                                    >
-                                                        <Power className="h-3 w-3" />
-                                                        {file.is_active ? 'Pause' : 'Activate'}
-                                                    </button>
-                                                    <button
-                                                        onClick={() => deleteFile(file)}
-                                                        className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
-                                                        title="Delete this skill file permanently"
-                                                    >
-                                                        <Trash2 className="h-4 w-4" />
-                                                    </button>
-                                                </div>
+                                                    <ChevronDown
+                                                        className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform duration-200 group-hover:text-primary ${expanded ? 'rotate-180' : ''}`}
+                                                    />
+                                                </button>
+                                                <a
+                                                    href={repo.url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="inline-flex items-center p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-muted/80 transition shrink-0"
+                                                    title="Open on GitHub"
+                                                >
+                                                    <ExternalLink className="h-3.5 w-3.5" />
+                                                </a>
                                             </div>
-                                        ))}
+
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                <button
+                                                    onClick={() => rescanRepo(repo)}
+                                                    className="rounded-xl border border-border/60 bg-background/70 px-3 py-1.5 text-[11px] font-semibold text-foreground hover:border-primary/50 hover:text-primary transition flex items-center gap-1.5"
+                                                    title="Re-learn every file of this repo (duplicates are skipped)"
+                                                >
+                                                    <RefreshCw className="h-3.5 w-3.5" />
+                                                    Rescan
+                                                </button>
+                                                <button
+                                                    onClick={() => deleteRepo(repo)}
+                                                    className="rounded-xl border border-border/60 bg-background/70 px-3 py-1.5 text-[11px] font-semibold text-destructive hover:bg-destructive/10 hover:border-destructive/40 transition flex items-center gap-1.5"
+                                                    title={`Delete the whole repo "${repo.label}" and all ${repo.total} files`}
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                    Delete
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Files */}
+                                        {expanded && (
+                                            <div className="divide-y divide-border/60">
+                                                {repo.files.map(file => (
+                                                    <div
+                                                        key={file.id}
+                                                        className={`p-4 flex flex-col sm:flex-row sm:items-center gap-3 transition ${file.is_active ? '' : 'bg-muted/30 opacity-70'}`}
+                                                    >
+                                                        <div className="flex items-start gap-3 min-w-0 flex-1">
+                                                            <span className="mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border bg-muted text-muted-foreground border-border">
+                                                                FILE
+                                                            </span>
+                                                            <div className="min-w-0">
+                                                                <p className="text2 text-foreground truncate">{file.title}</p>
+                                                                <p className="caption text-muted-foreground mt-1 truncate">
+                                                                    {String(file.content).slice(0, 220)}
+                                                                </p>
+                                                                <p className="caption text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                                                                    <span>{file.author_name || 'System'}</span>
+                                                                    <span>•</span>
+                                                                    <span>{file.updated_at}</span>
+                                                                    {!file.is_active && (
+                                                                        <>
+                                                                            <span>•</span>
+                                                                            <span className="text-destructive font-semibold">paused</span>
+                                                                        </>
+                                                                    )}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                            <button
+                                                                onClick={() => toggleFile(file)}
+                                                                className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
+                                                                    file.is_active
+                                                                        ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
+                                                                        : 'bg-primary/10 text-primary hover:bg-primary/20'
+                                                                }`}
+                                                                title={file.is_active ? 'Pause this skill file' : 'Activate this skill file'}
+                                                            >
+                                                                <Power className="h-3 w-3" />
+                                                                {file.is_active ? 'Pause' : 'Activate'}
+                                                            </button>
+                                                            <button
+                                                                onClick={() => deleteFile(file)}
+                                                                className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
+                                                                title="Delete this skill file permanently"
+                                                            >
+                                                                <Trash2 className="h-4 w-4" />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
 

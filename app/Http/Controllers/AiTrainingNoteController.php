@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\AiTrainingNote;
+use App\Models\AiTrainingNoteLink;
 use App\Services\AiMemoryGraphService;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
@@ -20,17 +21,51 @@ class AiTrainingNoteController extends Controller
         $notes = AiTrainingNote::query()
             ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
             ->orderBy('updated_at', 'desc')
-            ->get()
-            ->map(fn($n) => [
-                'id' => $n->id,
-                'kind' => $n->kind,
-                'title' => $n->title,
-                'content' => $n->content,
-                'is_active' => $n->is_active,
-                'author_name' => $n->author_name,
-                'author_role' => $n->author_role,
-                'updated_at' => $n->updated_at->diffForHumans(),
-            ]);
+            ->get();
+
+        $notesById = $notes->keyBy('id');
+
+        // Resolve each note's live synapses (relation kind, label, strength and
+        // reason) so the List view can show why this memory is connected to
+        // others — in the same way the mind map does.
+        $synapses = [];
+        AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason'])
+            ->each(function ($l) use (&$synapses, $notesById) {
+                if (!isset($notesById[$l->linked_note_id])) {
+                    return;
+                }
+                $synapses[$l->note_id][] = [
+                    'id' => (int)$l->linked_note_id,
+                    'title' => $notesById[$l->linked_note_id]->title,
+                    'label' => $l->label,
+                    'relation' => $l->relation,
+                    'weight' => $l->weight !== null ? (float)$l->weight : null,
+                    'reason' => $l->reason,
+                ];
+                if (!isset($notesById[$l->note_id])) {
+                    return;
+                }
+                $synapses[$l->linked_note_id][] = [
+                    'id' => (int)$l->note_id,
+                    'title' => $notesById[$l->note_id]->title,
+                    'label' => $l->label,
+                    'relation' => $l->relation,
+                    'weight' => $l->weight !== null ? (float)$l->weight : null,
+                    'reason' => $l->reason,
+                ];
+            });
+
+        $notes = $notes->map(fn($n) => [
+            'id' => $n->id,
+            'kind' => $n->kind,
+            'title' => $n->title,
+            'content' => $n->content,
+            'is_active' => $n->is_active,
+            'author_name' => $n->author_name,
+            'author_role' => $n->author_role,
+            'updated_at' => $n->updated_at->diffForHumans(),
+            'links' => $synapses[$n->id] ?? [],
+        ]);
 
         return Inertia::render('Settings/AiTrainingNotes', [
             'notes' => $notes,
@@ -135,6 +170,44 @@ class AiTrainingNoteController extends Controller
 
         return redirect()->route('settings.ai.skills')
             ->with($result['success'] ? 'success' : 'error', $result['message']);
+    }
+
+    /**
+     * Delete every skill file learned from one GitHub repository at once.
+     * Node links are pruned automatically by the model's deleted hook.
+     */
+    public function destroyRepo(Request $request): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $request->validate([
+            'repo' => 'required|string|max:200',
+        ]);
+
+        $repo = trim((string) $request->input('repo'));
+        if ($repo === '') {
+            return redirect()->route('settings.ai.skills')
+                ->with('error', 'Repo name cannot be empty.');
+        }
+
+        $notes = AiTrainingNote::where('source_label', $repo)->get();
+        if ($notes->isEmpty()) {
+            return redirect()->route('settings.ai.skills')
+                ->with('error', "No skill files found for repo '{$repo}'.");
+        }
+
+        // Delete one-by-one so the model's deleted hook prunes every neuron
+        // link, keeping the memory graph free of dangling synapses.
+        $count = 0;
+        foreach ($notes as $note) {
+            $note->delete();
+            $count++;
+        }
+
+        return redirect()->route('settings.ai.skills')
+            ->with('success', "Removed {$count} skill files of repo '{$repo}' from AI memory.");
     }
 
     public function toggle(Request $request, $id): RedirectResponse

@@ -3,6 +3,7 @@ import { Head, router, Link, usePage, useForm } from '@inertiajs/react';
 import { FormEvent, useMemo, useState } from 'react';
 import {
     ChevronLeft,
+    ChevronDown,
     BrainCircuit,
     Plus,
     Trash2,
@@ -16,15 +17,27 @@ import {
 } from 'lucide-react';
 import type { PageProps } from '@/types';
 import NeuralMindMap from '@/Components/NeuralMindMap';
+import { relationName } from '@/lib/relations';
+
+interface SynapseRef {
+    id: number;
+    title: string | null;
+    label: string | null;
+    relation: string | null;
+    weight: number | null;
+    reason: string | null;
+}
 
 interface TrainingNote {
     id: number;
     kind: 'rule' | 'knowledge';
+    title: string | null;
     content: string;
     is_active: boolean;
     author_name: string | null;
     author_role: string | null;
     updated_at: string;
+    links: SynapseRef[];
 }
 
 interface MindGraphNode {
@@ -71,6 +84,20 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
             return 'map';
         }
     });
+
+    const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+
+    const toggleExpanded = (id: number) => {
+        setExpandedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) {
+                next.delete(id);
+            } else {
+                next.add(id);
+            }
+            return next;
+        });
+    };
 
     const switchView = (next: 'list' | 'map') => {
         setView(next);
@@ -261,7 +288,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                 <div>
                                     <h3 className="h3 text-foreground">Neuron Mind Map</h3>
                                     <p className="text2 mt-0.5">
-                                        Click a node to open its memory below the map. Hit the refresh button to auto-arrange the galaxy, or pause any node when you want the AI to ignore it.
+                                        Click a node to open its memory below the map. Hit the refresh button to auto-arrange the network, or pause any node when you want the AI to ignore it.
                                     </p>
                                 </div>
                                 <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">
@@ -306,66 +333,127 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                 </div>
                             ) : (
                                 <div className="apple-card overflow-hidden divide-y divide-border/60">
-                                    {safeNotes.map(note => (
-                                        <div
-                                            key={note.id}
-                                            className={`p-4 flex flex-col sm:flex-row sm:items-center gap-3 transition ${note.is_active ? '' : 'bg-muted/30 opacity-70'}`}
-                                        >
-                                            <div className="flex items-start gap-3 min-w-0 flex-1">
-                                                <span className={`mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
-                                                    note.kind === 'rule'
-                                                        ? 'bg-primary/10 text-primary border-primary/20'
-                                                        : 'bg-muted text-muted-foreground border-border'
-                                                }`}>
-                                                    {note.kind === 'rule' ? '[RULE]' : '[NOTE]'}
-                                                </span>
-                                                <div className="min-w-0">
-                                                    <p className="text2 text-foreground break-words whitespace-pre-wrap">
-                                                        {note.content}
-                                                    </p>
-                                                    <p className="caption text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                                                        <span>{note.author_name || 'System'}</span>
-                                                        {note.author_role && (
-                                                            <>
+                                    {safeNotes.map(note => {
+                                        const expanded = expandedIds.has(note.id);
+                                        const noteTitle = note.title
+                                            || note.content.slice(0, 96).replace(/\s+/g, ' ').trim();
+                                        return (
+                                            <div
+                                                key={note.id}
+                                                className={`transition ${note.is_active ? '' : 'bg-muted/30 opacity-70'}`}
+                                            >
+                                                <div className="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                                                    <button
+                                                        onClick={() => toggleExpanded(note.id)}
+                                                        className="flex items-start gap-3 min-w-0 flex-1 text-left group"
+                                                        title={expanded ? 'Collapse this note' : 'Expand this note'}
+                                                    >
+                                                        <span className={`mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
+                                                            note.kind === 'rule'
+                                                                ? 'bg-primary/10 text-primary border-primary/20'
+                                                                : 'bg-muted text-muted-foreground border-border'
+                                                        }`}>
+                                                            {note.kind === 'rule' ? '[RULE]' : '[NOTE]'}
+                                                        </span>
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="text-sm font-semibold text-foreground truncate">
+                                                                {noteTitle}
+                                                            </p>
+                                                            <p className="text2 text-muted-foreground mt-0.5 truncate">
+                                                                {note.content}
+                                                            </p>
+                                                            <p className="caption text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                                                                <span>{note.author_name || 'System'}</span>
+                                                                {note.author_role && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="capitalize">{note.author_role}</span>
+                                                                    </>
+                                                                )}
                                                                 <span>•</span>
-                                                                <span className="capitalize">{note.author_role}</span>
-                                                            </>
-                                                        )}
-                                                        <span>•</span>
-                                                        <span>{note.updated_at}</span>
-                                                        {!note.is_active && (
-                                                            <>
-                                                                <span>•</span>
-                                                                <span className="text-destructive font-semibold">paused</span>
-                                                            </>
-                                                        )}
-                                                    </p>
-                                                </div>
-                                            </div>
+                                                                <span>{note.updated_at}</span>
+                                                                {note.links.length > 0 && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="inline-flex items-center gap-1 text-primary font-semibold">
+                                                                            <Network className="h-3 w-3 shrink-0" />
+                                                                            {note.links.length} synapse{note.links.length === 1 ? '' : 's'}
+                                                                        </span>
+                                                                    </>
+                                                                )}
+                                                                {!note.is_active && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="text-destructive font-semibold">paused</span>
+                                                                    </>
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                        <ChevronDown
+                                                            className={`h-4 w-4 text-muted-foreground shrink-0 mt-1 transition-transform duration-200 group-hover:text-primary ${expanded ? 'rotate-180' : ''}`}
+                                                        />
+                                                    </button>
 
-                                            <div className="flex items-center gap-1.5 shrink-0">
-                                                <button
-                                                    onClick={() => toggleNote(note)}
-                                                    className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
-                                                        note.is_active
-                                                            ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
-                                                            : 'bg-primary/10 text-primary hover:bg-primary/20'
-                                                    }`}
-                                                    title={note.is_active ? 'Pause this note' : 'Activate this note'}
-                                                >
-                                                    <Power className="h-3 w-3" />
-                                                    {note.is_active ? 'Pause' : 'Activate'}
-                                                </button>
-                                                <button
-                                                    onClick={() => deleteNote(note)}
-                                                    className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
-                                                    title="Delete this note permanently"
-                                                >
-                                                    <Trash2 className="h-4 w-4" />
-                                                </button>
+                                                    <div className="flex items-center gap-1.5 shrink-0">
+                                                        <button
+                                                            onClick={() => toggleNote(note)}
+                                                            className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
+                                                                note.is_active
+                                                                    ? 'bg-muted hover:bg-muted/80 text-muted-foreground'
+                                                                    : 'bg-primary/10 text-primary hover:bg-primary/20'
+                                                            }`}
+                                                            title={note.is_active ? 'Pause this note' : 'Activate this note'}
+                                                        >
+                                                            <Power className="h-3 w-3" />
+                                                            {note.is_active ? 'Pause' : 'Activate'}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => deleteNote(note)}
+                                                            className="p-1.5 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
+                                                            title="Delete this note permanently"
+                                                        >
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {expanded && (
+                                                    <div className="px-4 pb-4 -mt-1.5 space-y-3">
+                                                        <p className="text-xs text-foreground/95 leading-relaxed whitespace-pre-wrap max-h-[34vh] overflow-y-auto rounded-xl bg-background/50 border border-border/40 px-3.5 py-3">
+                                                            {note.content}
+                                                        </p>
+
+                                                        {note.links.length > 0 && (
+                                                            <div className="border-t border-border/40 pt-3 space-y-2">
+                                                                <p className="text-[10px] font-bold tracking-wider text-muted-foreground uppercase">
+                                                                    Synapses ({note.links.length})
+                                                                </p>
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    {note.links.map(link => (
+                                                                        <span
+                                                                            key={link.id}
+                                                                            title={link.reason ?? relationName(link.relation, link.label)}
+                                                                            className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground"
+                                                                        >
+                                                                            {link.title || `Memory #${link.id}`}
+                                                                            <span className="ml-1.5 inline-flex items-center gap-1 text-[9px] font-semibold text-primary uppercase">
+                                                                                {relationName(link.relation, link.label)}
+                                                                                {link.weight !== null && link.weight !== undefined && (
+                                                                                    <span className="font-mono text-muted-foreground">
+                                                                                        {Math.round(link.weight * 100)}%
+                                                                                    </span>
+                                                                                )}
+                                                                            </span>
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>

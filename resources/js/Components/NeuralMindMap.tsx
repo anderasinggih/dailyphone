@@ -12,6 +12,7 @@ import {
     Power,
     ShieldCheck
 } from 'lucide-react';
+import { RELATION_LABEL } from '@/lib/relations';
 
 interface MindMapNode {
     id: number;
@@ -33,15 +34,6 @@ interface MindMapLink {
     reason?: string | null;
 }
 
-const RELATION_LABEL: Record<string, string> = {
-    same_topic: 'Same topic',
-    rule_applies: 'Rule applies',
-    persistent_hint: 'Keyword link',
-    closely_related: 'Closely related',
-    related: 'Related',
-    fresh_memory: 'Fresh memory',
-};
-
 interface NeuralMindMapProps {
     nodes: MindMapNode[];
     links: MindMapLink[];
@@ -59,7 +51,7 @@ interface View {
     k: number;
 }
 
-const STORAGE_KEY = 'dp-ai-neural-map-v3';
+const STORAGE_KEY = 'dp-ai-neural-map-v4';
 const MIN_ZOOM = 0.16;
 const MAX_ZOOM = 3.4;
 const NODE_H = 44;
@@ -77,11 +69,14 @@ function nodeWidth(n: MindMapNode | undefined): number {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Galaxy layout: each connected component becomes a small
-   galaxy (hub at the center, memories on depth rings), then
-   every galaxy is packed into a larger cosmos.
-   $seed perturbs the deterministic hash so a "rearrange" actually
-   produces a fresh galaxy, not an identical rebuild.
+   Structured tree layout: each connected component becomes a
+   tidy dendrogram — the busiest node is the root, related nodes
+   branch out level by level to the right, and siblings stack
+   cleanly one below the other. This reads like an organized
+   knowledge map instead of a circular galaxy, with generous
+   spacing and zero overlaps.
+   $seed perturbs a tiny deterministic jitter so a "rearrange"
+   refreshes the pose without ever breaking the structure.
    ───────────────────────────────────────────────────────────── */
 function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Record<number, Point> {
     const n = nodes.length;
@@ -89,8 +84,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     if (n === 0) return result;
 
     const nodeById = new Map(nodes.map(nd => [nd.id, nd]));
-    const jitter = (id: number) => hash1(id + seed * 7919);
-    const ringSpin = seed !== 0 ? (hash1(seed * 13.37) - 0.5) * Math.PI * 2 : 0;
+    const jitter = (id: number) => hash1(id + seed * 7919) - 0.5;
 
     const adj: Record<number, number[]> = {};
     nodes.forEach(nd => (adj[nd.id] = []));
@@ -122,108 +116,119 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
         comps.push(comp);
     });
 
+    // Generous, readable spacing so every memory can be analyzed comfortably.
+    const COL_W = 240;   // horizontal gap between depth columns
+    const ROW_H = 76;    // vertical gap between sibling slots
+    const COMP_GAP = 96; // padding around each component's bounding box
+
+    // Dendrogram of one component: root on the left, generations grow right.
     const layoutComponent = (ids: number[]) => {
         let hub = ids[0];
         ids.forEach(id => {
             if ((adj[id] || []).length > (adj[hub] || []).length) hub = id;
         });
 
+        // BFS tree from the hub: depth, parent and ordered children (busiest
+        // neighbours first so the most connected concepts sit closest to the top).
         const depth: Record<number, number> = { [hub]: 0 };
+        const children: Record<number, number[]> = {};
         const queue = [hub];
         while (queue.length) {
             const cur = queue.shift()!;
-            for (const nb of adj[cur] || []) {
-                if (depth[nb] === undefined) {
-                    depth[nb] = (depth[cur] ?? 0) + 1;
-                    queue.push(nb);
+            const neighbours = [...(adj[cur] || [])].sort((a, b) =>
+                (adj[b]?.length || 0) - (adj[a]?.length || 0)
+            );
+            for (const next of neighbours) {
+                if (depth[next] === undefined) {
+                    depth[next] = (depth[cur] ?? 0) + 1;
+                    (children[cur] ||= []).push(next);
+                    queue.push(next);
                 }
             }
         }
 
-        const byDepth: Record<string, number[]> = {};
+        // Post-order slot assignment: leaves take sequential rows, internal
+        // nodes sit centered between their children so branches stay tidy and
+        // never collide with a sibling subtree.
+        const slot: Record<number, number> = {};
+        let cursor = 0;
+        const assignSlots = (id: number): number[] => {
+            const kids = children[id] || [];
+            if (kids.length === 0) {
+                const s = cursor;
+                cursor += 1;
+                slot[id] = s;
+                return [s];
+            }
+            const spans: number[] = [];
+            kids.forEach(k => spans.push(...assignSlots(k)));
+            slot[id] = (spans[0] + spans[spans.length - 1]) / 2;
+            return spans;
+        };
+        assignSlots(hub);
+
+        let minSlot = Infinity, maxSlot = -Infinity, maxDepth = 0;
         ids.forEach(id => {
-            const d = depth[id] ?? 0;
-            (byDepth[d] ||= []).push(id);
+            minSlot = Math.min(minSlot, slot[id]);
+            maxSlot = Math.max(maxSlot, slot[id]);
+            maxDepth = Math.max(maxDepth, depth[id] ?? 0);
         });
+        const midSlot = (minSlot + maxSlot) / 2;
 
-        const pos: Record<number, Point> = {};
-        const base = 112;
-        const spacing = 156;
-        const ringGap = 40;
-
-        Object.keys(byDepth).forEach(ds => {
-            const d = +ds;
-            const ring = byDepth[ds];
-            const totalW = ring.reduce((s, id) => s + nodeWidth(nodeById.get(id)) + ringGap, 0);
-            const ringR = Math.max(base + d * spacing, (totalW / (2 * Math.PI)) * 1.1);
-            ring.forEach((id, i) => {
-                const jx = (jitter(id) - 0.5) * 14;
-                const jy = (jitter(id + 3) - 0.5) * 14;
-                const ang = d * 1.618 + ringSpin + (i * 2 * Math.PI) / ring.length;
-                pos[id] = { x: Math.cos(ang) * ringR + jx, y: Math.sin(ang) * ringR + jy };
-            });
-        });
-
-        // The hub always sits dead-center — the rings radiate outward from it.
-        pos[hub] = { x: 0, y: 0 };
-
-        let radius = 0;
-        const offsets: Point[] = [];
+        const local: Record<number, Point> = {};
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         ids.forEach(id => {
-            const p = pos[id];
-            offsets.push(p);
+            const jx = jitter(id) * 10;
+            const jy = jitter(id + 3) * 6;
+            const x = (depth[id] ?? 0) * COL_W + jx;
+            const y = ((slot[id] ?? 0) - midSlot) * ROW_H + jy;
+            local[id] = { x, y };
             const w = nodeWidth(nodeById.get(id));
-            radius = Math.max(radius, Math.hypot(p.x, p.y) + w / 2 + 40);
+            minX = Math.min(minX, x - w / 2);
+            maxX = Math.max(maxX, x + w / 2);
+            minY = Math.min(minY, y - NODE_H / 2);
+            maxY = Math.max(maxY, y + NODE_H / 2);
         });
-        return { ids, offsets, radius: Math.max(radius, 120) };
+
+        return {
+            ids,
+            local,
+            minX,
+            minY,
+            w: Math.max(maxX - minX, 1),
+            h: Math.max(maxY - minY, 1),
+        };
     };
 
-    const compLayouts = comps.map(c => layoutComponent(c));
+    const compLayouts = comps.map(c => layoutComponent(c))
+        .sort((a, b) => b.ids.length - a.ids.length);
 
-    // Galaxy packing: largest galaxy at the center, the rest on a golden spiral.
-    const sorted = compLayouts
-        .map((c, i) => ({ ...c, count: c.ids.length, index: i }))
-        .sort((a, b) => b.count - a.count);
-    const placed: { x: number; y: number; r: number }[] = [];
+    // Pack every component's bounding box left→right, wrapping into a new row
+    // when a row fills up, so the whole canvas stays structured and overlap-free.
     const global: Record<number, Point> = {};
-    const golden = 2.39996323;
-
-    sorted.forEach((comp, i) => {
-        let cx = 0;
-        let cy = 0;
-        if (i === 0) {
-            cx = 0;
-            cy = 0;
-        } else {
-            const angle = i * golden;
-            let r = comp.radius + 200;
-            const step = 160;
-            let guard = 0;
-            while (guard++ < 400) {
-                let ok = true;
-                for (const p of placed) {
-                    const d = Math.hypot(Math.cos(angle) * r - p.x, Math.sin(angle) * r - p.y);
-                    if (d < p.r + comp.radius + 200) {
-                        ok = false;
-                        break;
-                    }
-                }
-                if (ok) break;
-                r += step;
-            }
-            cx = Math.cos(angle) * r;
-            cy = Math.sin(angle) * r;
+    const ROW_BUDGET = 2600;
+    let curX = 0;
+    let curY = 0;
+    let rowMaxH = 0;
+    compLayouts.forEach(comp => {
+        if (curX > 0 && curX + comp.w > ROW_BUDGET) {
+            curX = 0;
+            curY += rowMaxH + COMP_GAP;
+            rowMaxH = 0;
         }
-        placed.push({ x: cx, y: cy, r: comp.radius });
-        comp.offsets.forEach((p, idx) => {
-            global[comp.ids[idx]] = { x: p.x + cx, y: p.y + cy };
+        const dx = curX - comp.minX;
+        const dy = curY - comp.minY;
+        comp.ids.forEach(id => {
+            global[id] = { x: comp.local[id].x + dx, y: comp.local[id].y + dy };
         });
+        curX += comp.w + COMP_GAP;
+        rowMaxH = Math.max(rowMaxH, comp.h);
     });
 
-    // Push overlapping nodes apart so the cosmos is always clean and legible.
-    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 34);
+    // Belt-and-suspenders pass in case jitter ever squeezes two nodes together.
+    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 40);
 
-    // Normalize into a tight world box so the cosmos fills the viewport.
+    // Normalize into a tight world box so the structure fills the viewport.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     nodes.forEach(node => {
         const p = global[node.id];

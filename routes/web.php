@@ -129,6 +129,7 @@ Route::prefix('application/dp')->group(function () {
         // AI Skills Library (superadmin) — repo-learned files management
         Route::get('/settings/ai/skills', [\App\Http\Controllers\AiTrainingNoteController::class, 'skillsIndex'])->name('settings.ai.skills');
         Route::post('/settings/ai/skills', [\App\Http\Controllers\AiTrainingNoteController::class, 'storeRepo'])->name('settings.ai.skills.store');
+        Route::delete('/settings/ai/skills/repo', [\App\Http\Controllers\AiTrainingNoteController::class, 'destroyRepo'])->name('settings.ai.skills.destroy-repo');
     });
 
     require __DIR__.'/auth.php';
