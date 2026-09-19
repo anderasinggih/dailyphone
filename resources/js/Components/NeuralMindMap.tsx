@@ -51,7 +51,7 @@ interface View {
     k: number;
 }
 
-const STORAGE_KEY = 'dp-ai-neural-map-v4';
+const STORAGE_KEY = 'dp-ai-neural-map-v5';
 const MIN_ZOOM = 0.16;
 const MAX_ZOOM = 3.4;
 const NODE_H = 44;
@@ -117,9 +117,12 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     });
 
     // Generous, readable spacing so every memory can be analyzed comfortably.
-    const COL_W = 240;   // horizontal gap between depth columns
-    const ROW_H = 76;    // vertical gap between sibling slots
-    const COMP_GAP = 96; // padding around each component's bounding box
+    // ROW_H must stay comfortably above NODE_H: the dendrogram can place two
+    // same-depth nodes half a slot apart, so 2x NODE_H guarantees they can
+    // never touch.
+    const COL_W = 240; // horizontal gap between depth columns
+    const ROW_H = 108; // vertical gap between sibling slots (> 2 * NODE_H)
+    const COMP_GAP = 120; // padding around each component's bounding box
 
     // Dendrogram of one component: root on the left, generations grow right.
     const layoutComponent = (ids: number[]) => {
@@ -228,7 +231,11 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     // Belt-and-suspenders pass in case jitter ever squeezes two nodes together.
     resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 40);
 
-    // Normalize into a tight world box so the structure fills the viewport.
+    // Center the structure without rescaling. Rescaling coordinates to "fit the
+    // viewport" would shrink the gaps between node centers while the NODE boxes
+    // stay the same size — overlapping everything — so positions keep their
+    // generous raw spacing and the VIEW zoom (which scales the boxes too) does
+    // the fitting instead.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     nodes.forEach(node => {
         const p = global[node.id];
@@ -238,14 +245,11 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
         maxX = Math.max(maxX, p.x + w / 2);
         maxY = Math.max(maxY, p.y + NODE_H / 2);
     });
-    const boxW = Math.max(maxX - minX, 1);
-    const boxH = Math.max(maxY - minY, 1);
-    const scale = Math.min(1700 / boxW, 1040 / boxH);
     nodes.forEach(node => {
         const p = global[node.id];
         result[node.id] = {
-            x: (p.x - (minX + maxX) / 2) * scale,
-            y: (p.y - (minY + maxY) / 2) * scale,
+            x: p.x - (minX + maxX) / 2,
+            y: p.y - (minY + maxY) / 2,
         };
     });
 
@@ -253,41 +257,52 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
 }
 
 /**
- * Iteratively separate every pair of overlapping nodes, treating each node as
- * a circle sized by its wider edge (width or height). Each pass pushes apart
- * half the required distance; repeated passes converge to a clean layout
- * without overlaps while keeping the overall galaxy structure intact.
+ * Guarantee zero overlap: for every pair of boxes that touch (with a margin),
+ * push them apart along the axis needing the least movement, by the FULL
+ * required distance. Iterates until every pair is clean (or the pass cap).
+ * Axis-wise full-push converges where half-step radial pushes never did.
  */
 function resolveOverlaps(
     positions: Record<number, Point>,
     widthOf: (id: number) => number,
     height: number,
     gap: number,
-    passes = 80,
+    passes = 300,
 ): void {
     const ids = Object.keys(positions).map(Number);
     for (let pass = 0; pass < passes; pass++) {
+        let moved = false;
         for (let i = 0; i < ids.length; i++) {
-            const a = positions[ids[i]];
+            const ia = ids[i];
+            const a = positions[ia];
             for (let j = i + 1; j < ids.length; j++) {
-                const b = positions[ids[j]];
-                const minD = Math.max(widthOf(ids[i]), height) / 2
-                    + Math.max(widthOf(ids[j]), height) / 2
-                    + gap;
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                const d = Math.hypot(dx, dy);
-                if (d < minD && d > 0.0001) {
-                    const push = (minD - d) / 2;
-                    const ux = dx / d;
-                    const uy = dy / d;
-                    a.x -= ux * push;
-                    a.y -= uy * push;
-                    b.x += ux * push;
-                    b.y += uy * push;
+                const ib = ids[j];
+                const b = positions[ib];
+
+                const aw = widthOf(ia) + gap;
+                const bw = widthOf(ib) + gap;
+                const overlapX = Math.min(a.x + aw / 2, b.x + bw / 2)
+                    - Math.max(a.x - aw / 2, b.x - bw / 2);
+                const overlapY = Math.min(a.y + height / 2 + gap / 2, b.y + height / 2 + gap / 2)
+                    - Math.max(a.y - height / 2 - gap / 2, b.y - height / 2 - gap / 2);
+
+                if (overlapX <= 0 || overlapY <= 0) continue;
+
+                if (overlapX < overlapY) {
+                    const dir = a.x < b.x ? -1 : 1;
+                    const push = overlapX / 2;
+                    a.x += dir * push;
+                    b.x -= dir * push;
+                } else {
+                    const dir = a.y < b.y ? -1 : 1;
+                    const push = overlapY / 2;
+                    a.y += dir * push;
+                    b.y -= dir * push;
                 }
+                moved = true;
             }
         }
+        if (!moved) return;
     }
 }
 
