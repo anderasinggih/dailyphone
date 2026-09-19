@@ -520,8 +520,8 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
         <AuthenticatedLayout>
             <Head title="Selling" />
 
-            <div className="py-8">
-                <div className="mx-auto max-w-none px-4 sm:px-6 lg:px-8 space-y-8">
+            <div className="py-3 sm:py-8">
+                <div className="mx-auto max-w-none px-4 sm:px-6 lg:px-8 space-y-3 sm:space-y-6">
 
                     {}
                     <div className="flex items-stretch gap-2">
@@ -604,17 +604,17 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                     )}
 
                     {}
-                    <div className="w-full grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+                    <div className="w-full grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
 
                         {}
-                        <div className={`rounded-none sm:rounded-2xl border-x-0 sm:border border-y sm:border-y-0 border-border/60 bg-transparent sm:bg-card shadow-none sm:shadow-sm text-card-foreground -mx-4 sm:mx-0 transition-all duration-300 ${
+                        <div className={`border-0 sm:border sm:rounded-2xl border-border/60 bg-transparent sm:bg-card shadow-none sm:shadow-sm text-card-foreground -mx-4 sm:mx-0 transition-all duration-300 ${
                             selectedStockDetail ? 'hidden lg:block lg:col-span-2' : 'col-span-1 lg:col-span-3'
                         }`}>
-                            <div className="p-0 sm:p-6">
+                            <div className="p-0 sm:p-5">
                                 {}
-                                <div className="md:hidden space-y-3 px-4 py-2">
+                                <div className="md:hidden">
                                     {filteredStocks.length === 0 ? (
-                                        <div className="py-8 text-center text-gray-400">
+                                        <div className="py-6 text-center text-gray-400">
                                             Stok unit tidak ditemukan.
                                         </div>
                                     ) : (
@@ -624,28 +624,22 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                                 <div
                                                     key={item.id}
                                                     onClick={() => setSelectedStockDetail(item)}
-                                                    className={`p-4 rounded-xl border border-border bg-card/45 hover:bg-muted/30 transition cursor-pointer space-y-2 ${
-                                                        isSelected ? 'ring-2 ring-primary bg-primary/5' : ''
+                                                    className={`px-4 py-2.5 border-b border-border/40 transition cursor-pointer ${
+                                                        isSelected ? 'bg-primary/5' : ''
                                                     }`}
                                                 >
-                                                    <div className="flex justify-between items-start gap-3">
+                                                    <div className="flex justify-between items-center gap-3">
                                                         <div className="min-w-0 flex-1">
-                                                            <p className="font-semibold text-foreground truncate block text-sm" title={item.name}>
+                                                            <p className="font-semibold text-foreground truncate block text-[13px] leading-snug" title={item.name}>
                                                                 {item.name} {item.color?.value ? `(${item.color.value})` : ''}
                                                             </p>
-                                                            {renderBadges(item)}
-                                                            <p className="text-[10px] font-bold text-muted-foreground tracking-wider mt-0.5 truncate">
-                                                                {item.category !== 'accessories' && item.category !== 'extra'
-                                                                    ? `${item.serial_number || item.imei_1 || '-'} (${item.license?.value || 'N/A'})`
-                                                                    : `${item.category} • ${item.brand?.value || '-'}`
-                                                                }
-                                                            </p>
+                                                            {renderMetaLine(item)}
                                                         </div>
                                                         <div className="text-right flex-shrink-0">
-                                                            <p className="text-sm font-bold text-primary">
+                                                            <p className="text-[13px] font-bold text-primary leading-snug">
                                                                 {formatCurrency(item.sell_price)}
                                                             </p>
-                                                            <p className="text-[11px] font-medium text-muted-foreground mt-0.5">
+                                                            <p className="text-[10px] font-medium text-muted-foreground mt-0.5">
                                                                 Stock: {item.qty} pcs
                                                             </p>
                                                         </div>
@@ -661,16 +655,16 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                     <table className="w-full min-w-0 text-left border-collapse text-sm">
                                         <thead>
                                             <tr className="border-b border-border text-xs font-semibold tracking-wider text-muted-foreground">
-                                                <th className="pb-3 px-4 font-semibold text-left">Unit</th>
-                                                <th className="pb-3 px-4 font-semibold text-left">Price</th>
-                                                <th className="pb-3 px-4 font-semibold text-center">Stock</th>
-                                                {authUser.role !== 'viewer' && <th className="pb-3 px-4 font-semibold text-right">Action</th>}
+                                                <th className="pb-2 px-3.5 font-semibold text-left">Unit</th>
+                                                <th className="pb-2 px-3.5 font-semibold text-left">Price</th>
+                                                <th className="pb-2 px-3.5 font-semibold text-center">Stock</th>
+                                                {authUser.role !== 'viewer' && <th className="pb-2 px-3.5 font-semibold text-right">Action</th>}
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-border/40 text-sm font-medium text-foreground">
                                             {filteredStocks.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={4} className="py-8 text-center text-muted-foreground px-4">
+                                                    <td colSpan={4} className="py-6 text-center text-muted-foreground px-4">
                                                         No inventory items found.
                                                     </td>
                                                 </tr>
@@ -685,37 +679,31 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                                                 isSelected ? 'bg-primary/5 hover:bg-primary/10' : ''
                                                             }`}
                                                         >
-                                                            <td className="py-2.5 px-4 text-left">
-                                                                <p className="font-semibold text-foreground truncate block max-w-xs" title={item.name}>
+                                                            <td className="py-2 px-3.5 text-left">
+                                                                <p className="font-semibold text-foreground truncate block max-w-xs text-sm leading-snug" title={item.name}>
                                                                     {item.name} {item.color?.value ? `(${item.color.value})` : ''}
                                                                 </p>
-                                                                {renderBadges(item)}
-                                                                <p className="text-[10px] font-medium text-muted-foreground tracking-wider mt-0.5 truncate max-w-xs">
-                                                                    {item.category !== 'accessories' && item.category !== 'extra'
-                                                                        ? `${item.serial_number || item.imei_1 || '-'} (${item.license?.value || 'N/A'})`
-                                                                        : `${item.category} • ${item.brand?.value || '-'}`
-                                                                    }
-                                                                </p>
+                                                                {renderMetaLine(item)}
                                                             </td>
-                                                            <td className="py-2.5 px-4 font-bold text-foreground whitespace-nowrap text-left">
+                                                            <td className="py-2 px-3.5 font-bold text-foreground whitespace-nowrap text-left">
                                                                 {formatCurrency(item.sell_price)}
                                                             </td>
-                                                            <td className="py-2.5 px-4 text-center font-semibold whitespace-nowrap">
+                                                            <td className="py-2 px-3.5 text-center font-semibold whitespace-nowrap">
                                                                 {item.qty} pcs
                                                             </td>
                                                             {authUser.role !== 'viewer' && (
-                                                                <td className="py-2.5 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                                                                <td className="py-2 px-3.5 text-right" onClick={(e) => e.stopPropagation()}>
                                                                     <div className="flex items-center justify-end gap-1.5">
                                                                         <button
                                                                             onClick={() => openCheckout(item)}
-                                                                            className="rounded-xl bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition whitespace-nowrap"
+                                                                            className="rounded-xl bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:opacity-90 transition whitespace-nowrap"
                                                                         >
                                                                             Sell
                                                                         </button>
                                                                         {authUser.role === 'superadmin' && (
                                                                             <button
                                                                                 onClick={() => openTransfer(item)}
-                                                                                className="rounded-xl border border-input px-3.5 py-1.5 text-xs font-semibold text-foreground hover:bg-muted transition whitespace-nowrap"
+                                                                                className="rounded-xl border border-input px-3 py-1 text-xs font-semibold text-foreground hover:bg-muted transition whitespace-nowrap"
                                                                             >
                                                                                 Transfer
                                                                             </button>
