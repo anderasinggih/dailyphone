@@ -677,6 +677,9 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                     <table className="w-full min-w-[1050px] text-left border-collapse">
                                         <thead>
                                             <tr className="border-b border-border dark:border-input text-[11px] font-bold tracking-wider text-muted-foreground select-none">
+                                                <th className="pb-3 font-semibold px-3 whitespace-nowrap text-left w-10">
+                                                    #
+                                                </th>
                                                 <th onClick={() => requestSort('created_at')} className="pb-3 font-semibold px-3 whitespace-nowrap text-left cursor-pointer hover:text-foreground">
                                                     Stock Date {sortConfig.key === 'created_at' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                                                 </th>
@@ -738,9 +741,6 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 </th>
                                                 <th onClick={() => requestSort('buyer')} className="pb-3 font-semibold px-3 whitespace-nowrap text-left cursor-pointer hover:text-foreground">
                                                     Buyer {sortConfig.key === 'buyer' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
-                                                </th>
-                                                <th onClick={() => requestSort('created_by')} className="pb-3 font-semibold px-3 whitespace-nowrap text-left cursor-pointer hover:text-foreground">
-                                                    Added By {sortConfig.key === 'created_by' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                                                 </th>
                                                 <th onClick={() => requestSort('status')} className="pb-3 font-semibold text-right px-3 whitespace-nowrap cursor-pointer hover:text-foreground">
                                                     Status {sortConfig.key === 'status' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
@@ -863,6 +863,9 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                     isSelected ? 'bg-primary/10' : ''
                                                                 }`}
                                                             >
+                                                                <td className="py-4 px-3 font-mono text-muted-foreground text-xs whitespace-nowrap text-left w-10">
+                                                                    {absoluteIdx + 1}
+                                                                </td>
                                                                 <td className="py-4 px-3 font-medium whitespace-nowrap text-left">{stockDate}</td>
                                                                 <td className="py-4 px-3 font-bold text-xs whitespace-nowrap text-left">{item.name}</td>
                                                                 <td className="py-4 px-3 font-medium whitespace-nowrap text-left">{soldDate}</td>
@@ -903,19 +906,6 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                 <td className="py-4 px-3 font-mono text-[10px] whitespace-nowrap text-left">{soldIn}</td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{affiliatorName}</td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{buyerName}</td>
-                                                                <td className="py-4 px-3 whitespace-nowrap text-left">
-                                                                    {item.created_by ? (
-                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium ${
-                                                                            item.created_by.includes('(AI)')
-                                                                                ? 'bg-primary/10 text-primary border border-primary/20 font-semibold'
-                                                                                : 'bg-muted text-muted-foreground'
-                                                                        }`}>
-                                                                            {item.created_by}
-                                                                        </span>
-                                                                    ) : (
-                                                                        <span className="text-muted-foreground text-[10px]">-</span>
-                                                                    )}
-                                                                </td>
                                                                 <td className="py-4 text-right px-3 whitespace-nowrap">
                                                                     <span className={`inline-flex rounded-md px-2 py-0.5 text-[10px] font-bold ${
                                                                         item.deleted_at

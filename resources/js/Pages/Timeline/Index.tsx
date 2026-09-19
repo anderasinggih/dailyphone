@@ -18,7 +18,14 @@ import {
     Activity,
     Sparkles,
     Terminal,
-    Wallet
+    Wallet,
+    X,
+    Info,
+    ChevronRight,
+    User,
+    Globe,
+    Calendar,
+    Layers
 } from 'lucide-react';
 
 interface ActivityLog {
@@ -66,6 +73,7 @@ export default function Timeline({ activities }: TimelineProps) {
     const [savedOnly, setSavedOnly] = useState(!!filters?.saved_only);
     const [showFilters, setShowFilters] = useState(!!(filters?.action_type || filters?.date));
     const [savingId, setSavingId] = useState<number | null>(null);
+    const [selectedLog, setSelectedLog] = useState<ActivityLog | null>(null);
 
     const [localActivities, setLocalActivities] = useState<ActivityLog[]>(activities.data);
 
@@ -580,12 +588,13 @@ export default function Timeline({ activities }: TimelineProps) {
                                 return (
                                     <article
                                         key={log.id}
-                                        className="bg-card w-full py-4 px-4 sm:p-5 sm:rounded-2xl sm:border sm:border-border/60 transition-colors relative"
+                                        onClick={() => setSelectedLog(log)}
+                                        className="bg-card w-full py-4 px-4 sm:p-5 sm:rounded-2xl sm:border sm:border-border/60 transition-all hover:border-primary/40 hover:shadow-xs cursor-pointer relative group"
                                     >
                                         <div className="flex items-center justify-between gap-3">
                                             <div className="flex items-center gap-3 min-w-0">
                                                 {/* Category-colored Icon */}
-                                                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${details.accentColor}`}>
+                                                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${details.accentColor} group-hover:scale-105 transition-transform`}>
                                                     <IconComponent className="h-4.5 w-4.5" />
                                                 </div>
 
@@ -601,7 +610,10 @@ export default function Timeline({ activities }: TimelineProps) {
 
                                                 {/* Instagram style bookmark save button */}
                                                 <button
-                                                    onClick={() => toggleSave(log.id)}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        toggleSave(log.id);
+                                                    }}
                                                     disabled={savingId === log.id}
                                                     title={log.is_saved ? 'Remove bookmark' : 'Save activity'}
                                                     className={`p-1.5 rounded-lg border transition ${
@@ -627,15 +639,146 @@ export default function Timeline({ activities }: TimelineProps) {
                                             <span className={`font-semibold ${details.labelColor}`}>
                                                 {details.title}
                                             </span>
-                                            <span className="truncate ml-2 text-[10px]">
-                                                {log.user?.role === 'superadmin' ? 'Superadmin' : (log.user?.store?.name || 'Main')}
-                                            </span>
+                                            <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground/70 group-hover:text-primary transition-colors">
+                                                <span>View details</span>
+                                                <ChevronRight className="h-3 w-3" />
+                                            </div>
                                         </div>
                                     </article>
                                 );
                             })
                         )}
                     </div>
+
+                    {/* Activity Detail Modal */}
+                    {selectedLog && (() => {
+                        const modalDetails = getActionDetails(selectedLog);
+                        const ModalIcon = modalDetails.icon;
+                        const modalUser = selectedLog.user?.name || 'System';
+                        const modalEmail = selectedLog.user?.email || 'system@dailyphone.com';
+                        const newVals = selectedLog.new_values || {};
+                        const oldVals = selectedLog.old_values || {};
+
+                        return (
+                            <div 
+                                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
+                                onClick={() => setSelectedLog(null)}
+                            >
+                                <div 
+                                    className="bg-card w-full max-w-lg rounded-2xl border border-border shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200"
+                                    onClick={e => e.stopPropagation()}
+                                >
+                                    {/* Modal Header */}
+                                    <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
+                                        <div className="flex items-center gap-2.5">
+                                            <div className={`flex h-8 w-8 items-center justify-center rounded-xl border ${modalDetails.accentColor}`}>
+                                                <ModalIcon className="h-4 w-4" />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-sm font-bold text-foreground leading-tight">
+                                                    {modalDetails.title}
+                                                </h3>
+                                                <span className="text-[10.5px] font-mono text-muted-foreground">
+                                                    Activity ID #{selectedLog.id} • {selectedLog.action}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => setSelectedLog(null)}
+                                            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                                        >
+                                            <X className="h-4 w-4" />
+                                        </button>
+                                    </div>
+
+                                    {/* Modal Body (Scrollable) */}
+                                    <div className="p-4 overflow-y-auto space-y-4 text-xs">
+                                        {/* Actor & Execution Info */}
+                                        <div className="grid grid-cols-2 gap-2 p-3 rounded-xl bg-muted/20 border border-border/50 text-[11px]">
+                                            <div>
+                                                <span className="text-muted-foreground block text-[10px]">Actor</span>
+                                                <span className="font-semibold text-foreground">{modalUser}</span>
+                                                <span className="text-[10px] text-muted-foreground block truncate">{modalEmail}</span>
+                                            </div>
+                                            <div>
+                                                <span className="text-muted-foreground block text-[10px]">Timestamp</span>
+                                                <span className="font-mono text-foreground">{new Date(selectedLog.created_at).toLocaleString('id-ID')}</span>
+                                                <span className="text-[10px] text-muted-foreground block">({getRelativeTime(selectedLog.created_at)})</span>
+                                            </div>
+                                            {selectedLog.ip_address && (
+                                                <div className="col-span-2 pt-1 border-t border-border/30 flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+                                                    <span>IP: {selectedLog.ip_address}</span>
+                                                    {selectedLog.model_type && (
+                                                        <span>Target: {selectedLog.model_type.split('\\').pop()} #{selectedLog.model_id}</span>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Narrative Description */}
+                                        <div className="p-3 rounded-xl bg-background border border-border/60">
+                                            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
+                                                Summary
+                                            </span>
+                                            <div className="text-xs leading-relaxed text-foreground">
+                                                {modalDetails.desc}
+                                            </div>
+                                        </div>
+
+                                        {/* New Values (Full Fields) */}
+                                        {Object.keys(newVals).length > 0 && (
+                                            <div className="space-y-1.5">
+                                                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                                    <span>Updated / Recorded Fields ({Object.keys(newVals).length})</span>
+                                                    <span className="text-emerald-500 font-mono">new_values</span>
+                                                </div>
+                                                <div className="rounded-xl border border-border/60 bg-muted/20 overflow-hidden divide-y divide-border/20 text-[11px] font-mono">
+                                                    {Object.entries(newVals).map(([k, v]) => (
+                                                        <div key={k} className="flex items-start justify-between p-2 hover:bg-muted/30 transition">
+                                                            <span className="text-muted-foreground font-semibold w-1/3 truncate">{k}</span>
+                                                            <span className="text-foreground text-right w-2/3 break-all font-medium">
+                                                                {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Old Values (If update or revertible) */}
+                                        {Object.keys(oldVals).length > 0 && (
+                                            <div className="space-y-1.5">
+                                                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                                    <span>Previous Values (Before Change)</span>
+                                                    <span className="text-rose-500 font-mono">old_values</span>
+                                                </div>
+                                                <div className="rounded-xl border border-border/60 bg-muted/20 overflow-hidden divide-y divide-border/20 text-[11px] font-mono">
+                                                    {Object.entries(oldVals).map(([k, v]) => (
+                                                        <div key={k} className="flex items-start justify-between p-2 hover:bg-muted/30 transition opacity-80">
+                                                            <span className="text-muted-foreground font-semibold w-1/3 truncate">{k}</span>
+                                                            <span className="text-muted-foreground text-right w-2/3 break-all line-through">
+                                                                {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Modal Footer */}
+                                    <div className="p-3 border-t border-border bg-muted/30 flex justify-end">
+                                        <button
+                                            onClick={() => setSelectedLog(null)}
+                                            className="px-4 py-1.5 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition shadow-xs"
+                                        >
+                                            Close
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* Pagination */}
                     {activities.last_page > 1 && (
