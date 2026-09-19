@@ -142,8 +142,12 @@ class AiActionService
             ];
         }
 
-        // Resolve store_id
+        // Resolve and validate store_id
         $storeId = $payload['store_id'] ?? null;
+        if ($storeId && !\App\Models\Store::where('id', $storeId)->exists()) {
+            $storeId = null;
+        }
+
         if (!$storeId) {
             $storeName = $payload['store_name'] ?? null;
             if ($storeName) {
@@ -153,15 +157,23 @@ class AiActionService
                 }
             }
         }
-        if (!$storeId) {
-            $storeId = $user->store_id ?? \App\Models\Store::first()?->id;
+
+        if (!$storeId && $user->store_id && \App\Models\Store::where('id', $user->store_id)->exists()) {
+            $storeId = $user->store_id;
         }
 
         if (!$storeId) {
-            return [
-                'success' => false,
-                'message' => 'Gagal: Toko cabang (store_id) tidak ditemukan atau belum ada toko yang terdaftar.',
-            ];
+            $store = \App\Models\Store::first();
+            if (!$store) {
+                $store = \App\Models\Store::create([
+                    'name' => 'PERENG STORE',
+                    'address' => 'Pereng Store Branch Address',
+                    'latitude' => -7.4244,
+                    'longitude' => 109.2301,
+                    'geofence_radius' => 100,
+                ]);
+            }
+            $storeId = $store->id;
         }
 
         $category = strtolower($payload['category'] ?? 'iphone');
