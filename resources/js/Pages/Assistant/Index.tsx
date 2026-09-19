@@ -15,7 +15,6 @@ import {
     PanelLeftClose,
     PanelLeft,
     Sparkles,
-    Brain,
     ChevronDown,
     ChevronUp,
     ChevronLeft,
@@ -33,6 +32,7 @@ import {
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData } from '@/Components/AiActionProposalCard';
+import NeuronFiringMap from '@/Components/NeuronFiringMap';
 
 interface AccessedNeuron {
     id: number;
@@ -40,12 +40,20 @@ interface AccessedNeuron {
     kind: 'rule' | 'knowledge';
 }
 
+interface NeuronLink {
+    source: number;
+    target: number;
+}
+
 // Consume an application/x-ndjson streaming response from the Assistant chat
 // endpoint. Progress events are forwarded to handlers as they arrive; the last
 // 'done' / 'error' event is returned once the stream closes.
 async function consumeNdjson(
     res: Response,
-    handlers: { onPhase?: (label: string) => void; onNeurons?: (nodes: AccessedNeuron[]) => void }
+    handlers: {
+        onPhase?: (label: string) => void;
+        onNeurons?: (nodes: AccessedNeuron[], edges: NeuronLink[]) => void;
+    }
 ): Promise<any> {
     if (!res.body) return null;
     const reader = res.body.getReader();
@@ -64,7 +72,12 @@ async function consumeNdjson(
         }
         if (!evt || typeof evt !== 'object') return;
         if (evt.type === 'phase' && handlers.onPhase) handlers.onPhase(String(evt.label || 'Thinking...'));
-        else if (evt.type === 'neurons' && handlers.onNeurons) handlers.onNeurons(Array.isArray(evt.nodes) ? evt.nodes : []);
+        else if (evt.type === 'neurons' && handlers.onNeurons) {
+            handlers.onNeurons(
+                Array.isArray(evt.nodes) ? evt.nodes : [],
+                Array.isArray(evt.edges) ? evt.edges : []
+            );
+        }
         if (evt.type === 'done' || evt.type === 'error') last = evt;
     };
 
@@ -158,7 +171,7 @@ export default function Assistant({
     const [replyingTo, setReplyingTo] = useState<Message | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [livePhases, setLivePhases] = useState<string[]>([]);
-    const [accessedNodes, setAccessedNodes] = useState<AccessedNeuron[]>([]);
+    const [accessedNetwork, setAccessedNetwork] = useState<{ nodes: AccessedNeuron[]; edges: NeuronLink[] }>({ nodes: [], edges: [] });
     const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // sidebar closed by default
     const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -247,7 +260,7 @@ export default function Assistant({
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages, isLoading, livePhases, accessedNodes]);
+    }, [messages, isLoading, livePhases, accessedNetwork.nodes]);
 
     // Elapsed timer while the assistant is thinking. The real progress (live
     // phases + accessed neurons) streams from the backend via NDJSON.
@@ -420,7 +433,7 @@ export default function Assistant({
         setReplyingTo(null);
         setIsLoading(true);
         setLivePhases([]);
-        setAccessedNodes([]);
+        setAccessedNetwork({ nodes: [], edges: [] });
 
         const applyReply = (data: any) => {
             const looksLikeProposal = !!data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('"action":'));
@@ -487,7 +500,7 @@ export default function Assistant({
                 // Live stream: phases + accessed neurons show while thinking.
                 const last = await consumeNdjson(response, {
                     onPhase: label => setLivePhases(prev => [...prev, label]),
-                    onNeurons: nodes => setAccessedNodes(nodes),
+                    onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
                 });
                 if (!last || last.type === 'error') {
                     throw new Error(last?.reply || 'No response from the server');
@@ -959,29 +972,14 @@ export default function Assistant({
                                         </div>
                                     )}
 
-                                    {/* Neurons the AI is tapping into, shown live while thinking */}
-                                    {accessedNodes.length > 0 && (
-                                        <div className="pl-2 space-y-1.5">
+                                    {/* Neurons the AI is tapping into — shown live while thinking */}
+                                    {accessedNetwork.nodes.length > 0 && (
+                                        <div className="pl-2 pt-1 space-y-1.5">
                                             <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-muted-foreground/70 uppercase">
                                                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                                                Accessing neurons ({accessedNodes.length})
+                                                Accessing neurons ({accessedNetwork.nodes.length})
                                             </div>
-                                            <div className="flex flex-wrap gap-1.5">
-                                                {accessedNodes.map(n => (
-                                                    <span
-                                                        key={n.id}
-                                                        title={n.title}
-                                                        className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-primary/[0.06] dark:bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-foreground/90"
-                                                    >
-                                                        {n.kind === 'rule' ? (
-                                                            <ShieldCheck className="h-2.5 w-2.5 text-primary shrink-0" />
-                                                        ) : (
-                                                            <Brain className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
-                                                        )}
-                                                        <span className="truncate max-w-[160px]">{n.title}</span>
-                                                    </span>
-                                                ))}
-                                            </div>
+                                            <NeuronFiringMap nodes={accessedNetwork.nodes} edges={accessedNetwork.edges} />
                                         </div>
                                     )}
                                 </div>

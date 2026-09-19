@@ -177,9 +177,10 @@ class AiAssistantController extends Controller
             try {
                 $emit(['type' => 'phase', 'label' => 'Loading live store network…']);
 
-                $neurons = $this->geminiService->resolveNeurons($userText);
+                $network = $this->geminiService->resolveNeuronNetwork($userText);
+                $neurons = $network['nodes'];
                 $emit(['type' => 'phase', 'label' => count($neurons) > 0 ? 'Tapping ' . count($neurons) . ' memory neurons…' : 'Scanning memory network…']);
-                $emit(['type' => 'neurons', 'nodes' => $neurons]);
+                $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
                 $emit(['type' => 'phase', 'label' => 'Reasoning & drafting response…']);
 

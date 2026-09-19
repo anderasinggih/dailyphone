@@ -13,5 +13,8 @@ export default defineConfig({
     ],
     server: {
         host: true,
+        hmr: {
+            host: process.env.HMR_HOST || 'localhost',
+        },
     }
 });

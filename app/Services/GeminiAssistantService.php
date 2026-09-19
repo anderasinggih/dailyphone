@@ -605,16 +605,52 @@ PROMPT;
      */
     public function resolveNeurons(?string $query = null): array
     {
-        return $this->selectTrainingNotes($query)
-            ->map(function ($n) {
-                return [
-                    'id' => (int)$n->id,
-                    'title' => $this->neuronLabel($n),
-                    'kind' => $n->kind === 'rule' ? 'rule' : 'knowledge',
-                ];
-            })
-            ->values()
-            ->all();
+        return $this->resolveNeuronNetwork($query)['nodes'];
+    }
+
+    /**
+     * The exact neurons injected into the model context for a query — every
+     * active rule first, then knowledge notes ranked by relevance — together
+     * with the real synapses that connect those neurons to each other. The
+     * Assistant UI renders this as a live neuron map while the model thinks.
+     */
+    public function resolveNeuronNetwork(?string $query = null): array
+    {
+        $notes = $this->selectTrainingNotes($query);
+
+        $nodes = $notes->map(function ($n) {
+            return [
+                'id' => (int)$n->id,
+                'title' => $this->neuronLabel($n),
+                'kind' => $n->kind === 'rule' ? 'rule' : 'knowledge',
+            ];
+        })->values()->all();
+
+        $idSet = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
+
+        $edges = [];
+        if ($idSet->isNotEmpty()) {
+            $seen = [];
+            $links = \App\Models\AiTrainingNoteLink::whereIn('note_id', $idSet->keys())
+                ->whereIn('linked_note_id', $idSet->keys())
+                ->get(['note_id', 'linked_note_id']);
+
+            foreach ($links as $link) {
+                $source = (int)$link->note_id;
+                $target = (int)$link->linked_note_id;
+                if ($source === $target) {
+                    continue;
+                }
+                $key = min($source, $target) . ':' . max($source, $target);
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+                $edges[] = ['source' => $source, 'target' => $target];
+            }
+        }
+
+        return ['nodes' => $nodes, 'edges' => $edges];
     }
 
     /**
