@@ -134,53 +134,23 @@ export default function Assistant({
                 ctx.resume();
             }
 
-            // Clean master volume
-            const masterGain = ctx.createGain();
-            masterGain.gain.setValueAtTime(0.28, ctx.currentTime);
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
 
-            // Gentle spatial reverb delay (soft natural tail without doubling notes)
-            const delay = ctx.createDelay();
-            delay.delayTime.setValueAtTime(0.12, ctx.currentTime);
+            // Pure Apple notification chime: 1 single elegant crystal tone (880Hz - A5)
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime); // Crisp, gentle single note
 
-            const feedback = ctx.createGain();
-            feedback.gain.setValueAtTime(0.25, ctx.currentTime);
+            // Smooth bell envelope: quick soft attack, pure exponential decay
+            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.45);
 
-            const filter = ctx.createBiquadFilter();
-            filter.type = 'lowpass';
-            filter.frequency.setValueAtTime(3200, ctx.currentTime);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
 
-            // Delay loop: delay -> filter -> feedback -> delay
-            delay.connect(filter);
-            filter.connect(feedback);
-            feedback.connect(delay);
-            filter.connect(ctx.destination);
-
-            masterGain.connect(ctx.destination);
-            masterGain.connect(delay);
-
-            const playNote = (freq: number, startTime: number, duration: number, gainVal: number) => {
-                const osc = ctx.createOscillator();
-                const noteGain = ctx.createGain();
-
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(freq, startTime);
-
-                // Smooth bell envelope: quick soft attack, natural exponential decay
-                noteGain.gain.setValueAtTime(0.0001, startTime);
-                noteGain.gain.exponentialRampToValueAtTime(gainVal, startTime + 0.02);
-                noteGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
-
-                osc.connect(noteGain);
-                noteGain.connect(masterGain);
-
-                osc.start(startTime);
-                osc.stop(startTime + duration);
-            };
-
-            const now = ctx.currentTime;
-            // The original beloved 2-tone chime (Eb5 -> Bb5) with gentle reverb decay
-            playNote(622.25, now, 0.40, 0.35);         // Eb5
-            playNote(932.33, now + 0.11, 0.65, 0.42);   // Bb5
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.45);
         } catch (e) {
             // Audio context not allowed or unsupported
         }
