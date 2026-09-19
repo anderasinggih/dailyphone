@@ -292,20 +292,21 @@ class AiAssistantController extends Controller
 
                 // 4. Save AI reply to database in this session
                 if (!empty($result['reply'])) {
-                    // Persist any training memos the AI wrote, then hide the raw block
-                    $rawReply = $result['reply'];
+                    // Persist any training memos the AI wrote. The visible reply
+                    // is already stripped client-side; the RAW text (which still
+                    // contains the ```ai_memo blocks) is what we inspect here.
+                    $rawReply = $result['raw_reply'] ?? $result['reply'];
                     $savedCount = $this->persistTrainingMemos($rawReply, $user);
-                    $result['reply'] = $this->stripTrainingMemos($rawReply);
 
                     // Honesty guard (end-to-end): the model only *really* saves a
                     // memory when a valid ```ai_memo block is persisted. If it
                     // claimed the memory was saved (or the user explicitly asked
-                    // to save) but nothing was persisted this turn, recover the
-                    // fact programmatically instead of leaving a false claim.
-                    if ($savedCount === 0
-                        && !str_contains($rawReply, '```ai_memo')
-                        && $this->shouldRecoverMemory($userText, $rawReply)) {
+                    // to save) but nothing was persisted this turn — including the
+                    // case of an emitted-but-broken block — recover the fact
+                    // programmatically instead of leaving a false claim.
+                    if ($savedCount === 0 && $this->shouldRecoverMemory($userText, $rawReply)) {
                         $recovery = $this->recoverMissingMemo($userText, $rawReply, $messagesForModel, $user);
+                        $result['reply'] = trim((string)$result['reply']);
                         if ($recovery === 'saved') {
                             $result['reply'] .= "\n\n✅ Memori berhasil dipulihkan & tersimpan ke neuron network.";
                         } elseif ($recovery === 'duplicate') {
@@ -339,6 +340,10 @@ class AiAssistantController extends Controller
                 $result['session_id'] = $sessionId;
                 $result['session_title'] = $session->title;
                 $result['neurons'] = $neurons;
+
+                // Never ship the raw text (it may still hold temporary ```ai_memo
+                // JSON) to the client — the visible `reply` is enough.
+                unset($result['raw_reply']);
 
                 $emit(['type' => 'done'] + $result);
             } catch (\Throwable $e) {
@@ -740,6 +745,10 @@ class AiAssistantController extends Controller
         $patterns = [
             // Indonesian: "sudah/udah/telah dicatat/disimpan/ditambahkan/..."
             '/\b(?:sudah|udah|uwis|telah)\s+(?:di|ke-)?(?:catat|catet|simpen|simpan|tambah|tambahkan|buat|masuk|rekam|input|nyatet)\b/',
+            // Indonesian: "sudah aku catat", "sudah saya simpan", "tak catat", "ku simpan"
+            '/\b(?:sudah|udah|telah|uwis)\s+(?:aku|saya|gua|gw|tak|ku)\s+(?:catat|catet|simpen|simpan|tulis|rekam|input|tambah|nyatet|nyimpen)\b/',
+            // Indonesian: "kucatat", "kusimpan", "takkucatat", "sudah kucatat"
+            '/\b(?:ku|tak)?(?:kucatat|kucatet|kusimpen|kusimpan|kutulis|kutulisi)\b/',
             // Indonesian: "berhasil/sukses dicatat/disimpan/..." or "... tercatat/ketata"
             '/\b(?:berhasil|sukses|suks?s)\s+(?:di)(?:catat|catet|simpen|simpan|tambah|buat|rekam|input|nyatet|nyimpen|disimpan)\b/',
             '/\b(?:sudah|udah|uwis|telah|berhasil)\s+(?:tercatat|ketata|ketatata|tertulis)\b/',
@@ -830,13 +839,5 @@ class AiAssistantController extends Controller
         }
 
         return $isDuplicate ? 'duplicate' : 'failed';
-    }
-
-    /**
-     * Remove raw ```ai_memo blocks from a reply before it is shown to the user.
-     */
-    protected function stripTrainingMemos(string $reply): string
-    {
-        return trim(preg_replace('/```ai_memo\s*[\s\S]*?```/', '', $reply));
     }
 }

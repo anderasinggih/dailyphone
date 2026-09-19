@@ -60,6 +60,15 @@ class GeminiAssistantService
         }
     }
 
+    /**
+     * Remove ```ai_memo blocks so the temporary memory JSON is never shown to
+     * the user. The raw (unstripped) text is what gets persisted, not this.
+     */
+    protected function stripMemoBlocks(string $text): string
+    {
+        return trim((string) preg_replace('/```ai_memo\s*[\s\S]*?```/', '', $text));
+    }
+
     public function isConfigured(): bool
     {
         $this->reloadSettings();
@@ -634,10 +643,11 @@ PROMPT;
                     // callers or when the client did not ask for streaming).
                     $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
                     if ($response->successful()) {
-                        $text = $response->json('candidates.0.content.parts.0.text', '');
+                        $raw = (string)$response->json('candidates.0.content.parts.0.text', '');
                         return [
                             'success' => true,
-                            'reply' => trim($text),
+                            'reply' => $this->stripMemoBlocks($raw),
+                            'raw_reply' => trim($raw),
                             'neurons' => $neurons,
                         ];
                     }
@@ -659,11 +669,13 @@ PROMPT;
                     }
 
                     $meta = [];
-                    $text = $this->streamGeminiContent($response, $onChunk, $meta);
+                    $raw = null;
+                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw);
                     if ($text !== '') {
                         return [
                             'success' => true,
                             'reply' => trim($text),
+                            'raw_reply' => trim((string)$raw),
                             'neurons' => $neurons,
                         ];
                     }
@@ -747,45 +759,51 @@ PROMPT;
             ],
         ];
 
-        // Same model as configured; fail over across API keys only.
-        $useModel = $this->model;
-        $apiKeys = array_values($this->apiKeys);
-        $totalKeys = count($apiKeys);
+        // Cheapest model first for the recovery pass (it only has to emit compact
+        // JSON); the configured model is the fallback. Either way the request
+        // fails over across every configured API key.
+        $models = array_values(array_unique(array_filter([
+            'gemini-3.5-flash-lite',
+            $this->model,
+        ])));
+        $totalKeys = count($this->apiKeys);
 
-        foreach ($apiKeys as $i => $apiKey) {
-            try {
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
-                $response = Http::timeout(30)->connectTimeout(10)->post($url, $payload);
-                if (!$response->successful()) {
-                    Log::warning("Gemini memo recovery key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
-                    $this->logKeyRotation($i, $totalKeys);
-                    continue;
+        foreach ($models as $useModel) {
+            foreach (array_values($this->apiKeys) as $i => $apiKey) {
+                try {
+                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
+                    $response = Http::timeout(30)->connectTimeout(10)->post($url, $payload);
+                    if (!$response->successful()) {
+                        Log::warning("Gemini memo recovery ({$useModel}) key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                        $this->logKeyRotation($i, $totalKeys);
+                        continue;
+                    }
+
+                    $text = trim((string)$response->json('candidates.0.content.parts.0.text', ''));
+                    // Strip any accidental markdown fence the model may add.
+                    $text = trim((string)preg_replace('/^```(?:json)?\s*|\s*```$/', '', $text));
+                    if ($text === '') {
+                        continue;
+                    }
+
+                    $decoded = json_decode($text, true);
+                    if (!is_array($decoded)) {
+                        continue;
+                    }
+                    if (($decoded['skip'] ?? false) === true) {
+                        return null;
+                    }
+                    if (trim((string)($decoded['content'] ?? '')) === '') {
+                        continue;
+                    }
+
+                    return $decoded;
+                } catch (\Throwable $e) {
+                    Log::warning("Gemini memo recovery ({$useModel}) key #" . ($i + 1) . "/{$totalKeys} failed: " . $e->getMessage());
                 }
 
-                $text = trim((string)$response->json('candidates.0.content.parts.0.text', ''));
-                // Strip any accidental markdown fence the model may add.
-                $text = trim((string)preg_replace('/^```(?:json)?\s*|\s*```$/', '', $text));
-                if ($text === '') {
-                    continue;
-                }
-
-                $decoded = json_decode($text, true);
-                if (!is_array($decoded)) {
-                    continue;
-                }
-                if (($decoded['skip'] ?? false) === true) {
-                    return null;
-                }
-                if (trim((string)($decoded['content'] ?? '')) === '') {
-                    continue;
-                }
-
-                return $decoded;
-            } catch (\Throwable $e) {
-                Log::warning("Gemini memo recovery key #" . ($i + 1) . "/{$totalKeys} failed: " . $e->getMessage());
+                $this->logKeyRotation($i, $totalKeys);
             }
-
-            $this->logKeyRotation($i, $totalKeys);
         }
 
         return null;
@@ -794,9 +812,11 @@ PROMPT;
     /**
      * Consume a :streamGenerateContent?alt=json response and relay each visible
      * text delta to the callback. ```ai_memo blocks are dropped live so the
-     * client never flashes the temporary memory JSON. Returns the full text.
+     * client never flashes the temporary memory JSON, but the FULL raw text
+     * (memos included) is still appended to $raw so the caller can persist the
+     * memos afterwards.
      */
-    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null): string
+    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null): string
     {
         $body = $response->toPsrResponse()->getBody();
 
@@ -804,7 +824,7 @@ PROMPT;
         $pending = '';
         $inMemo = false;
 
-        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta): void {
+        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw): void {
             if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
@@ -815,6 +835,7 @@ PROMPT;
             if ($delta === '') {
                 return;
             }
+            $raw .= $delta;
             $pending .= $delta;
             $this->streamVisible($pending, $inMemo, function (string $s) use (&$out, $onChunk): void {
                 if ($s === '') {
