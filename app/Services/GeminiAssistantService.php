@@ -795,22 +795,27 @@ PROMPT;
         $includeAttachments = $attachments instanceof \Illuminate\Support\Collection
             ? $attachments->values()
             : collect($attachments ?? [])->values();
-        $lastIndex = count($messages) - 1;
 
-        foreach ($messages as $i => $msg) {
-            $role = ($msg['role'] === 'user') ? 'user' : 'model';
-            $parts = [
-                ['text' => $msg['content']],
-            ];
-
-            if ($i === $lastIndex && $includeAttachments->isNotEmpty()) {
-                $parts = $this->attachParts($parts, $includeAttachments);
+        foreach ($messages as $msg) {
+            $text = trim((string)($msg['content'] ?? ''));
+            if ($text === '') {
+                // A `parts[].text` of null/empty makes Gemini reject the whole
+                // payload with 400 INVALID_ARGUMENT ("required oneof field
+                // 'data' must have one initialized field"), so empty rows are
+                // simply dropped instead of forwarded.
+                continue;
             }
-
+            $role = ($msg['role'] === 'user') ? 'user' : 'model';
             $contents[] = [
                 'role' => $role,
-                'parts' => $parts,
+                'parts' => [['text' => $text]],
             ];
+        }
+
+        // Attach uploaded files to the most recent non-empty message.
+        if ($includeAttachments->isNotEmpty() && $contents !== []) {
+            $last = array_key_last($contents);
+            $contents[$last]['parts'] = $this->attachParts($contents[$last]['parts'], $includeAttachments);
         }
 
         // Gemini REST payload (token-optimized)
@@ -979,7 +984,7 @@ PROMPT;
                     if ($response->successful()) {
                         return $this->parseBlockingResponse($response, $isImageModel);
                     }
-                    $lastErrorMsg = $response->json('error.message') ?? $response->body();
+                    $lastErrorMsg = $this->errorMessageFrom($response);
                 } else {
                     // Token streaming: relay each visible delta to $onChunk while
                     // the rest of the route continues to think, so the UI renders
@@ -1070,11 +1075,12 @@ PROMPT;
     }
 
     /**
-     * Surface the real error body of a failed streaming request (responses are
-     * not buffered, so the raw PSR stream must be read to explain the failure).
+     * Pull a human-readable message out of a failed JSON response, falling back
+     * to the raw body and finally to a bare status code. Never loses the body.
      */
-    protected function streamErrorBody($response, int $index, int $totalKeys, string $useModel): string
+    protected function errorMessageFrom($response): string
     {
+        $rawBody = '';
         try {
             $psr = $response->toPsrResponse();
             $psr->getBody()->rewind();
@@ -1082,13 +1088,43 @@ PROMPT;
         } catch (\Throwable $e) {
             $rawBody = '';
         }
-
-        $lastErrorMsg = $response->json('error.message');
-        if ($lastErrorMsg === null) {
-            $lastErrorMsg = $rawBody !== ''
-                ? mb_substr($rawBody, 0, 500)
-                : ('HTTP ' . $response->status());
+        if ($rawBody === '') {
+            try {
+                $rawBody = (string) $response->body();
+            } catch (\Throwable $e) {
+                $rawBody = '';
+            }
         }
+
+        $rawBody = trim($rawBody);
+        if ($rawBody === '') {
+            return 'HTTP ' . $response->status();
+        }
+
+        $decoded = json_decode($rawBody, true);
+        if (is_array($decoded)) {
+            $msg = trim((string)($decoded['error']['message'] ?? ''));
+            if ($msg === '') {
+                $msg = trim((string)($decoded['message'] ?? ''));
+            }
+            if ($msg !== '') {
+                $statusTag = (string)($decoded['error']['status'] ?? $decoded['error']['code'] ?? '');
+                return $statusTag !== '' && $statusTag !== '0'
+                    ? "[{$statusTag}] {$msg}"
+                    : $msg;
+            }
+        }
+
+        return mb_substr($rawBody, 0, 500);
+    }
+
+    /**
+     * Surface the real error body of a failed streaming request (responses are
+     * not buffered, so the raw PSR stream must be read to explain the failure).
+     */
+    protected function streamErrorBody($response, int $index, int $totalKeys, string $useModel): string
+    {
+        $lastErrorMsg = $this->errorMessageFrom($response);
 
         Log::warning("Gemini stream key #" . ($index + 1) . "/{$totalKeys} failed ({$response->status()}) on {$useModel}: {$lastErrorMsg}");
         $this->logKeyRotation($index, $totalKeys);
@@ -1527,8 +1563,8 @@ SYSTEM;
                         $bytes = file_get_contents($fullPath);
                         if ($bytes !== false && strlen($bytes) <= 10 * 1024 * 1024) {
                             $parts[] = [
-                                'inline_data' => [
-                                    'mime_type' => $mime,
+                                'inlineData' => [
+                                    'mimeType' => $mime,
                                     'data' => base64_encode($bytes),
                                 ],
                             ];

@@ -35,6 +35,15 @@ jobs:
               echo "✅ .env production berhasil diupdate dari GitHub Secrets!"
             fi
 
+            # A missing/empty APP_KEY makes every request fail with
+            # "No application encryption key has been specified" and the
+            # config:cache below would bake the empty value into cache.
+            # Regenerate the key before caching whenever it is absent.
+            if ! grep -q '^APP_KEY=base64:' .env; then
+              php artisan key:generate --force
+              echo "✅ APP_KEY not found in .env, regenerated."
+            fi
+
             # Install vendor dependencies jika ada update package
             composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --ignore-platform-reqs
 
