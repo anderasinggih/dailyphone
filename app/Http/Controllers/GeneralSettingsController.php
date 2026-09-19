@@ -85,6 +85,8 @@ class GeneralSettingsController extends Controller
                 'ai_enabled' => 'nullable|boolean',
                 'ai_provider' => 'nullable|string',
                 'ai_api_key' => 'nullable|string',
+                'ai_api_keys' => 'nullable|array',
+                'ai_api_keys.*' => 'nullable|string',
                 'ai_model' => 'nullable|string',
                 'ai_system_instruction' => 'nullable|string',
             ]);
@@ -100,6 +102,13 @@ class GeneralSettingsController extends Controller
                 $data['ai_api_key'] = $request->input('ai_api_key');
             } elseif ($request->has('clear_ai_api_key') && $request->boolean('clear_ai_api_key')) {
                 $data['ai_api_key'] = null;
+            }
+
+            if ($request->has('ai_api_keys')) {
+                $data['ai_api_keys'] = array_values(array_map(
+                    fn ($key) => trim((string)$key),
+                    (array)$request->input('ai_api_keys', [])
+                ));
             }
 
             $settings->fill($data);
@@ -118,6 +127,8 @@ class GeneralSettingsController extends Controller
             'ai_enabled' => 'nullable|boolean',
             'ai_provider' => 'nullable|string',
             'ai_api_key' => 'nullable|string',
+            'ai_api_keys' => 'nullable|array',
+            'ai_api_keys.*' => 'nullable|string',
             'ai_model' => 'nullable|string',
             'ai_system_instruction' => 'nullable|string',
         ]);
@@ -139,6 +150,13 @@ class GeneralSettingsController extends Controller
             $data['ai_api_key'] = $request->input('ai_api_key');
         } elseif ($request->has('clear_ai_api_key') && $request->boolean('clear_ai_api_key')) {
             $data['ai_api_key'] = null;
+        }
+
+        if ($request->has('ai_api_keys')) {
+            $data['ai_api_keys'] = array_values(array_map(
+                fn ($key) => trim((string)$key),
+                (array)$request->input('ai_api_keys', [])
+            ));
         }
 
         $settings->fill($data);

@@ -30,6 +30,7 @@ interface GeneralSetting {
     ai_enabled?: boolean;
     ai_provider?: string;
     ai_api_key?: string | null;
+    ai_api_keys?: string[] | null;
     ai_model?: string;
     ai_system_instruction?: string | null;
 }
@@ -149,19 +150,44 @@ export default function General({ settings, schedules, employees, stores }: Gene
     };
 
     // ── Form 4: AI Configuration ──
-    const [showApiKey, setShowApiKey] = useState(false);
+    const [visibleApiKeys, setVisibleApiKeys] = useState<boolean[]>(Array(10).fill(false));
     const [testingConnection, setTestingConnection] = useState(false);
     const [testResult, setTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
+
+    const failoverSlots = Array.from(
+        { length: 9 },
+        (_, i) => settings.ai_api_keys?.[i] || '',
+    );
 
     const aiForm = useForm({
         section: 'ai',
         ai_enabled: settings.ai_enabled ?? true,
         ai_provider: settings.ai_provider || 'gemini',
         ai_api_key: settings.ai_api_key || '',
+        ai_api_keys: failoverSlots,
         ai_model: settings.ai_model || 'gemini-3.5-flash-lite',
         ai_system_instruction: settings.ai_system_instruction || '',
         clear_ai_api_key: false,
     });
+
+    const setFailoverKey = (index: number, value: string) => {
+        const keys = [...aiForm.data.ai_api_keys];
+        keys[index] = value;
+        aiForm.setData('ai_api_keys', keys);
+    };
+
+    const firstConfiguredKey = () => {
+        if (aiForm.data.ai_api_key && aiForm.data.ai_api_key.trim() !== '') {
+            return aiForm.data.ai_api_key;
+        }
+        return aiForm.data.ai_api_keys.find(k => k.trim() !== '') || '';
+    };
+
+    const configuredKeyCount = () => {
+        let count = aiForm.data.ai_api_key && aiForm.data.ai_api_key.trim() !== '' ? 1 : 0;
+        count += aiForm.data.ai_api_keys.filter(k => k.trim() !== '').length;
+        return count;
+    };
 
     const submitAi = (e: FormEvent) => {
         e.preventDefault();
@@ -181,7 +207,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
                     'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
                 },
                 body: JSON.stringify({
-                    api_key: aiForm.data.ai_api_key,
+                    api_key: firstConfiguredKey(),
                     model: aiForm.data.ai_model,
                 })
             });
@@ -784,33 +810,72 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                         </select>
                                     </div>
 
-                                    <div className="space-y-2">
+                                    <div className="space-y-3">
                                         <div className="flex items-center justify-between">
                                             <label className="text1 text-foreground block font-medium">
-                                                Gemini API Key
+                                                Gemini API Keys
                                             </label>
-                                            {settings.ai_api_key && (
-                                                <span className="caption font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                                                    <Check className="h-3 w-3" /> Configured
-                                                </span>
-                                            )}
+                                            <span className="caption font-semibold text-muted-foreground flex items-center gap-1">
+                                                {configuredKeyCount()}/10 Configured
+                                            </span>
                                         </div>
-                                        <div className="relative">
-                                            <input
-                                                type={showApiKey ? 'text' : 'password'}
-                                                placeholder={settings.ai_api_key ? '••••••••••••••••••••••••' : 'AIzaSy...'}
-                                                value={aiForm.data.ai_api_key}
-                                                onChange={e => aiForm.setData('ai_api_key', e.target.value)}
-                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs pr-10"
-                                            />
+                                        <p className="text2 text-muted-foreground">
+                                            Up to 10 keys are used in failover order. When a key hits its usage /
+                                            rate limit, the assistant automatically rotates to the next one.
+                                            Empty fields are skipped.
+                                        </p>
+                                        {configuredKeyCount() > 0 && (
                                             <button
                                                 type="button"
-                                                onClick={() => setShowApiKey(!showApiKey)}
-                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
+                                                onClick={() => {
+                                                    const allVisible = visibleApiKeys.every(Boolean);
+                                                    setVisibleApiKeys(Array(10).fill(!allVisible));
+                                                }}
+                                                className="text2 font-medium text-primary hover:opacity-80 transition"
                                             >
-                                                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                {visibleApiKeys.every(Boolean) ? 'Hide all keys' : 'Show all keys'}
                                             </button>
-                                        </div>
+                                        )}
+                                        {Array.from({ length: 10 }, (_, i) => {
+                                            const value = i === 0 ? aiForm.data.ai_api_key : aiForm.data.ai_api_keys[i - 1];
+                                            const hasValue = value.trim() !== '';
+                                            const isVisible = visibleApiKeys[i];
+                                            return (
+                                                <div key={i} className="space-y-1.5">
+                                                    <div className="flex items-center justify-between">
+                                                        <label className="caption font-medium text-muted-foreground block">
+                                                            API Key {i + 1}
+                                                        </label>
+                                                        {hasValue && (
+                                                            <span className="caption font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                                                <Check className="h-3 w-3" /> Configured
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="relative">
+                                                        <input
+                                                            type={isVisible ? 'text' : 'password'}
+                                                            placeholder={hasValue ? '••••••••••••••••••••••••' : 'AIzaSy...'}
+                                                            value={value}
+                                                            onChange={e => i === 0
+                                                                ? aiForm.setData('ai_api_key', e.target.value)
+                                                                : setFailoverKey(i - 1, e.target.value)
+                                                            }
+                                                            className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs pr-10"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setVisibleApiKeys(prev => prev.map((v, idx) => idx === i ? !v : v));
+                                                            }}
+                                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
+                                                        >
+                                                            {isVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
 
                                     {/* Test Connection Button */}
@@ -818,7 +883,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                         <button
                                             type="button"
                                             onClick={handleTestConnection}
-                                            disabled={testingConnection || (!aiForm.data.ai_api_key && !settings.ai_api_key)}
+                                            disabled={testingConnection || !firstConfiguredKey()}
                                             className="px-4 py-2 rounded-xl border border-border/80 bg-card text2 font-semibold text-foreground hover:bg-muted/50 transition disabled:opacity-50 flex items-center gap-2 shadow-2xs"
                                         >
                                             <Sparkles className="h-4 w-4 text-primary" />

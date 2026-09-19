@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Log;
 class GeminiAssistantService
 {
     protected ?string $apiKey;
+    protected array $apiKeys = [];
     protected string $model;
     protected bool $enabled;
     protected ?string $customInstruction;
@@ -32,11 +33,31 @@ class GeminiAssistantService
     public function reloadSettings(): void
     {
         $settings = GeneralSetting::first();
-        
-        $this->apiKey = $settings?->ai_api_key ?: env('GEMINI_API_KEY');
+
+        // Ordered failover list of API keys (empty slots skipped). The primary
+        // key comes first; on rate-limit / exhaustion the next key is used.
+        $this->apiKeys = $settings ? $settings->apiKeyList() : [];
+        if (empty($this->apiKeys)) {
+            $envKey = env('GEMINI_API_KEY');
+            if (!empty($envKey)) {
+                $this->apiKeys = [$envKey];
+            }
+        }
+
+        $this->apiKey = $this->apiKeys[0] ?? null;
         $this->model = $settings?->ai_model ?: env('GEMINI_MODEL', 'gemini-3.5-flash-lite');
         $this->enabled = $settings ? (bool)$settings->ai_enabled : true;
         $this->customInstruction = $settings?->ai_system_instruction;
+    }
+
+    /**
+     * Log (quietly) when a request is about to try the next failover key.
+     */
+    protected function logKeyRotation(int $index, int $total): void
+    {
+        if ($index + 1 < $total) {
+            Log::info("Gemini API key #" . ($index + 2) . "/{$total} will be tried next (failover from key #" . ($index + 1) . ").");
+        }
     }
 
     public function isConfigured(): bool
@@ -71,41 +92,32 @@ class GeminiAssistantService
             ];
         }
 
-        // Try requested model first, then fall back to other available models
-        $candidateModels = array_unique(array_filter([
-            $requestedModel,
-            'gemini-3.5-flash-lite',
-            'gemini-3.5-flash',
-            'gemini-flash-latest',
-        ]));
+        // Use exactly the requested (or configured) model — no ordering of its own.
+        $model = trim((string)$requestedModel) ?: 'gemini-3.5-flash-lite';
 
-        $lastError = '';
-
-        foreach ($candidateModels as $model) {
-            try {
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$key}";
-                $response = Http::timeout(10)->post($url, [
-                    'contents' => [
-                        [
-                            'role' => 'user',
-                            'parts' => [['text' => 'Respond with the single word: ONLINE']]
-                        ]
+        try {
+            $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$key}";
+            $response = Http::timeout(10)->post($url, [
+                'contents' => [
+                    [
+                        'role' => 'user',
+                        'parts' => [['text' => 'Respond with the single word: ONLINE']]
                     ]
-                ]);
+                ]
+            ]);
 
-                if ($response->successful()) {
-                    $reply = $response->json('candidates.0.content.parts.0.text', '');
-                    return [
-                        'success' => true,
-                        'model_used' => $model,
-                        'message' => "Connected successfully to {$model}! Response: " . trim($reply)
-                    ];
-                }
-
-                $lastError = $response->json('error.message') ?? $response->body();
-            } catch (\Exception $e) {
-                $lastError = $e->getMessage();
+            if ($response->successful()) {
+                $reply = $response->json('candidates.0.content.parts.0.text', '');
+                return [
+                    'success' => true,
+                    'model_used' => $model,
+                    'message' => "Connected successfully to {$model}! Response: " . trim($reply)
+                ];
             }
+
+            $lastError = $response->json('error.message') ?? $response->body();
+        } catch (\Exception $e) {
+            $lastError = $e->getMessage();
         }
 
         return [
@@ -604,28 +616,18 @@ PROMPT;
             ]
         ];
 
-        // Some Gemini models accept PDF inline_data and others reject it with
-        // "Request contains an invalid argument" — so when the user attached a
-        // PDF we put a PDF-capable model first, otherwise we honour the
-        // configured model and nothing else. The list is capped so a busy
-        // request never spirals into long serial retries that kill the stream
-        // (and resemble "no response from the server" for the user).
-        $hasPdf = $includeAttachments->contains(fn ($a) => (string)($a->kind ?? '') === 'pdf');
-        $pdfModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
-        $primaryModel = !empty($model) ? $model : $this->model;
-
-        $candidateModels = array_values(array_unique(array_filter(array_merge(
-            $hasPdf ? $pdfModels : [],
-            [$primaryModel]
-        ))));
-        $candidateModels = array_slice($candidateModels, 0, 4);
-
+        // Use exactly the configured model — no model fallback chain. Multiple API
+        // keys act as failover: if a key hits its rate/exhaustion limit, the
+        // same request retries the SAME model with the next configured key.
+        $useModel = !empty($model) ? $model : $this->model;
         $lastErrorMsg = '';
+        $apiKeys = array_values($this->apiKeys);
+        $totalKeys = count($apiKeys);
 
-        foreach ($candidateModels as $modelToTry) {
+        foreach ($apiKeys as $i => $apiKey) {
             try {
                 $endpoint = $onChunk !== null ? 'streamGenerateContent?alt=json' : 'generateContent';
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:{$endpoint}&key={$this->apiKey}";
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:{$endpoint}&key={$apiKey}";
 
                 if ($onChunk === null) {
                     // Blocking call: wait for the full completion (used by non-chat
@@ -651,7 +653,8 @@ PROMPT;
 
                     if (!$response->successful()) {
                         $lastErrorMsg = $response->json('error.message') ?? $response->body();
-                        Log::warning("Gemini stream model {$modelToTry} failed: {$lastErrorMsg}");
+                        Log::warning("Gemini stream key #" . ($i + 1) . "/{$totalKeys} failed: {$lastErrorMsg}");
+                        $this->logKeyRotation($i, $totalKeys);
                         continue;
                     }
 
@@ -673,10 +676,13 @@ PROMPT;
                     }
                 }
 
-                Log::warning("Gemini model {$modelToTry} failed: {$lastErrorMsg}");
+                Log::warning("Gemini model {$useModel} key #" . ($i + 1) . "/{$totalKeys} failed: {$lastErrorMsg}");
             } catch (\Exception $e) {
                 $lastErrorMsg = $e->getMessage();
+                Log::warning("Gemini model {$useModel} key #" . ($i + 1) . "/{$totalKeys} threw: {$lastErrorMsg}");
             }
+
+            $this->logKeyRotation($i, $totalKeys);
         }
 
         return [
@@ -741,19 +747,18 @@ PROMPT;
             ],
         ];
 
-        // Use the cheapest model for the recovery pass unless the session
-        // already configured a different one.
-        $candidateModels = array_values(array_unique(array_filter([
-            'gemini-3.5-flash-lite',
-            $this->model,
-        ])));
+        // Same model as configured; fail over across API keys only.
+        $useModel = $this->model;
+        $apiKeys = array_values($this->apiKeys);
+        $totalKeys = count($apiKeys);
 
-        foreach ($candidateModels as $modelToTry) {
+        foreach ($apiKeys as $i => $apiKey) {
             try {
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
                 $response = Http::timeout(30)->connectTimeout(10)->post($url, $payload);
                 if (!$response->successful()) {
-                    Log::warning("Gemini memo recovery ({$modelToTry}) HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                    Log::warning("Gemini memo recovery key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                    $this->logKeyRotation($i, $totalKeys);
                     continue;
                 }
 
@@ -777,8 +782,10 @@ PROMPT;
 
                 return $decoded;
             } catch (\Throwable $e) {
-                Log::warning("Gemini memo recovery ({$modelToTry}) failed: " . $e->getMessage());
+                Log::warning("Gemini memo recovery key #" . ($i + 1) . "/{$totalKeys} failed: " . $e->getMessage());
             }
+
+            $this->logKeyRotation($i, $totalKeys);
         }
 
         return null;
@@ -1273,25 +1280,26 @@ PROMPT;
             ]
         ];
 
-        $candidateModels = array_unique(array_filter([
-            $this->model,
-            'gemini-3.5-flash-lite',
-            'gemini-2.5-flash',
-            'gemini-flash-latest',
-        ]));
+        // Same configured model; fail over across API keys only.
+        $useModel = $this->model;
+        $apiKeys = array_values($this->apiKeys);
+        $totalKeys = count($apiKeys);
 
-        foreach ($candidateModels as $modelToTry) {
+        foreach ($apiKeys as $i => $apiKey) {
             try {
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
                 $response = Http::timeout(30)->post($url, $payload);
 
                 if ($response->successful()) {
                     $text = trim($response->json('candidates.0.content.parts.0.text', ''));
                     return $text === '' ? null : $text;
                 }
+                Log::warning("Gemini dashboard insight key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
             } catch (\Exception $e) {
-                Log::warning("Gemini dashboard insight failed on {$modelToTry}: {$e->getMessage()}");
+                Log::warning("Gemini dashboard insight key #" . ($i + 1) . "/{$totalKeys} threw: " . $e->getMessage());
             }
+
+            $this->logKeyRotation($i, $totalKeys);
         }
 
         return null;
@@ -1341,25 +1349,26 @@ PROMPT;
             ]
         ];
 
-        $candidateModels = array_unique(array_filter([
-            $this->model,
-            'gemini-3.5-flash-lite',
-            'gemini-2.5-flash',
-            'gemini-flash-latest',
-        ]));
+        // Same configured model; fail over across API keys only.
+        $useModel = $this->model;
+        $apiKeys = array_values($this->apiKeys);
+        $totalKeys = count($apiKeys);
 
-        foreach ($candidateModels as $modelToTry) {
+        foreach ($apiKeys as $i => $apiKey) {
             try {
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
                 $response = Http::timeout(12)->post($url, $payload);
 
                 if ($response->successful()) {
                     $text = trim($response->json('candidates.0.content.parts.0.text', ''));
                     return $text === '' ? null : $text;
                 }
+                Log::warning("Gemini checkout upsell key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
             } catch (\Exception $e) {
-                Log::warning("Gemini checkout upsell failed on {$modelToTry}: {$e->getMessage()}");
+                Log::warning("Gemini checkout upsell key #" . ($i + 1) . "/{$totalKeys} threw: " . $e->getMessage());
             }
+
+            $this->logKeyRotation($i, $totalKeys);
         }
 
         return null;
