@@ -234,7 +234,10 @@ class AiAssistantController extends Controller
             session_write_close();
         }
 
-        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments) {
+        // Resolve the per-session model override once, before streaming starts.
+        $requestedModel = $request->input('model') ?: null;
+
+        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $requestedModel) {
             // Large attachments (PDF books, archives) can make the Gemini round
             // trip take minutes; make sure PHP's execution clock never cuts the
             // stream mid-flight, otherwise the client sees an empty response.
@@ -277,8 +280,6 @@ class AiAssistantController extends Controller
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
                 // 3. Send to Gemini with full session memory & custom session rules/training
-                $requestedModel = $request->input('model');
-
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments,
                     function (string $delta) use ($emit) {
                         $emit(['type' => 'chunk', 'text' => $delta]);
