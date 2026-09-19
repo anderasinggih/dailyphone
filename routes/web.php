@@ -41,6 +41,7 @@ Route::prefix('application/dp')->group(function () {
         Route::put('/stocks/{stock}', [StockController::class, 'update'])->name('stocks.update');
         Route::post('/stocks/{stock}/restore', [StockController::class, 'restore'])->name('stocks.restore');
         Route::delete('/stocks/{stock}', [StockController::class, 'destroy'])->name('stocks.destroy');
+        Route::post('/parameters', [StockController::class, 'storeParameter'])->name('parameters.store');
         Route::post('/parameters/value', [StockController::class, 'storeParameterValue'])->name('parameters.value.store');
         Route::put('/parameters/value/{value}', [StockController::class, 'updateParameterValue'])->name('parameters.value.update');
         Route::post('/parameters/value/{value}/toggle', [StockController::class, 'toggleParameterValue'])->name('parameters.value.toggle');

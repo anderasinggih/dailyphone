@@ -35,12 +35,74 @@ export function getParamBadgeClass(colorKey?: string | null) {
     return match ? match.badgeClass : 'bg-muted text-foreground border-border';
 }
 
+const CATEGORY_OPTIONS = [
+    { key: 'global', label: 'Global' },
+    { key: 'iphone', label: 'iPhone' },
+    { key: 'android', label: 'Android' },
+    { key: 'all', label: 'All' },
+];
+
+function AddParameterForm() {
+    const [name, setName] = useState('');
+    const [category, setCategory] = useState('global');
+
+    const submit = () => {
+        if (!name.trim()) return;
+
+        router.post(route('parameters.store'), {
+            name: name.trim(),
+            category,
+        }, {
+            preserveScroll: true,
+            onSuccess: () => setName(''),
+        });
+    };
+
+    return (
+        <div className="apple-card p-5 space-y-3">
+            <div className="flex items-center gap-2">
+                <Plus className="h-4 w-4 text-primary" />
+                <h3 className="text-sm font-semibold text-foreground">Add New Parameter</h3>
+                <p className="text2">Create a new parameter (e.g. Color, Memory, License) so you can add options to it.</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_180px_auto] gap-2">
+                <input
+                    type="text"
+                    placeholder="Parameter name (e.g. Color, Memory, License)..."
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') submit();
+                    }}
+                    className="rounded-xl border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:border-primary"
+                />
+                <select
+                    value={category}
+                    onChange={e => setCategory(e.target.value)}
+                    className="rounded-xl border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:border-primary"
+                >
+                    {CATEGORY_OPTIONS.map(cat => (
+                        <option key={cat.key} value={cat.key}>{cat.label}</option>
+                    ))}
+                </select>
+                <button
+                    onClick={submit}
+                    className="rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 active:scale-[0.98] transition flex items-center justify-center gap-1 shadow-xs"
+                >
+                    <Plus className="h-3.5 w-3.5" /> Create
+                </button>
+            </div>
+        </div>
+    );
+}
+
 export default function Parameters({ parameters = [] }: ParametersProps) {
     const safeParameters = Array.isArray(parameters) 
         ? parameters 
         : (parameters && typeof parameters === 'object' ? Object.values(parameters as Record<string, Parameter>) : []);
     const [newParameterValue, setNewParameterValue] = useState<{ [paramId: number]: string }>({});
     const [newParameterColor, setNewParameterColor] = useState<{ [paramId: number]: string }>({});
+    const [isAdding, setIsAdding] = useState(false);
 
     // State for inline editing
     const [editingValueId, setEditingValueId] = useState<number | null>(null);
@@ -125,13 +187,31 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                                 </p>
                             </div>
                         </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                            <button
+                                onClick={() => setIsAdding(v => !v)}
+                                className="rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 active:scale-[0.98] transition flex items-center gap-1.5 shadow-xs"
+                            >
+                                {isAdding ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                                {isAdding ? 'Cancel' : 'Add Parameter'}
+                            </button>
+                        </div>
                     </div>
 
+                    {isAdding && (
+                        <AddParameterForm />
+                    )}
+
                     {safeParameters.length === 0 ? (
-                        <div className="apple-card p-12 text-center text-muted-foreground space-y-2">
+                        <div className="apple-card p-12 text-center text-muted-foreground space-y-4">
                             <Sliders className="h-8 w-8 mx-auto text-muted-foreground/50" />
-                            <p className="text1">No parameters found.</p>
-                            <p className="text2">Parameters can be initialized from seed data or settings.</p>
+                            <div className="space-y-1">
+                                <p className="text1">No parameters found.</p>
+                                <p className="text2">Create your first parameter below, then add color, memory, license, or any other options to it.</p>
+                            </div>
+                            <div className="mx-auto max-w-3xl text-left">
+                                <AddParameterForm />
+                            </div>
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-2">

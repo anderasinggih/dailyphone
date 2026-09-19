@@ -24,6 +24,7 @@ import {
     ChevronRight,
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
+import PageLoader from '@/Components/PageLoader';
 
 export default function Authenticated({
     header,
@@ -142,7 +143,9 @@ export default function Authenticated({
     return (
         <div className="min-h-screen bg-background text-foreground transition-colors duration-300 font-sans">
 
-            {}
+            {/* Global page transition indicator */}
+            <PageLoader />
+
             <nav className={`hidden sm:block sticky top-0 z-50 transition-all duration-300 backdrop-blur-2xl border-b ${statusBg}`}>
                 <div className="mx-auto max-w-none px-5 lg:px-8">
                     <div className="flex h-[52px] items-center justify-between gap-4">

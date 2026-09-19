@@ -305,6 +305,25 @@ class StockController extends Controller
         return redirect()->back()->with('success', 'Mutasi stok berhasil disetujui.');
     }
 
+    public function storeParameter(Request $request): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $request->validate([
+            'name' => 'required|string|max:100',
+            'category' => 'required|in:iphone,android,global,all',
+        ]);
+
+        DynamicParameter::create([
+            'name' => $request->input('name'),
+            'category' => $request->input('category'),
+        ]);
+
+        return redirect()->back()->with('success', 'Parameter created successfully.');
+    }
+
     public function storeParameterValue(Request $request): RedirectResponse
     {
         $request->validate([
