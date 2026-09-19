@@ -309,8 +309,10 @@ CONTEXT;
      *                                  (ai_memo blocks are stripped live).
      * @param  string  $ingestNotice  Verifiable system notice about documents that
      *                                were actually indexed into neurons this request.
+     * @param  string|null  $model  Per-session model override (falls back to the
+     *                              superadmin-configured model when empty).
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = ''): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null): array
     {
         if (!$this->isConfigured()) {
             return [
@@ -607,10 +609,11 @@ PROMPT;
         // (and resemble "no response from the server" for the user).
         $hasPdf = $includeAttachments->contains(fn ($a) => (string)($a->kind ?? '') === 'pdf');
         $pdfModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
+        $primaryModel = !empty($model) ? $model : $this->model;
 
         $candidateModels = array_values(array_unique(array_filter(array_merge(
             $hasPdf ? $pdfModels : [],
-            [$this->model]
+            [$primaryModel]
         ))));
         $candidateModels = array_slice($candidateModels, 0, 4);
 

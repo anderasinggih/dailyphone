@@ -12,6 +12,7 @@ class AiSession extends Model
         'user_id',
         'title',
         'custom_rules',
+        'ai_model',
     ];
 
     public function user(): BelongsTo

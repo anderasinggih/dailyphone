@@ -36,7 +36,7 @@ class AiAssistantController extends Controller
         // 1. Fetch user's chat sessions
         $sessions = \App\Models\AiSession::where('user_id', $user->id)
             ->orderBy('updated_at', 'desc')
-            ->get(['id', 'title', 'custom_rules', 'created_at', 'updated_at']);
+            ->get(['id', 'title', 'custom_rules', 'ai_model', 'created_at', 'updated_at']);
 
         // 2. Determine active session
         $activeSessionId = $request->query('session_id');
@@ -154,6 +154,7 @@ class AiAssistantController extends Controller
             'session_id' => 'nullable|exists:ai_sessions,id',
             'attachments' => 'nullable|array',
             'attachments.*' => 'integer',
+            'model' => 'nullable|string|max:100',
         ]);
 
         if (!$this->geminiService->isEnabled()) {
@@ -276,11 +277,14 @@ class AiAssistantController extends Controller
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
                 // 3. Send to Gemini with full session memory & custom session rules/training
+                $requestedModel = $request->input('model');
+
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments,
                     function (string $delta) use ($emit) {
                         $emit(['type' => 'chunk', 'text' => $delta]);
                     },
-                    $ingestNotice
+                    $ingestNotice,
+                    $requestedModel
                 );
 
                 // 4. Save AI reply to database in this session
@@ -304,6 +308,11 @@ class AiAssistantController extends Controller
 
                 // Touch session updated_at to keep recent sessions on top
                 $session->touch();
+
+                // Remember the per-session model preference when the client sent one
+                if (!empty($requestedModel) && $session->ai_model !== $requestedModel) {
+                    $session->update(['ai_model' => $requestedModel]);
+                }
 
                 $result['session_id'] = $sessionId;
                 $result['session_title'] = $session->title;
@@ -338,6 +347,7 @@ class AiAssistantController extends Controller
         $request->validate([
             'title' => 'nullable|string|max:100',
             'custom_rules' => 'nullable|string|max:2000',
+            'ai_model' => 'nullable|string|max:100',
         ]);
 
         $session = \App\Models\AiSession::where('user_id', $request->user()->id)->findOrFail($id);
@@ -348,6 +358,9 @@ class AiAssistantController extends Controller
         }
         if ($request->has('custom_rules')) {
             $updateData['custom_rules'] = trim($request->input('custom_rules')) ?: null;
+        }
+        if ($request->has('ai_model')) {
+            $updateData['ai_model'] = trim($request->input('ai_model')) ?: null;
         }
 
         if (!empty($updateData)) {

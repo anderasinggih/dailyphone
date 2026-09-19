@@ -123,9 +123,19 @@ interface Session {
     id: number;
     title: string;
     custom_rules?: string | null;
+    ai_model?: string | null;
     created_at: string;
     updated_at: string;
 }
+
+const AVAILABLE_MODELS = [
+    { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (Recommended)' },
+    { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite' },
+    { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite (Fast)' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+    { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+];
 
 interface AssistantProps {
     aiConfig: {
@@ -195,6 +205,7 @@ export default function Assistant({
     });
     const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
     const [currentRules, setCurrentRules] = useState<string>('');
+    const [currentModel, setCurrentModel] = useState<string>(aiConfig.model || '');
     const [isSavingRules, setIsSavingRules] = useState(false);
     const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
     const [isUploading, setIsUploading] = useState(false);
@@ -249,6 +260,7 @@ function playCompletionChime(soundEnabled: boolean): void {
     useEffect(() => {
         const active = sessionList.find(s => s.id === currentSessionId);
         setCurrentRules(active?.custom_rules || '');
+        setCurrentModel(active?.ai_model || aiConfig.model || '');
     }, [currentSessionId, sessionList]);
 
     // Synchronize messages state when initialMessages or activeSessionId updates (e.g. on page refresh or session switch)
@@ -418,18 +430,18 @@ function playCompletionChime(soundEnabled: boolean): void {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
                 },
-                body: JSON.stringify({ custom_rules: currentRules }),
+                body: JSON.stringify({ custom_rules: currentRules, ai_model: currentModel }),
             });
             const data = await res.json();
             if (data.success) {
                 setSessionList(prev =>
-                    prev.map(s => (s.id === currentSessionId ? { ...s, custom_rules: currentRules } : s))
+                    prev.map(s => (s.id === currentSessionId ? { ...s, custom_rules: currentRules, ai_model: currentModel } : s))
                 );
                 setIsRulesModalOpen(false);
             }
         } catch (err) {
-            console.error('Failed to save session rules:', err);
-            alert('Gagal menyimpan aturan pelatihan sesi.');
+            console.error('Failed to save session preferences:', err);
+            alert('Gagal menyimpan preferensi sesi.');
         } finally {
             setIsSavingRules(false);
         }
@@ -509,6 +521,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                     message: query,
                     session_id: currentSessionId,
                     attachments: uploaded.map(a => a.id),
+                    model: currentModel || aiConfig.model || undefined,
                 })
             });
 
@@ -807,23 +820,25 @@ function playCompletionChime(soundEnabled: boolean): void {
                                 </div>
 
                                 <div className="flex items-center gap-1.5 shrink-0">
-                                    {/* Session Rules / Training Button */}
+                                    {/* Session Preference / Training Button */}
                                     <button
                                         type="button"
                                         onClick={() => {
                                             const active = sessionList.find(s => s.id === currentSessionId);
                                             setCurrentRules(active?.custom_rules || '');
+                                            setCurrentModel(active?.ai_model || aiConfig.model || '');
                                             setIsRulesModalOpen(true);
                                         }}
-                                        title="Session rules"
+                                        title="Session preference"
                                         className={`p-1.5 rounded-xl border transition shadow-2xs active:scale-95 flex items-center gap-1 text-[11px] ${
-                                            sessionList.find(s => s.id === currentSessionId)?.custom_rules
+                                            sessionList.find(s => s.id === currentSessionId)?.custom_rules ||
+                                            sessionList.find(s => s.id === currentSessionId)?.ai_model
                                                 ? 'border-primary/50 bg-primary/10 text-primary font-semibold'
                                                 : 'border-border/50 bg-background/70 hover:bg-muted/80 text-muted-foreground hover:text-foreground'
                                         }`}
                                     >
                                         <Sliders className="h-3.5 w-3.5" />
-                                        <span className="hidden sm:inline">Rules</span>
+                                        <span className="hidden sm:inline">Preference</span>
                                     </button>
 
                                     <button
@@ -1218,7 +1233,7 @@ function playCompletionChime(soundEnabled: boolean): void {
 
             </div>
 
-            {/* Session Rules & Custom Training Modal */}
+            {/* Session Preference Modal */}
             {isRulesModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in-50 duration-150">
                     <div className="w-full max-w-lg rounded-2xl bg-card border border-border/70 p-5 shadow-2xl space-y-4">
@@ -1229,10 +1244,10 @@ function playCompletionChime(soundEnabled: boolean): void {
                                 </div>
                                 <div>
                                     <h3 className="text-sm font-semibold text-foreground">
-                                        Session Rules & Directives
+                                        Session Preference
                                     </h3>
                                     <p className="text-[11px] text-muted-foreground">
-                                        Custom instructions and behavior rules for this chat session
+                                        Model choice & training directives for this chat session
                                     </p>
                                 </div>
                             </div>
@@ -1248,11 +1263,33 @@ function playCompletionChime(soundEnabled: boolean): void {
 
                         <div className="space-y-2">
                             <label className="text-xs font-medium text-foreground flex items-center justify-between">
+                                <span>AI Model</span>
+                                <span className="text-[10.5px] text-muted-foreground">Saved per session</span>
+                            </label>
+                            <select
+                                value={currentModel}
+                                onChange={(e) => setCurrentModel(e.target.value)}
+                                className="w-full rounded-xl border border-border bg-background dark:bg-muted/30 text-foreground px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                            >
+                                {!AVAILABLE_MODELS.some(m => m.value === currentModel) && currentModel && (
+                                    <option value={currentModel}>{currentModel}</option>
+                                )}
+                                {AVAILABLE_MODELS.map(m => (
+                                    <option key={m.value} value={m.value}>{m.label}</option>
+                                ))}
+                            </select>
+                            <p className="text-[11px] text-muted-foreground">
+                                Used for this chat session. Empty preference falls back to the model set in Settings.
+                            </p>
+                        </div>
+
+                        <div className="space-y-2">
+                            <label className="text-xs font-medium text-foreground flex items-center justify-between">
                                 <span>Training Directives</span>
                                 <span className="text-[10.5px] text-muted-foreground">Saved per session</span>
                             </label>
                             <textarea
-                                rows={6}
+                                rows={5}
                                 value={currentRules}
                                 onChange={(e) => setCurrentRules(e.target.value)}
                                 placeholder="e.g.&#10;- Always respond concisely in English&#10;- When recommending stock, focus on 128GB second units&#10;- Default warranty is 30 days"
@@ -1282,7 +1319,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                                 ) : (
                                     <Check className="h-3.5 w-3.5" />
                                 )}
-                                <span>Save Rules</span>
+                                <span>Save Preferences</span>
                             </button>
                         </div>
                     </div>
