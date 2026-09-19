@@ -325,7 +325,7 @@ function loadSavedPositions(): Record<number, Point> | null {
     }
 }
 
-export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMindMapProps) {
+export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassify, onTidy }: NeuralMindMapProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerSize, setContainerSize] = useState({ w: 900, h: 600 });
 

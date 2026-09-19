@@ -19,7 +19,7 @@ import type { PageProps } from '@/types';
 
 interface SkillFile {
     id: number;
-    kind: 'rule' | 'knowledge';
+    kind: string;
     title: string;
     content: string;
     is_active: boolean;

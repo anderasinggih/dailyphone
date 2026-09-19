@@ -130,7 +130,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
 
     const form = useForm({
         content: '',
-        kind: 'rule' as 'rule' | 'knowledge',
+        kind: 'note' as Kind,
     });
 
     const submit = (e: FormEvent) => {
@@ -152,7 +152,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
     };
 
     const deleteNote = (note: TrainingNote) => {
-        if (confirm(`Delete this ${note.kind === 'rule' ? 'rule' : 'knowledge note'} permanently from AI memory?`)) {
+        if (confirm(`Delete this ${kindMeta(note.kind).label} node permanently from AI memory?`)) {
             router.delete(route('settings.ai.training-notes.destroy', note.id), {
                 preserveScroll: true,
             });
@@ -270,17 +270,24 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                         <div className="flex items-center gap-2">
                             <Plus className="h-4 w-4 text-primary" />
                             <h3 className="text-sm font-semibold text-foreground">Add Training Note Manually</h3>
-                            <p className="text2">No chat needed — write a rule or knowledge note directly into AI memory.</p>
+                            <p className="text2">No chat needed — write any brain node type directly into AI memory.</p>
                         </div>
                         <form onSubmit={submit} className="space-y-3">
                             <div className="grid grid-cols-1 sm:grid-cols-[200px_1fr] gap-2">
                                 <select
                                     value={form.data.kind}
-                                    onChange={e => form.setData('kind', e.target.value as 'rule' | 'knowledge')}
-                                    className="rounded-xl border border-border/60 bg-background px-3 py-2 text-xs font-semibold text-foreground focus:outline-none focus:border-primary"
+                                    onChange={e => form.setData('kind', e.target.value as Kind)}
+                                    className="rounded-xl border bg-background px-3 py-2 text-xs font-semibold focus:outline-none focus:border-primary"
+                                    style={{
+                                        borderColor: `${kindMeta(form.data.kind).color}73`,
+                                        color: kindMeta(form.data.kind).color,
+                                    }}
                                 >
-                                    <option value="rule">Rule [RULE] — superadmin directive</option>
-                                    <option value="knowledge">Knowledge — factual note</option>
+                                    {kindList().map(k => (
+                                        <option key={k} value={k} style={{ color: kindMeta(k).color }}>
+                                            {kindMeta(k).label} — {k}
+                                        </option>
+                                    ))}
                                 </select>
                                 <input
                                     type="text"
@@ -330,6 +337,20 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                         { preserveScroll: true },
                                     )
                                 }
+                                onReclassify={(node, kind) =>
+                                    router.post(
+                                        route('settings.ai.training-notes.kind', node.id),
+                                        { kind },
+                                        { preserveScroll: true },
+                                    )
+                                }
+                                onTidy={() =>
+                                    router.post(
+                                        route('settings.ai.training-notes.tidy'),
+                                        {},
+                                        { preserveScroll: true },
+                                    )
+                                }
                             />
                             {safeNotes.length === 0 && (
                                 <div className="rounded-xl border border-dashed border-border/80 px-4 py-3 text-xs text-muted-foreground text-center">
@@ -373,12 +394,21 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                                         className="flex items-start gap-3 min-w-0 flex-1 text-left group"
                                                         title={expanded ? 'Collapse this note' : 'Expand this note'}
                                                     >
-                                                        <span className={`mt-0.5 inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
-                                                            note.kind === 'rule'
-                                                                ? 'bg-primary/10 text-primary border-primary/20'
-                                                                : 'bg-muted text-muted-foreground border-border'
-                                                        }`}>
-                                                            {note.kind === 'rule' ? '[RULE]' : '[NOTE]'}
+                                                        <span
+                                                            className={`mt-0.5 inline-flex items-center gap-1 shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
+                                                                note.kind === 'rule' ? 'font-semibold' : ''
+                                                            }`}
+                                                            style={{
+                                                                backgroundColor: `${kindMeta(note.kind).color}1f`,
+                                                                borderColor: `${kindMeta(note.kind).color}73`,
+                                                                color: kindMeta(note.kind).color,
+                                                            }}
+                                                        >
+                                                            <span
+                                                                className="h-1.5 w-1.5 rounded-full"
+                                                                style={{ backgroundColor: kindMeta(note.kind).color }}
+                                                            />
+                                                            {kindMeta(note.kind).label.toUpperCase()}
                                                         </span>
                                                         <div className="min-w-0 flex-1">
                                                             <p className="text-sm font-semibold text-foreground truncate">

@@ -4,6 +4,10 @@
 export const RELATION_LABEL: Record<string, string> = {
     same_topic: 'Same topic',
     rule_applies: 'Rule applies',
+    validation_required: 'Validation required',
+    condition_trigger: 'Condition trigger',
+    risk_warning: 'Risk warning',
+    serves_goal: 'Serves goal',
     persistent_hint: 'Keyword link',
     closely_related: 'Closely related',
     related: 'Related',

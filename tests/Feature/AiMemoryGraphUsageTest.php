@@ -11,7 +11,7 @@ class AiMemoryGraphUsageTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function note(string $content, string $kind = 'knowledge'): AiTrainingNote
+    private function note(string $content, string $kind = 'note'): AiTrainingNote
     {
         return AiTrainingNote::create([
             'user_id' => null,

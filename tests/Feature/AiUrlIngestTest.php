@@ -39,7 +39,7 @@ class AiUrlIngestTest extends TestCase
             'author_role' => 'system',
             'content' => 'Visual learning tools help organise knowledge around central concepts.',
             'content_hash' => md5('Visual learning tools help organise knowledge around central concepts.'),
-            'kind' => 'knowledge',
+            'kind' => 'note',
             'is_active' => true,
         ]);
 
@@ -52,7 +52,7 @@ class AiUrlIngestTest extends TestCase
 
         $this->assertDatabaseHas('ai_training_notes', [
             'source_url' => 'https://example.com/mind-map',
-            'kind' => 'knowledge',
+            'kind' => 'note',
         ]);
         $this->assertSame(0, AiTrainingNote::where('content', 'like', '%alert("not visible")%')->count());
 
