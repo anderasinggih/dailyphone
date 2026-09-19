@@ -11,6 +11,7 @@ class DynamicParameterValue extends Model
     protected $fillable = [
         'parameter_id',
         'value',
+        'color',
         'is_active'
     ];
 

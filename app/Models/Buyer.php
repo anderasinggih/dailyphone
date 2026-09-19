@@ -10,7 +10,9 @@ class Buyer extends Model
     protected $fillable = [
         'name',
         'phone',
-        'address'
+        'address',
+        'flag',
+        'notes',
     ];
 
     public function sales(): HasMany

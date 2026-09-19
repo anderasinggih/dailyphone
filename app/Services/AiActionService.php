@@ -1,0 +1,711 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Stock;
+use App\Models\MoneyNote;
+use App\Models\ActivityLog;
+use App\Models\User;
+use App\Models\Buyer;
+use App\Models\Sale;
+use App\Models\SaleItem;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+class AiActionService
+{
+    /**
+     * Execute an action proposal approved by Superadmin.
+     */
+    public function execute(string $action, array $payload, User $user): array
+    {
+        if ($user->role !== 'superadmin') {
+            return [
+                'success' => false,
+                'message' => 'Unauthorized: Only Superadmin can execute AI actions.',
+            ];
+        }
+
+        try {
+            switch ($action) {
+                case 'sell_stock':
+                    return $this->executeSellStock($payload, $user);
+
+                case 'update_stock':
+                    return $this->executeUpdateStock($payload, $user);
+
+                case 'add_stock':
+                    return $this->executeAddStock($payload, $user);
+
+                case 'delete_stock':
+                    return $this->executeDeleteStock($payload, $user);
+
+                case 'create_money_note':
+                    return $this->executeCreateMoneyNote($payload, $user);
+
+                case 'run_python_script':
+                    return $this->executeRunPythonScript($payload, $user);
+
+                default:
+                    return [
+                        'success' => false,
+                        'message' => "Unknown action '{$action}'. Execution aborted.",
+                    ];
+            }
+        } catch (\Throwable $e) {
+            Log::error("AI Action Execution Failed: " . $e->getMessage(), [
+                'action' => $action,
+                'payload' => $payload,
+                'user_id' => $user->id,
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Execution error: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Update stock prices, status, or notes.
+     */
+    protected function executeUpdateStock(array $payload, User $user): array
+    {
+        $stockId = $payload['stock_id'] ?? null;
+        $serialNumber = $payload['serial_number'] ?? null;
+
+        $stock = null;
+        if ($stockId) {
+            $stock = Stock::find($stockId);
+        } elseif ($serialNumber) {
+            $stock = Stock::where('serial_number', $serialNumber)->orWhere('imei_1', $serialNumber)->first();
+        }
+
+        if (!$stock) {
+            return [
+                'success' => false,
+                'message' => 'Target unit/stock item not found.',
+            ];
+        }
+
+        $oldValues = $stock->toArray();
+        $allowedFields = ['sell_price', 'buy_price', 'sell_price_reseller', 'status', 'supplier', 'name'];
+        $updatedData = [];
+
+        foreach ($allowedFields as $field) {
+            if (array_key_exists($field, $payload)) {
+                $updatedData[$field] = $payload[$field];
+            }
+        }
+
+        if (empty($updatedData)) {
+            return [
+                'success' => false,
+                'message' => 'No valid fields provided to update.',
+            ];
+        }
+
+        DB::transaction(function () use ($stock, $updatedData, $oldValues) {
+            $stock->update($updatedData);
+            ActivityLog::log('ai_update_stock', Stock::class, $stock->id, $stock->fresh()->toArray(), $oldValues);
+        });
+
+        $stockName = $stock->name;
+        $details = collect($updatedData)->map(fn($v, $k) => "{$k}: {$v}")->implode(', ');
+
+        return [
+            'success' => true,
+            'message' => "Successfully updated stock unit '{$stockName}' ({$details}).",
+            'data' => $stock->fresh(),
+            'undo' => [
+                'type' => 'stock_updated',
+                'stock_id' => $stock->id,
+                'previous' => $oldValues,
+            ],
+        ];
+    }
+
+    /**
+     * Add a new stock unit to inventory.
+     */
+    protected function executeAddStock(array $payload, User $user): array
+    {
+        $name = trim($payload['name'] ?? '');
+        if (empty($name)) {
+            return [
+                'success' => false,
+                'message' => 'Gagal: Nama unit (name) wajib diisi.',
+            ];
+        }
+
+        // Resolve store_id
+        $storeId = $payload['store_id'] ?? null;
+        if (!$storeId) {
+            $storeName = $payload['store_name'] ?? null;
+            if ($storeName) {
+                $matchedStore = \App\Models\Store::where('name', 'like', "%{$storeName}%")->first();
+                if ($matchedStore) {
+                    $storeId = $matchedStore->id;
+                }
+            }
+        }
+        if (!$storeId) {
+            $storeId = $user->store_id ?? \App\Models\Store::first()?->id;
+        }
+
+        if (!$storeId) {
+            return [
+                'success' => false,
+                'message' => 'Gagal: Toko cabang (store_id) tidak ditemukan atau belum ada toko yang terdaftar.',
+            ];
+        }
+
+        $category = strtolower($payload['category'] ?? 'iphone');
+        if (!in_array($category, ['iphone', 'android', 'accessories', 'extra'])) {
+            $category = (stripos($name, 'iphone') !== false) ? 'iphone' : 'android';
+        }
+
+        $type = strtolower($payload['type'] ?? 'second');
+        if (!in_array($type, ['new', 'second'])) {
+            $type = 'second';
+        }
+
+        // Helper to resolve dynamic parameter ID by value name
+        $resolveParamId = function($paramName, $valueName) {
+            if (!$valueName) return null;
+            if (is_numeric($valueName)) return (int)$valueName;
+
+            return \App\Models\DynamicParameterValue::whereHas('parameter', function ($q) use ($paramName) {
+                $q->where('name', 'like', "%{$paramName}%");
+            })->where('value', 'like', "%{$valueName}%")->value('id');
+        };
+
+        $brandId = $payload['brand_id'] ?? $resolveParamId('Brand', $payload['brand'] ?? ($category === 'iphone' ? 'Apple' : null));
+        $colorId = $payload['color_id'] ?? $resolveParamId('Warna', $payload['color'] ?? null);
+        $memoryId = $payload['memory_id'] ?? $resolveParamId('Kapasitas Memori', $payload['memory'] ?? null);
+        $licenseId = $payload['license_id'] ?? $resolveParamId('Tipe Lisensi', $payload['license'] ?? null);
+
+        // Generate unique Serial Number & IMEI if missing
+        $serialNumber = trim($payload['serial_number'] ?? '');
+        $imei = trim($payload['imei_1'] ?? '');
+
+        // 1. Check if a unit with this IMEI or Serial Number already exists (including soft-deleted/trash)
+        $existingStock = null;
+        if (!empty($imei)) {
+            $existingStock = Stock::withTrashed()->where('imei_1', $imei)->first();
+        }
+        if (!$existingStock && !empty($serialNumber)) {
+            $existingStock = Stock::withTrashed()->where('serial_number', $serialNumber)->first();
+        }
+
+        $buyPrice = isset($payload['buy_price']) ? (float)$payload['buy_price'] : 0;
+        $sellPrice = isset($payload['sell_price']) ? (float)$payload['sell_price'] : 0;
+        $sellPriceReseller = isset($payload['sell_price_reseller']) ? (float)$payload['sell_price_reseller'] : null;
+        $warrantyDays = isset($payload['warranty_duration_days']) ? (int)$payload['warranty_duration_days'] : 30;
+        $supplier = $payload['supplier'] ?? 'AI Input';
+        $status = $payload['status'] ?? 'available';
+        $aiCreatorTag = ($user->email ?? $user->name) . ' (AI)';
+
+        // If unit already exists in TRASH (soft deleted), RESTORE it and update specs instead of throwing duplicate constraint error
+        if ($existingStock && $existingStock->trashed()) {
+            $previousData = $existingStock->toArray();
+
+            $existingStock->restore();
+            $updateData = [
+                'store_id' => $storeId,
+                'category' => $category,
+                'type' => $type,
+                'name' => $name,
+                'brand_id' => $brandId ?? $existingStock->brand_id,
+                'color_id' => $colorId ?? $existingStock->color_id,
+                'memory_id' => $memoryId ?? $existingStock->memory_id,
+                'license_id' => $licenseId ?? $existingStock->license_id,
+                'warranty_duration_days' => $warrantyDays,
+                'buy_price' => $buyPrice > 0 ? $buyPrice : $existingStock->buy_price,
+                'sell_price' => $sellPrice > 0 ? $sellPrice : $existingStock->sell_price,
+                'sell_price_reseller' => $sellPriceReseller ?? $existingStock->sell_price_reseller,
+                'supplier' => $supplier,
+                'status' => $status,
+                'created_by' => $aiCreatorTag,
+            ];
+            $existingStock->update($updateData);
+
+            ActivityLog::log('ai_restore_stock', Stock::class, $existingStock->id, $existingStock->fresh()->toArray());
+
+            $formattedPrice = number_format($existingStock->sell_price, 0, ',', '.');
+
+            return [
+                'success' => true,
+                'message' => "Unit '{$existingStock->name}' (IMEI: {$existingStock->imei_1}) berhasil dipulihkan dari keranjang sampah (Trash) dan diaktifkan kembali ke stok toko dengan harga Rp {$formattedPrice}.",
+                'data' => $existingStock->fresh(['store', 'brand', 'color', 'memory', 'license']),
+                'undo' => [
+                    'type' => 'stock_created', // If undone, delete it again
+                    'stock_id' => $existingStock->id,
+                ],
+            ];
+        }
+
+        // If unit already exists and is ACTIVE, alert the user rather than failing
+        if ($existingStock && !$existingStock->trashed()) {
+            return [
+                'success' => false,
+                'message' => "Unit dengan IMEI/Serial Number ini ({$existingStock->imei_1} / {$existingStock->serial_number}) sudah aktif di inventaris '{$existingStock->name}'.",
+            ];
+        }
+
+        // Generate unique Serial Number & IMEI if missing
+        if (empty($serialNumber)) {
+            $prefix = ($category === 'iphone') ? 'IP' : 'AND';
+            $serialNumber = 'DP-' . $prefix . '-' . strtoupper(Str::random(6));
+        }
+
+        // Check uniqueness or append random suffix if collision occurs
+        if (Stock::withTrashed()->where('serial_number', $serialNumber)->exists()) {
+            $serialNumber .= '-' . strtoupper(Str::random(3));
+        }
+
+        if (empty($imei)) {
+            $imei = '35' . str_pad((string)mt_rand(1000000000000, 9999999999999), 13, '0', STR_PAD_LEFT);
+        }
+        if (Stock::withTrashed()->where('imei_1', $imei)->exists()) {
+            $imei = '35' . str_pad((string)mt_rand(1000000000000, 9999999999999), 13, '0', STR_PAD_LEFT);
+        }
+
+        $stock = DB::transaction(function () use (
+            $storeId, $category, $type, $name, $brandId, $colorId, $memoryId, $licenseId,
+            $serialNumber, $imei, $supplier, $warrantyDays, $buyPrice, $sellPrice, $sellPriceReseller, $status,
+            $aiCreatorTag
+        ) {
+            $createdStock = Stock::create([
+                'store_id' => $storeId,
+                'category' => $category,
+                'type' => $type,
+                'name' => $name,
+                'brand_id' => $brandId,
+                'color_id' => $colorId,
+                'memory_id' => $memoryId,
+                'license_id' => $licenseId,
+                'serial_number' => $serialNumber,
+                'imei_1' => $imei,
+                'supplier' => $supplier,
+                'warranty_duration_days' => $warrantyDays,
+                'buy_price' => $buyPrice,
+                'sell_price' => $sellPrice,
+                'sell_price_reseller' => $sellPriceReseller,
+                'qty' => 1,
+                'status' => $status,
+                'created_by' => $aiCreatorTag,
+            ]);
+
+            ActivityLog::log('ai_add_stock', Stock::class, $createdStock->id, $createdStock->toArray());
+
+            return $createdStock;
+        });
+
+        $formattedPrice = number_format($stock->sell_price, 0, ',', '.');
+
+        return [
+            'success' => true,
+            'message' => "Successfully added new stock unit '{$stock->name}' (SN: {$stock->serial_number}) with sell price Rp {$formattedPrice}.",
+            'data' => $stock->fresh(['store', 'brand', 'color', 'memory', 'license']),
+            'undo' => [
+                'type' => 'stock_created',
+                'stock_id' => $stock->id,
+            ],
+        ];
+    }
+
+    /**
+     * Delete a stock unit (move to trash).
+     */
+    protected function executeDeleteStock(array $payload, User $user): array
+    {
+        $stockId = $payload['stock_id'] ?? null;
+        $serialNumber = $payload['serial_number'] ?? null;
+        $imei = $payload['imei_1'] ?? $payload['imei'] ?? null;
+        $target = $payload['target'] ?? null;
+
+        $stock = null;
+        if ($stockId) {
+            $stock = Stock::find($stockId);
+        }
+
+        if (!$stock && $serialNumber) {
+            $stock = Stock::where('serial_number', $serialNumber)
+                ->orWhere('imei_1', $serialNumber)
+                ->first();
+        }
+
+        if (!$stock && $imei) {
+            $stock = Stock::where('imei_1', $imei)
+                ->orWhere('serial_number', $imei)
+                ->first();
+        }
+
+        // If not found in active stocks, check if it was ALREADY deleted (in trash)
+        if (!$stock) {
+            $trashedStock = null;
+            if ($stockId) {
+                $trashedStock = Stock::onlyTrashed()->find($stockId);
+            }
+            if (!$trashedStock && ($serialNumber || $imei)) {
+                $searchVal = $serialNumber ?: $imei;
+                $trashedStock = Stock::onlyTrashed()
+                    ->where('serial_number', $searchVal)
+                    ->orWhere('imei_1', $searchVal)
+                    ->first();
+            }
+
+            if ($trashedStock) {
+                return [
+                    'success' => false,
+                    'message' => "Unit '{$trashedStock->name}' (IMEI: {$trashedStock->imei_1}) sudah berada di keranjang sampah (sudah dihapus sebelumnya).",
+                ];
+            }
+
+            return [
+                'success' => false,
+                'message' => 'Target unit/stock item to delete was not found in inventory.',
+            ];
+        }
+
+        $oldValues = $stock->toArray();
+        $stockName = $stock->name;
+        $stockSn = $stock->serial_number;
+
+        DB::transaction(function () use ($stock, $oldValues) {
+            $stock->delete();
+            ActivityLog::log('ai_delete_stock', Stock::class, $stock->id, null, $oldValues);
+        });
+
+        return [
+            'success' => true,
+            'message' => "Successfully deleted stock unit '{$stockName}' (SN: {$stockSn}).",
+            'undo' => [
+                'type' => 'stock_deleted',
+                'stock_id' => $stock->id,
+            ],
+        ];
+    }
+
+    /**
+     * Record a completed sale transaction for a stock unit.
+     * All required operational fields must be present and valid.
+     */
+    protected function executeSellStock(array $payload, User $user): array
+    {
+        $stockId = $payload['stock_id'] ?? null;
+        $serialNumber = $payload['serial_number'] ?? null;
+
+        $stock = null;
+        if ($stockId) {
+            $stock = Stock::find($stockId);
+        } elseif ($serialNumber) {
+            $stock = Stock::where('serial_number', $serialNumber)->orWhere('imei_1', $serialNumber)->first();
+        }
+
+        if (!$stock) {
+            return [
+                'success' => false,
+                'message' => 'Unit yang akan dijual tidak ditemukan dalam database.',
+            ];
+        }
+
+        if ($stock->status === 'sold') {
+            return [
+                'success' => false,
+                'message' => "Unit '{$stock->name}' sudah berstatus TERJUAL sebelumnya.",
+            ];
+        }
+
+        // Required transaction values
+        $buyerName = trim($payload['buyer_name'] ?? '');
+        $buyerPhone = trim($payload['buyer_phone'] ?? '');
+        $buyerAddress = trim($payload['buyer_address'] ?? 'Purwokerto');
+        $paymentMethod = trim($payload['payment_method'] ?? 'cash');
+        $paymentDetail = trim($payload['payment_detail'] ?? 'Lunas via AI Assistant');
+        $actualSellPrice = isset($payload['actual_sell_price']) ? (float)$payload['actual_sell_price'] : (float)$stock->sell_price;
+
+        if (empty($buyerName)) {
+            return [
+                'success' => false,
+                'message' => 'Gagal: Nama pembeli wajib diisi untuk mencatat penjualan.',
+            ];
+        }
+
+        $sale = DB::transaction(function () use (
+            $stock, $user, $buyerName, $buyerPhone, $buyerAddress,
+            $paymentMethod, $paymentDetail, $actualSellPrice
+        ) {
+            // Find or create Buyer
+            $buyer = null;
+            if (!empty($buyerPhone)) {
+                $buyer = Buyer::where('phone', $buyerPhone)->first();
+            }
+            if (!$buyer) {
+                $buyer = Buyer::create([
+                    'name' => $buyerName,
+                    'phone' => $buyerPhone ?: null,
+                    'address' => $buyerAddress,
+                ]);
+            }
+
+            // Generate Invoice Number
+            $datePrefix = now()->format('Ymd');
+            $randomSuffix = strtoupper(Str::random(4));
+            $invoiceNumber = "INV-AI-{$datePrefix}-{$randomSuffix}";
+
+            // Create Sale record
+            $sale = Sale::create([
+                'invoice_number' => $invoiceNumber,
+                'store_id' => $stock->store_id,
+                'user_id' => $user->id,
+                'buyer_id' => $buyer->id,
+                'payment_method' => strtolower($paymentMethod),
+                'payment_detail' => $paymentDetail,
+                'total_amount' => $actualSellPrice,
+                'dp_amount' => 0,
+                'status' => 'completed',
+            ]);
+
+            // Create Sale item
+            SaleItem::create([
+                'sale_id' => $sale->id,
+                'stock_id' => $stock->id,
+                'qty' => 1,
+                'actual_sell_price' => $actualSellPrice,
+                'buy_price_snap' => $stock->buy_price,
+                'is_trade_in_item' => false,
+            ]);
+
+            // Update stock status to sold
+            $oldStockValues = $stock->toArray();
+            $stock->update(['status' => 'sold']);
+
+            ActivityLog::log('ai_sell_stock', Sale::class, $sale->id, [
+                'sale_id' => $sale->id,
+                'stock_id' => $stock->id,
+                'buyer' => $buyerName,
+                'price' => $actualSellPrice,
+                'invoice' => $invoiceNumber,
+            ], $oldStockValues);
+
+            return $sale;
+        });
+
+        $formattedPrice = number_format($actualSellPrice, 0, ',', '.');
+        return [
+            'success' => true,
+            'message' => "Unit '{$stock->name}' berhasil dicatat TERJUAL ke '{$buyerName}' senilai Rp {$formattedPrice} (Invoice: {$sale->invoice_number}).",
+            'data' => [
+                'sale_id' => $sale->id,
+                'invoice_number' => $sale->invoice_number,
+                'stock' => $stock->fresh(),
+            ],
+            'undo' => [
+                'type' => 'stock_sold',
+                'sale_id' => $sale->id,
+                'stock_id' => $stock->id,
+            ],
+        ];
+    }
+
+    /**
+     * Create an operational expense or income note.
+     */
+    protected function executeCreateMoneyNote(array $payload, User $user): array
+    {
+        $type = $payload['type'] ?? 'expense';
+        $amount = (float)($payload['amount'] ?? 0);
+        $category = $payload['category'] ?? 'Operasional';
+        $description = $payload['description'] ?? 'Catatan kas via AI Assistant';
+        $date = $payload['date'] ?? now()->toDateString();
+
+        if ($amount <= 0) {
+            return [
+                'success' => false,
+                'message' => 'Invalid amount. Amount must be greater than 0.',
+            ];
+        }
+
+        $note = DB::transaction(function () use ($type, $amount, $category, $description, $date) {
+            $note = MoneyNote::create([
+                'type' => in_array($type, ['income', 'expense']) ? $type : 'expense',
+                'amount' => $amount,
+                'category' => $category,
+                'description' => $description,
+                'date' => $date,
+            ]);
+
+            ActivityLog::log('ai_create_money_note', MoneyNote::class, $note->id, $note->toArray());
+            return $note;
+        });
+
+        $formattedAmount = number_format($amount, 0, ',', '.');
+        $typeName = $type === 'income' ? 'Pemasukan' : 'Pengeluaran';
+
+        return [
+            'success' => true,
+            'message' => "Successfully recorded {$typeName} Rp {$formattedAmount} for '{$category}' ({$description}).",
+            'data' => $note,
+        ];
+    }
+
+    /**
+     * Safely run a Python 3 script with timeout and output capture.
+     */
+    protected function executeRunPythonScript(array $payload, User $user): array
+    {
+        $scriptContent = $payload['code'] ?? null;
+        if (empty($scriptContent)) {
+            return [
+                'success' => false,
+                'message' => 'No python code provided to execute.',
+            ];
+        }
+
+        // Temp script file
+        $tempDir = storage_path('app/ai_scripts');
+        if (!is_dir($tempDir)) {
+            mkdir($tempDir, 0755, true);
+        }
+
+        $tempFile = $tempDir . '/script_' . uniqid() . '.py';
+        file_put_contents($tempFile, $scriptContent);
+
+        try {
+            $process = proc_open(
+                ['python3', $tempFile],
+                [
+                    0 => ['pipe', 'r'],
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes
+            );
+
+            if (!is_resource($process)) {
+                return [
+                    'success' => false,
+                    'message' => 'Failed to spawn Python process.',
+                ];
+            }
+
+            fclose($pipes[0]);
+            
+            // Read stdout & stderr
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            $exitCode = proc_close($process);
+
+            ActivityLog::log('ai_run_python', null, null, [
+                'exit_code' => $exitCode,
+                'code_snippet' => mb_substr($scriptContent, 0, 200),
+                'output_snippet' => mb_substr($stdout, 0, 200),
+            ]);
+
+            if ($exitCode !== 0) {
+                return [
+                    'success' => false,
+                    'message' => 'Python script returned error: ' . ($stderr ?: $stdout ?: "Exit code {$exitCode}"),
+                    'output' => $stderr ?: $stdout,
+                ];
+            }
+
+            return [
+                'success' => true,
+                'message' => 'Python script executed successfully.',
+                'output' => trim($stdout),
+            ];
+        } finally {
+            if (file_exists($tempFile)) {
+                @unlink($tempFile);
+            }
+        }
+    }
+
+    /**
+     * Revert / Undo a previously executed action.
+     */
+    public function undoAction(array $undoData, User $user): array
+    {
+        $type = $undoData['type'] ?? null;
+
+        switch ($type) {
+            case 'stock_created':
+                $stockId = $undoData['stock_id'] ?? null;
+                $stock = Stock::find($stockId);
+                if ($stock) {
+                    $name = $stock->name;
+                    $stock->forceDelete();
+                    ActivityLog::log('ai_undo_add_stock', Stock::class, $stockId, null);
+                    return [
+                        'success' => true,
+                        'message' => "Unit '{$name}' yang baru ditambahkan telah berhasil dibatalkan (dihapus).",
+                    ];
+                }
+                return ['success' => false, 'message' => 'Unit yang ingin di-undo tidak ditemukan atau sudah dihapus.'];
+
+            case 'stock_updated':
+                $stockId = $undoData['stock_id'] ?? null;
+                $previous = $undoData['previous'] ?? [];
+                $stock = Stock::find($stockId);
+                if ($stock && !empty($previous)) {
+                    $allowed = ['sell_price', 'buy_price', 'sell_price_reseller', 'status', 'supplier', 'name'];
+                    $restoreData = array_intersect_key($previous, array_flip($allowed));
+                    $stock->update($restoreData);
+                    ActivityLog::log('ai_undo_update_stock', Stock::class, $stockId, $stock->fresh()->toArray());
+                    return [
+                        'success' => true,
+                        'message' => "Perubahan pada unit '{$stock->name}' berhasil dikembalikan ke nilai semula.",
+                    ];
+                }
+                return ['success' => false, 'message' => 'Gagal memulihkan nilai unit sebelumnya.'];
+
+            case 'stock_deleted':
+                $stockId = $undoData['stock_id'] ?? null;
+                $stock = Stock::withTrashed()->find($stockId);
+                if ($stock && $stock->trashed()) {
+                    $stock->restore();
+                    ActivityLog::log('ai_undo_delete_stock', Stock::class, $stockId, $stock->fresh()->toArray());
+                    return [
+                        'success' => true,
+                        'message' => "Unit '{$stock->name}' yang dihapus telah berhasil dipulihkan kembali.",
+                    ];
+                }
+                return ['success' => false, 'message' => 'Unit tidak ditemukan di keranjang sampah.'];
+
+            case 'stock_sold':
+                $saleId = $undoData['sale_id'] ?? null;
+                $stockId = $undoData['stock_id'] ?? null;
+                $sale = Sale::find($saleId);
+                $stock = Stock::find($stockId);
+
+                DB::transaction(function () use ($sale, $stock) {
+                    if ($sale) {
+                        $sale->items()->delete();
+                        $sale->delete();
+                    }
+                    if ($stock) {
+                        $stock->update(['status' => 'available']);
+                    }
+                });
+
+                return [
+                    'success' => true,
+                    'message' => "Transaksi penjualan berhasil dibatalkan dan status unit dikembalikan menjadi 'Available'.",
+                ];
+
+            default:
+                return [
+                    'success' => false,
+                    'message' => "Jenis aksi ini tidak mendukung operasi Undo otomatis.",
+                ];
+        }
+    }
+}
+

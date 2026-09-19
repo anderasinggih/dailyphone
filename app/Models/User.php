@@ -62,6 +62,11 @@ class User extends Authenticatable
         return $this->hasMany(Shift::class);
     }
 
+    public function savedActivities()
+    {
+        return $this->belongsToMany(ActivityLog::class, 'saved_activities', 'user_id', 'activity_log_id')->withTimestamps();
+    }
+
     public function sales(): HasMany
     {
         return $this->hasMany(Sale::class);

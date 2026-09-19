@@ -21,7 +21,7 @@ class GeneralSettingsController extends Controller
         }
 
         $settings = GeneralSetting::first() ?? GeneralSetting::create([
-            'company_name' => 'Housephone',
+            'company_name' => 'Daily Phone',
             'work_start_time' => '09:00:00',
             'work_end_time' => '18:00:00',
             'grace_period_minutes' => 15,
@@ -54,20 +54,37 @@ class GeneralSettingsController extends Controller
             'grace_period_minutes' => 'required|integer|min:0',
             'geofence_lock_enabled' => 'required|boolean',
             'notification_emails' => 'nullable|string',
+            'ai_enabled' => 'nullable|boolean',
+            'ai_provider' => 'nullable|string',
+            'ai_api_key' => 'nullable|string',
+            'ai_model' => 'nullable|string',
+            'ai_system_instruction' => 'nullable|string',
         ]);
 
         $settings = GeneralSetting::first() ?? new GeneralSetting();
-        $settings->fill($request->only([
+        $data = $request->only([
             'company_name',
             'work_start_time',
             'work_end_time',
             'grace_period_minutes',
             'geofence_lock_enabled',
             'notification_emails',
-        ]));
+            'ai_enabled',
+            'ai_provider',
+            'ai_model',
+            'ai_system_instruction',
+        ]);
+
+        if ($request->filled('ai_api_key')) {
+            $data['ai_api_key'] = $request->input('ai_api_key');
+        } elseif ($request->has('clear_ai_api_key') && $request->boolean('clear_ai_api_key')) {
+            $data['ai_api_key'] = null;
+        }
+
+        $settings->fill($data);
         $settings->save();
 
-        return redirect()->back()->with('success', 'Pengaturan umum berhasil disimpan.');
+        return redirect()->back()->with('success', 'General and AI settings updated successfully.');
     }
 
     public function storeSchedule(Request $request): RedirectResponse

@@ -28,9 +28,13 @@ class StockController extends Controller
             $storeId = $request->input('store_id');
         }
 
+        // For superadmin/viewer: use the storeId from request filter (can be null = all stores)
+        // For regular employees: always scope to their own store_id
+        $isSuperOrViewer = in_array($user->role, ['superadmin', 'viewer']);
+
         $stocks = Stock::where('status', 'available')
-            ->when($user->store_id, fn($q) => $q->where('store_id', $user->store_id))
-            ->when(!$user->store_id && $storeId, fn($q) => $q->where('store_id', $storeId))
+            ->when(!$isSuperOrViewer && $user->store_id, fn($q) => $q->where('store_id', $user->store_id))
+            ->when($isSuperOrViewer && $storeId, fn($q) => $q->where('store_id', $storeId))
             ->with(['brand', 'color', 'memory', 'license'])
             ->get();
 
@@ -77,6 +81,9 @@ class StockController extends Controller
             $storeId = $request->input('store_id');
         }
 
+        // Same pattern: superadmin/viewer use storeId from filter; employees scoped to their store
+        $isSuperOrViewer = in_array($user->role, ['superadmin', 'viewer']);
+
         $stocks = Stock::withTrashed()->with([
             'store',
             'brand',
@@ -88,8 +95,8 @@ class StockController extends Controller
             'saleItems.sale.extras.extra',
             'saleItems.sale.items'
         ])
-        ->when($user->store_id, fn($q) => $q->where('store_id', $user->store_id))
-        ->when(!$user->store_id && $storeId, fn($q) => $q->where('store_id', $storeId))
+        ->when(!$isSuperOrViewer && $user->store_id, fn($q) => $q->where('store_id', $user->store_id))
+        ->when($isSuperOrViewer && $storeId, fn($q) => $q->where('store_id', $storeId))
         ->get();
         
         $stores = Store::all();
@@ -135,15 +142,13 @@ class StockController extends Controller
             'default_charge_to' => 'nullable|in:buyer,seller,free_promotion',
         ]);
         
-        // Remove grade/imei_2 if passed from old form
-        unset($validated['grade'], $validated['imei_2']);
-
         if ($validated['store_id'] === 'all') {
             $stores = Store::all();
-            DB::transaction(function() use ($validated, $stores) {
+            DB::transaction(function() use ($validated, $stores, $user) {
                 foreach ($stores as $store) {
                     $data = $validated;
                     $data['store_id'] = $store->id;
+                    $data['created_by'] = $user->email ?? $user->name;
                     $stock = Stock::create($data);
                     ActivityLog::log('add_stock', Stock::class, $stock->id, $stock->toArray());
                 }
@@ -151,7 +156,9 @@ class StockController extends Controller
             return redirect()->back()->with('success', 'Stok berhasil ditambahkan untuk semua cabang.');
         } else {
             $request->validate(['store_id' => 'exists:stores,id']);
-            $stock = Stock::create($validated);
+            $data = $validated;
+            $data['created_by'] = $user->email ?? $user->name;
+            $stock = Stock::create($data);
             ActivityLog::log('add_stock', Stock::class, $stock->id, $stock->toArray());
             return redirect()->back()->with('success', 'Stok berhasil ditambahkan.');
         }
@@ -179,12 +186,19 @@ class StockController extends Controller
             'sell_price' => 'required|numeric|min:0',
             'sell_price_reseller' => 'nullable|numeric|min:0',
             'items' => 'required|array|min:1',
-            'items.*.serial_number' => 'required|string|unique:stocks,serial_number',
-            'items.*.imei_1' => 'required|string|unique:stocks,imei_1',
+            'items.*.serial_number' => 'nullable|string|distinct|unique:stocks,serial_number',
+            'items.*.imei_1' => 'nullable|string|distinct|unique:stocks,imei_1',
         ]);
 
-        DB::transaction(function () use ($request) {
+        $createdCount = 0;
+        $creatorTag = $user->email ?? $user->name;
+
+        DB::transaction(function() use ($request, &$createdCount, $creatorTag) {
             foreach ($request->input('items') as $item) {
+                if (empty($item['serial_number']) && empty($item['imei_1'])) {
+                    continue;
+                }
+
                 $stock = Stock::create([
                     'store_id' => $request->input('store_id'),
                     'category' => $request->input('category'),
@@ -203,6 +217,7 @@ class StockController extends Controller
                     'sell_price_reseller' => $request->input('sell_price_reseller'),
                     'qty' => 1,
                     'status' => 'available',
+                    'created_by' => $creatorTag,
                 ]);
                 ActivityLog::log('add_stock', Stock::class, $stock->id, $stock->toArray());
             }
@@ -294,16 +309,43 @@ class StockController extends Controller
     {
         $request->validate([
             'parameter_id' => 'required|exists:dynamic_parameters,id',
-            'value' => 'required|string',
+            'value' => 'required|string|max:100',
+            'color' => 'nullable|string|max:50',
         ]);
 
         DynamicParameterValue::create([
             'parameter_id' => $request->input('parameter_id'),
             'value' => $request->input('value'),
+            'color' => $request->input('color', 'blue'),
             'is_active' => true,
         ]);
 
-        return redirect()->back()->with('success', 'Opsi parameter berhasil ditambahkan.');
+        return redirect()->back()->with('success', 'Parameter option added successfully.');
+    }
+
+    public function updateParameterValue(Request $request, $id): RedirectResponse
+    {
+        $request->validate([
+            'value' => 'required|string|max:100',
+            'color' => 'nullable|string|max:50',
+        ]);
+
+        $val = DynamicParameterValue::with('parameter')->findOrFail($id);
+        $oldValue = $val->value;
+        $newValue = $request->input('value');
+        $newColor = $request->input('color', $val->color);
+
+        $val->update([
+            'value' => $newValue,
+            'color' => $newColor,
+        ]);
+
+        // If this option belongs to "Customer Flags", cascade update to all buyers holding the old value
+        if ($val->parameter && str_contains(strtolower($val->parameter->name), 'flag')) {
+            \App\Models\Buyer::where('flag', $oldValue)->update(['flag' => $newValue]);
+        }
+
+        return redirect()->back()->with('success', 'Parameter option updated successfully.');
     }
 
     public function toggleParameterValue(Request $request, $id): RedirectResponse
@@ -311,7 +353,15 @@ class StockController extends Controller
         $val = DynamicParameterValue::findOrFail($id);
         $val->update(['is_active' => !$val->is_active]);
 
-        return redirect()->back()->with('success', 'Status parameter berhasil diperbarui.');
+        return redirect()->back()->with('success', 'Parameter status updated.');
+    }
+
+    public function deleteParameterValue(Request $request, $id): RedirectResponse
+    {
+        $val = DynamicParameterValue::findOrFail($id);
+        $val->delete();
+
+        return redirect()->back()->with('success', 'Parameter option deleted.');
     }
 
     public function parameters(Request $request): Response

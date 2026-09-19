@@ -1,16 +1,16 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>Invoice {{ $sale->invoice_number }} — Housephone</title>
+    <title>Invoice {{ $sale->invoice_number }} — Daily Phone</title>
 
     {{-- Open Graph / WhatsApp Link Preview --}}
     @php
-        $ogTitle = 'Invoice ' . $sale->invoice_number . ' — Housephone';
-        $ogDesc  = 'Pembeli: ' . ($sale->buyer->name ?? 'Umum') .
+        $ogTitle = 'Invoice ' . $sale->invoice_number . ' — Daily Phone';
+        $ogDesc  = 'Customer: ' . ($sale->buyer->name ?? 'Walk-in Customer') .
                    ' | Total: Rp ' . number_format($sale->total_amount, 0, ',', '.') .
-                   ' | Status: ' . ($sale->status === 'completed' ? 'LUNAS' : strtoupper($sale->status)) .
+                   ' | Status: ' . ($sale->status === 'completed' ? 'PAID' : strtoupper($sale->status)) .
                    ' | Tgl: ' . $sale->created_at->format('d M Y');
         $ogUrl   = url('/invoice/' . $sale->invoice_number);
     @endphp
@@ -18,7 +18,7 @@
     <meta property="og:url"         content="{{ $ogUrl }}">
     <meta property="og:title"       content="{{ $ogTitle }}">
     <meta property="og:description" content="{{ $ogDesc }}">
-    <meta property="og:site_name"   content="Housephone">
+    <meta property="og:site_name"   content="Daily Phone">
     {{-- Twitter/X Card --}}
     <meta name="twitter:card"        content="summary">
     <meta name="twitter:title"       content="{{ $ogTitle }}">
@@ -61,8 +61,8 @@
             <div class="bg-indigo-600 px-5 py-5 sm:px-8 sm:py-7">
                 <div class="flex items-start justify-between gap-4">
                     <div>
-                        <p class="text-indigo-300 text-[10px] font-bold uppercase tracking-widest mb-0.5">Struk Pembelian</p>
-                        <h1 class="text-white text-2xl sm:text-3xl font-black tracking-tight leading-none">HOUSEPHONE</h1>
+                        <p class="text-indigo-300 text-[10px] font-bold uppercase tracking-widest mb-0.5">Purchase Receipt</p>
+                        <h1 class="text-white text-2xl sm:text-3xl font-black tracking-tight leading-none">DAILY PHONE</h1>
                         <p class="text-indigo-300 text-xs font-semibold mt-1">Premium Devices & Accessories</p>
                     </div>
                     <div class="text-right flex-shrink-0">
@@ -72,7 +72,7 @@
                                 : 'bg-slate-400/20 text-slate-200 border-slate-400/30');
                         @endphp
                         <span class="inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase border {{ $statusColor }}">
-                            {{ $sale->status === 'completed' ? 'LUNAS' : strtoupper($sale->status) }}
+                            {{ $sale->status === 'completed' ? 'PAID' : strtoupper($sale->status) }}
                         </span>
                         <p class="text-indigo-200 text-xs font-bold mt-1.5 mono">{{ $sale->invoice_number }}</p>
                         <p class="text-indigo-300 text-[11px] mt-0.5">{{ $sale->created_at->format('d M Y, H:i') }}</p>
@@ -82,19 +82,19 @@
 
             <div class="px-5 py-5 sm:px-8 sm:py-6 space-y-5">
 
-                {{-- ── INFO GRID: Cabang & Pembeli ── --}}
+                {{-- ── INFO GRID: Store Branch & Customer ── --}}
                 <div class="grid grid-cols-2 gap-4 pb-5 border-b border-slate-100 text-sm">
                     <div>
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Cabang</p>
-                        <p class="font-bold text-slate-800 leading-snug">{{ $sale->store->name ?? 'Housephone' }}</p>
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Store Branch</p>
+                        <p class="font-bold text-slate-800 leading-snug">{{ $sale->store->name ?? 'Daily Phone' }}</p>
                         @if($sale->store && $sale->store->location)
                             <p class="text-slate-500 text-xs mt-0.5 leading-snug">{{ $sale->store->location }}</p>
                         @endif
-                        <p class="text-slate-400 text-xs mt-1">Kasir: <span class="font-semibold text-slate-600">{{ $sale->user->name ?? '—' }}</span></p>
+                        <p class="text-slate-400 text-xs mt-1">Cashier: <span class="font-semibold text-slate-600">{{ $sale->user->name ?? '—' }}</span></p>
                     </div>
                     <div class="text-right">
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Pembeli</p>
-                        <p class="font-bold text-slate-800 leading-snug">{{ $sale->buyer->name ?? 'Umum' }}</p>
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Customer</p>
+                        <p class="font-bold text-slate-800 leading-snug">{{ $sale->buyer->name ?? 'Walk-in Customer' }}</p>
                         @if($sale->buyer && $sale->buyer->phone)
                             <p class="text-indigo-600 font-bold text-xs mt-0.5 select-all mono">{{ $sale->buyer->phone }}</p>
                         @endif
@@ -112,12 +112,12 @@
                 @endphp
 
                 <div>
-                    <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Item Pembelian</p>
+                    <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Item Customeran</p>
                     <div class="space-y-3">
                         @foreach($mainItems as $item)
                             <div class="flex items-start justify-between gap-3">
                                 <div class="flex-1 min-w-0">
-                                    <p class="font-bold text-slate-800 text-sm leading-snug">{{ $item->stock->name ?? 'Unit HP' }}</p>
+                                    <p class="font-bold text-slate-800 text-sm leading-snug">{{ $item->stock->name ?? 'Device Unit' }}</p>
                                     <div class="flex flex-wrap gap-x-2.5 gap-y-1 mt-1 text-[11px] text-slate-500">
                                         @if($item->stock && $item->stock->serial_number)
                                             <span class="mono">SN: <strong class="text-slate-600 select-all">{{ $item->stock->serial_number }}</strong></span>
@@ -127,7 +127,7 @@
                                         @endif
                                         @if($item->stock && $item->stock->warranty_duration_days)
                                             <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-bold uppercase text-[9px] border border-indigo-100">
-                                                Garansi {{ $item->stock->warranty_duration_days }} Hari
+                                                Warranty {{ $item->stock->warranty_duration_days }} Days
                                             </span>
                                         @endif
                                     </div>
@@ -146,16 +146,16 @@
                 {{-- ── EXTRAS ── --}}
                 @if($hasExtras)
                     <div class="border-t border-slate-100 pt-4">
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Add-on & Layanan</p>
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Add-ons & Services</p>
                         <div class="space-y-2">
                             @foreach($sale->extras as $extra)
                                 <div class="flex items-center justify-between gap-3 text-sm">
                                     <div class="flex items-center gap-2 min-w-0">
-                                        <span class="font-semibold text-slate-700 truncate">{{ $extra->extra->name ?? 'Layanan' }}</span>
+                                        <span class="font-semibold text-slate-700 truncate">{{ $extra->extra->name ?? 'Service' }}</span>
                                         @if($extra->charge_to === 'buyer')
                                             <span class="flex-shrink-0 rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-black text-indigo-700 border border-indigo-100 uppercase">Buyer</span>
                                         @elseif($extra->charge_to === 'seller')
-                                            <span class="flex-shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600 border border-slate-200 uppercase">Toko</span>
+                                            <span class="flex-shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-600 border border-slate-200 uppercase">Store</span>
                                         @else
                                             <span class="flex-shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-black text-emerald-700 border border-emerald-100 uppercase">Free</span>
                                         @endif
@@ -176,10 +176,10 @@
                 {{-- ── TRADE-IN ── --}}
                 @if($tradeInItem)
                     <div class="border-t border-slate-100 pt-4">
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Tukar Tambah (Trade-In)</p>
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Trade-In</p>
                         <div class="flex items-center justify-between gap-3 bg-rose-50 rounded-xl p-3 border border-rose-100">
                             <div class="min-w-0">
-                                <p class="font-bold text-slate-800 text-sm truncate">{{ $tradeInItem->stock->name ?? 'HP Trade-In' }}</p>
+                                <p class="font-bold text-slate-800 text-sm truncate">{{ $tradeInItem->stock->name ?? 'Trade-In Device' }}</p>
                                 @if($tradeInItem->stock && $tradeInItem->stock->serial_number)
                                     <p class="text-xs text-slate-500 mt-0.5 mono">SN: {{ $tradeInItem->stock->serial_number }}</p>
                                 @endif
@@ -200,25 +200,25 @@
                 <div class="border-t border-slate-200 pt-4 space-y-2 text-sm">
                     @if($subtotalExtras > 0 || $tradeInDeduct > 0)
                         <div class="flex justify-between text-slate-500">
-                            <span>Subtotal Unit</span>
+                            <span>Unit Subtotal</span>
                             <span class="font-semibold text-slate-700">Rp {{ number_format($subtotalUnits, 0, ',', '.') }}</span>
                         </div>
                         @if($subtotalExtras > 0)
                             <div class="flex justify-between text-slate-500">
-                                <span>Layanan & Add-on</span>
+                                <span>Service & Add-on</span>
                                 <span class="font-semibold text-slate-700">Rp {{ number_format($subtotalExtras, 0, ',', '.') }}</span>
                             </div>
                         @endif
                         @if($tradeInDeduct > 0)
                             <div class="flex justify-between text-rose-500">
-                                <span>Potongan Trade-In</span>
+                                <span>Trade-In Deduction</span>
                                 <span class="font-bold">− Rp {{ number_format($tradeInDeduct, 0, ',', '.') }}</span>
                             </div>
                         @endif
                     @endif
 
                     <div class="flex items-center justify-between pt-3 border-t border-slate-200">
-                        <span class="font-black text-slate-800 text-base">Total Bayar</span>
+                        <span class="font-black text-slate-800 text-base">Total Payment</span>
                         <span class="font-black text-indigo-600 text-xl sm:text-2xl">Rp {{ number_format($sale->total_amount, 0, ',', '.') }}</span>
                     </div>
                 </div>
@@ -226,7 +226,7 @@
                 {{-- ── PAYMENT INFO ── --}}
                 <div class="bg-slate-50 rounded-xl p-4 border border-slate-100 flex items-start justify-between gap-4 text-sm">
                     <div>
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Metode Bayar</p>
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Payment Method</p>
                         <p class="font-extrabold text-indigo-600 uppercase tracking-wide text-sm">{{ $sale->payment_method }}</p>
                         @if($sale->payment_detail)
                             <p class="text-slate-500 text-xs mt-0.5 font-semibold">{{ $sale->payment_detail }}</p>
@@ -234,20 +234,20 @@
                     </div>
                     <div class="text-right flex-shrink-0">
                         @if($sale->status === 'booking')
-                            <p class="text-[10px] font-bold uppercase tracking-wider text-amber-600 mb-1">Uang Muka (DP)</p>
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-amber-600 mb-1">Down Payment (DP)</p>
                             <p class="font-extrabold text-amber-600 text-sm">Rp {{ number_format($sale->dp_amount, 0, ',', '.') }}</p>
-                            <p class="text-slate-400 text-[10px] mt-0.5">Sisa: Rp {{ number_format(max(0, $sale->total_amount - $sale->dp_amount), 0, ',', '.') }}</p>
+                            <p class="text-slate-400 text-[10px] mt-0.5">Remaining: Rp {{ number_format(max(0, $sale->total_amount - $sale->dp_amount), 0, ',', '.') }}</p>
                         @else
-                            <span class="inline-block rounded-full bg-emerald-100 border border-emerald-200 text-emerald-700 px-2.5 py-1 text-[10px] font-black uppercase">✓ Lunas</span>
+                            <span class="inline-block rounded-full bg-emerald-100 border border-emerald-200 text-emerald-700 px-2.5 py-1 text-[10px] font-black uppercase">✓ Paid</span>
                         @endif
                     </div>
                 </div>
 
                 {{-- ── FOOTER ── --}}
                 <div class="text-center text-xs text-slate-400 pt-3 border-t border-slate-100 leading-relaxed font-semibold">
-                    <p>Terima kasih telah berbelanja di <strong class="text-slate-600">Housephone</strong>.</p>
-                    <p class="mt-0.5">Simpan struk ini sebagai bukti garansi resmi produk Anda.</p>
-                    <p class="mt-3 text-slate-300 font-bold text-[10px]">© {{ date('Y') }} Housephone. All rights reserved.</p>
+                    <p>Thank you for shopping at <strong class="text-slate-600">Daily Phone</strong>.</p>
+                    <p class="mt-0.5">Keep this receipt as proof of official product warranty.</p>
+                    <p class="mt-3 text-slate-300 font-bold text-[10px]">© {{ date('Y') }} Daily Phone. All rights reserved.</p>
                 </div>
 
             </div>
@@ -259,7 +259,7 @@
                 onclick="window.print()"
                 class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition shadow"
             >
-                🖨 Cetak Invoice
+                🖨 Print Invoice
             </button>
         </div>
 

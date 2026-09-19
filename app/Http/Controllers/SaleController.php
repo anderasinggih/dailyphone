@@ -292,7 +292,6 @@ class SaleController extends Controller
         DB::transaction(function () use ($sale, $request, $user) {
             $sale->update([
                 'status' => 'cancelled',
-                'void_requested' => false,
                 'void_reason' => $request->input('void_reason'),
             ]);
 
@@ -300,11 +299,26 @@ class SaleController extends Controller
             foreach ($sale->items as $item) {
                 if (!$item->stock) continue;
                 if ($item->is_trade_in_item) {
+                    // Delete the trade-in stock that was created during checkout
                     $item->stock->delete();
                 } else {
                     if ($item->stock->category === 'accessories') {
-                        $item->stock->increment('qty', $item->qty);
-                        $item->stock->update(['status' => 'available']);
+                        // The stock record on the item is a *sold replica* — find the original
+                        // parent stock (same name, store, category) that still exists and restore qty
+                        $originalStock = Stock::where('store_id', $item->stock->store_id)
+                            ->where('category', 'accessories')
+                            ->where('name', $item->stock->name)
+                            ->where('id', '!=', $item->stock->id)
+                            ->first();
+
+                        if ($originalStock) {
+                            $originalStock->increment('qty', $item->qty);
+                            if ($originalStock->status === 'sold') {
+                                $originalStock->update(['status' => 'available']);
+                            }
+                        }
+                        // Delete the sold replica record
+                        $item->stock->delete();
                     } else {
                         $item->stock->update(['status' => 'available']);
                     }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'housephone-cache-v2';
+const CACHE_NAME = 'dailyphone-cache-v5';
 const ASSETS_TO_CACHE = [
   '/',
   '/manifest.json',

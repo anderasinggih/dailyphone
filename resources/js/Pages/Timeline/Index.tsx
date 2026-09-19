@@ -1,26 +1,25 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, Link, usePage, router } from '@inertiajs/react';
-import { 
-    ShoppingBag, 
-    PlusCircle, 
-    ArrowLeftRight, 
-    CheckSquare, 
-    LogIn, 
-    LogOut, 
-    ArrowDownCircle, 
-    DollarSign, 
-    AlertTriangle, 
-    XCircle, 
-    RotateCcw, 
-    Wrench,
-    Clock,
-    User,
-    Filter,
-    Edit,
-    Trash2,
-    RefreshCw
-} from 'lucide-react';
 import { useState } from 'react';
+import {
+    ShoppingBag,
+    PackagePlus,
+    Clock,
+    RotateCcw,
+    ShieldAlert,
+    Ban,
+    Trash2,
+    ArrowLeftRight,
+    RefreshCw,
+    Bookmark,
+    BookmarkCheck,
+    Search,
+    Filter,
+    Activity,
+    Sparkles,
+    Terminal,
+    Wallet
+} from 'lucide-react';
 
 interface ActivityLog {
     id: number;
@@ -33,6 +32,7 @@ interface ActivityLog {
     ip_address: string | null;
     user_agent: string | null;
     created_at: string;
+    is_saved?: boolean;
     user?: {
         id: number;
         name: string;
@@ -63,16 +63,27 @@ export default function Timeline({ activities }: TimelineProps) {
     const [search, setSearch] = useState(filters?.search || '');
     const [actionType, setActionType] = useState(filters?.action_type || '');
     const [date, setDate] = useState(filters?.date || '');
+    const [savedOnly, setSavedOnly] = useState(!!filters?.saved_only);
     const [showFilters, setShowFilters] = useState(!!(filters?.action_type || filters?.date));
+    const [savingId, setSavingId] = useState<number | null>(null);
 
-    const applyFilters = (newSearch = search, newAction = actionType, newDate = date) => {
+    const applyFilters = (newSearch = search, newAction = actionType, newDate = date, newSavedOnly = savedOnly) => {
         router.get(route('timeline.index'), {
             search: newSearch,
             action_type: newAction,
-            date: newDate
+            date: newDate,
+            saved_only: newSavedOnly ? 1 : undefined,
         }, {
             preserveState: true,
             replace: true
+        });
+    };
+
+    const toggleSave = (logId: number) => {
+        setSavingId(logId);
+        router.post(route('timeline.toggle-save', logId), {}, {
+            preserveScroll: true,
+            onFinish: () => setSavingId(null)
         });
     };
 
@@ -87,21 +98,21 @@ export default function Timeline({ activities }: TimelineProps) {
     };
 
     const getRelativeTime = (dateStr: string) => {
-        const date = new Date(dateStr);
+        const dateObj = new Date(dateStr);
         const now = new Date();
-        const diffMs = now.getTime() - date.getTime();
+        const diffMs = now.getTime() - dateObj.getTime();
         const diffMins = Math.floor(diffMs / 60000);
         const diffHours = Math.floor(diffMins / 60);
         const diffDays = Math.floor(diffHours / 24);
-        const timeStr = date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+        const timeStr = dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-        if (diffMins < 1) return 'Baru saja';
-        if (diffMins < 60) return `${diffMins} menit lalu`;
-        if (diffHours < 24) return `${diffHours} jam lalu (${timeStr})`;
-        if (diffDays === 1) return `Kemarin, ${timeStr}`;
-        return date.toLocaleDateString('id-ID', { 
-            day: 'numeric', 
-            month: 'short', 
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago (${timeStr})`;
+        if (diffDays === 1) return `Yesterday, ${timeStr}`;
+        return dateObj.toLocaleDateString('en-US', {
+            day: 'numeric',
+            month: 'short',
             year: 'numeric',
             hour: '2-digit',
             minute: '2-digit'
@@ -113,153 +124,263 @@ export default function Timeline({ activities }: TimelineProps) {
         switch (log.action) {
             case 'add_stock':
                 return {
-                    title: 'Tambah Stok',
-                    icon: PlusCircle,
-                    colorClass: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20',
+                    title: 'Stock Added',
+                    icon: PackagePlus,
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
                     desc: (
                         <span>
-                            Menambahkan unit baru <strong className="text-foreground font-semibold">{vals.name || 'Unit'}</strong> ({vals.type || '-'}) dengan harga jual {formatCurrency(vals.sell_price)}.
+                            Added new unit <strong className="text-foreground font-semibold">{vals.name || 'Unit'}</strong> ({vals.type || '-'}) with selling price of {formatCurrency(vals.sell_price)}.
                         </span>
                     )
                 };
             case 'sale_checkout':
                 return {
-                    title: 'Penjualan',
+                    title: 'Sale Completed',
                     icon: ShoppingBag,
-                    colorClass: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20',
+                    accentColor: 'text-emerald-600 bg-emerald-500/10 border-emerald-500/20 dark:text-emerald-400 dark:bg-emerald-500/15',
+                    labelColor: 'text-emerald-600 dark:text-emerald-400',
                     desc: (
                         <span>
-                            Penyelesaian transaksi penjualan <strong className="text-foreground font-semibold">{vals.invoice_number}</strong> senilai <strong className="text-emerald-600 font-bold">{formatCurrency(vals.total_amount)}</strong> kepada buyer <strong className="text-foreground font-semibold">{vals.buyer_name || '-'}</strong>. {vals.items_detail && `(${vals.items_detail})`}
+                            Completed sales transaction <strong className="text-foreground font-semibold">{vals.invoice_number}</strong> totaling <strong className="text-primary font-bold">{formatCurrency(vals.total_amount)}</strong> to buyer <strong className="text-foreground font-semibold">{vals.buyer_name || '-'}</strong>. {vals.items_detail && `(${vals.items_detail})`}
                         </span>
                     )
                 };
             case 'stock_transfer_initiated':
                 return {
-                    title: 'Mutasi Unit',
+                    title: 'Stock Transfer',
                     icon: ArrowLeftRight,
-                    colorClass: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20',
+                    accentColor: 'text-sky-600 bg-sky-500/10 border-sky-500/20 dark:text-sky-400 dark:bg-sky-500/15',
+                    labelColor: 'text-sky-600 dark:text-sky-400',
                     desc: (
                         <span>
-                            Memutasi unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong> {vals.serial_number && `(SN: ${vals.serial_number})`} ke cabang tujuan.
+                            Transferred unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong> {vals.serial_number && `(SN: ${vals.serial_number})`} to destination branch.
                         </span>
                     )
                 };
             case 'shift_clock_in':
                 return {
-                    title: 'Clock In Shift',
-                    icon: LogIn,
-                    colorClass: 'bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-500/20',
+                    title: 'Clock In',
+                    icon: Clock,
+                    accentColor: 'text-indigo-600 bg-indigo-500/10 border-indigo-500/20 dark:text-indigo-400 dark:bg-indigo-500/15',
+                    labelColor: 'text-indigo-600 dark:text-indigo-400',
                     desc: (
                         <span>
-                            Memulai shift kerja di toko <strong className="text-foreground font-semibold">{vals.store_name || '-'}</strong>.
+                            Started work shift at store <strong className="text-foreground font-semibold">{vals.store_name || '-'}</strong>.
                         </span>
                     )
                 };
             case 'shift_clock_out':
                 return {
-                    title: 'Clock Out Shift',
-                    icon: LogOut,
-                    colorClass: 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border border-zinc-500/20',
+                    title: 'Clock Out',
+                    icon: Clock,
+                    accentColor: 'text-muted-foreground bg-muted border-border',
+                    labelColor: 'text-muted-foreground',
                     desc: (
                         <span>
-                            Mengakhiri shift kerja.
+                            Ended work shift.
                         </span>
                     )
                 };
             case 'sale_void':
                 return {
-                    title: 'Void Transaksi',
-                    icon: XCircle,
-                    colorClass: 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20',
+                    title: 'Void Sale',
+                    icon: Ban,
+                    accentColor: 'text-destructive bg-destructive/10 border-destructive/20',
+                    labelColor: 'text-destructive',
                     desc: (
                         <span>
-                            Membatalkan transaksi penjualan invoice <strong className="text-foreground font-semibold">{vals.invoice_number}</strong>. Alasan: "{vals.void_reason || '-'}".
+                            Voided sales transaction invoice <strong className="text-foreground font-semibold">{vals.invoice_number}</strong>. Reason: "{vals.void_reason || '-'}".
                         </span>
                     )
                 };
             case 'sale_deleted_via_stock_restore':
                 return {
-                    title: 'Penjualan Dihapus',
-                    icon: RotateCcw,
-                    colorClass: 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-500/20',
+                    title: 'Sale Deleted',
+                    icon: Trash2,
+                    accentColor: 'text-destructive bg-destructive/10 border-destructive/20',
+                    labelColor: 'text-destructive',
                     desc: (
                         <span>
-                            Transaksi penjualan invoice <strong className="text-foreground font-semibold">{vals.invoice_number}</strong> otomatis dihapus karena status unit dikembalikan ke Ready Stock / Transit.
+                            Sales invoice <strong className="text-foreground font-semibold">{vals.invoice_number}</strong> was automatically deleted because the item was restored to Ready Stock / Transit.
                         </span>
                     )
                 };
             case 'sale_return':
                 return {
-                    title: 'Retur Barang',
+                    title: 'Item Return',
                     icon: RotateCcw,
-                    colorClass: 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-500/20',
+                    accentColor: 'text-purple-600 bg-purple-500/10 border-purple-500/20 dark:text-purple-400 dark:bg-purple-500/15',
+                    labelColor: 'text-purple-600 dark:text-purple-400',
                     desc: (
                         <span>
-                            Mencatat retur unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong> dari invoice <strong className="text-foreground font-semibold">{vals.invoice_number}</strong>. Pengembalian uang buyer: {formatCurrency(vals.refund_amount)} (Potongan retur: {formatCurrency(vals.restocking_fee)}).
+                            Recorded return for unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong> from invoice <strong className="text-foreground font-semibold">{vals.invoice_number}</strong>. Refund amount: {formatCurrency(vals.refund_amount)} (Restocking fee: {formatCurrency(vals.restocking_fee)}).
                         </span>
                     )
                 };
             case 'warranty_claim':
                 return {
-                    title: 'Klaim Garansi',
-                    icon: Wrench,
-                    colorClass: 'bg-pink-500/10 text-pink-600 dark:text-pink-400 border border-pink-500/20',
+                    title: 'Warranty Claim',
+                    icon: ShieldAlert,
+                    accentColor: 'text-amber-600 bg-amber-500/10 border-amber-500/20 dark:text-amber-400 dark:bg-amber-500/15',
+                    labelColor: 'text-amber-600 dark:text-amber-400',
                     desc: (
                         <span>
-                            Mengajukan klaim servis garansi unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong>. Deskripsi Kerusakan: "{vals.damage_description}".
+                            Submitted warranty claim for unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong>. Damage description: "{vals.damage_description}".
                         </span>
                     )
                 };
             case 'warranty_update':
                 return {
-                    title: 'Servis Diperbarui',
-                    icon: Wrench,
-                    colorClass: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20',
+                    title: 'Warranty Updated',
+                    icon: ShieldAlert,
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
                     desc: (
                         <span>
-                            Klaim servis garansi unit <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong> diperbarui ke status <strong className="uppercase font-bold text-indigo-500">{vals.status}</strong> {vals.repair_cost > 0 && `dengan biaya perbaikan ${formatCurrency(vals.repair_cost)}`}.
+                            Warranty claim for <strong className="text-foreground font-semibold">{vals.stock_name || 'Unit'}</strong> updated to status <strong className="font-bold text-primary">{vals.status}</strong> {vals.repair_cost > 0 && `with repair cost ${formatCurrency(vals.repair_cost)}`}.
                         </span>
                     )
                 };
             case 'stock_updated':
                 return {
-                    title: 'Stok Diperbarui',
-                    icon: Edit,
-                    colorClass: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20',
+                    title: 'Stock Updated',
+                    icon: RefreshCw,
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
                     desc: (
                         <span>
-                            Memperbarui detail unit <strong className="text-foreground font-semibold">{vals.name || log.old_values?.name || 'Unit'}</strong> {vals.serial_number ? `(SN: ${vals.serial_number})` : (log.old_values?.serial_number ? `(SN: ${log.old_values.serial_number})` : '')}.
+                            Updated unit details for <strong className="text-foreground font-semibold">{vals.name || log.old_values?.name || 'Unit'}</strong> {vals.serial_number ? `(SN: ${vals.serial_number})` : (log.old_values?.serial_number ? `(SN: ${log.old_values.serial_number})` : '')}.
                         </span>
                     )
                 };
             case 'stock_deleted':
                 return {
-                    title: 'Stok Dihapus',
+                    title: 'Stock Deleted',
                     icon: Trash2,
-                    colorClass: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20',
+                    accentColor: 'text-destructive bg-destructive/10 border-destructive/20',
+                    labelColor: 'text-destructive',
                     desc: (
                         <span>
-                            Menghapus unit <strong className="text-foreground font-semibold">{log.old_values?.name || 'Unit'}</strong> {log.old_values?.serial_number && `(SN: ${log.old_values.serial_number})`}.
+                            Deleted unit <strong className="text-foreground font-semibold">{log.old_values?.name || 'Unit'}</strong> {log.old_values?.serial_number && `(SN: ${log.old_values.serial_number})`}.
                         </span>
                     )
                 };
             case 'stock_restored':
                 return {
-                    title: 'Stok Dikembalikan',
+                    title: 'Stock Restored',
                     icon: RefreshCw,
-                    colorClass: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20',
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
                     desc: (
                         <span>
-                            Mengembalikan unit <strong className="text-foreground font-semibold">{vals.name || 'Unit'}</strong> {vals.serial_number && `(SN: ${vals.serial_number})`} dari Tempat Sampah (Trash).
+                            Restored unit <strong className="text-foreground font-semibold">{vals.name || 'Unit'}</strong> {vals.serial_number && `(SN: ${vals.serial_number})`} from Trash.
+                        </span>
+                    )
+                };
+            case 'ai_sell_stock':
+                return {
+                    title: 'AI: Sale Completed',
+                    icon: ShoppingBag,
+                    accentColor: 'text-emerald-600 bg-emerald-500/10 border-emerald-500/20 dark:text-emerald-400 dark:bg-emerald-500/15',
+                    labelColor: 'text-emerald-600 dark:text-emerald-400',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Recorded sale <strong className="text-foreground font-semibold">{vals.invoice || 'INV'}</strong> for unit <strong className="text-foreground font-semibold">{log.old_values?.name || 'Unit'}</strong> to <strong className="text-foreground font-semibold">{vals.buyer || '-'}</strong> at <strong className="text-primary font-bold">{formatCurrency(vals.price)}</strong>.
+                        </span>
+                    )
+                };
+            case 'ai_update_stock':
+                return {
+                    title: 'AI: Stock Updated',
+                    icon: RefreshCw,
+                    accentColor: 'text-blue-600 bg-blue-500/10 border-blue-500/20 dark:text-blue-400 dark:bg-blue-500/15',
+                    labelColor: 'text-blue-600 dark:text-blue-400',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Updated stock unit <strong className="text-foreground font-semibold">{vals.name || log.old_values?.name || 'Unit'}</strong> {vals.serial_number && `(SN: ${vals.serial_number})`}.
+                        </span>
+                    )
+                };
+            case 'ai_add_stock':
+                return {
+                    title: 'AI: Stock Added',
+                    icon: PackagePlus,
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Added new stock unit <strong className="text-foreground font-semibold">{vals.name || 'Unit'}</strong> {vals.serial_number && `(SN: ${vals.serial_number})`} with sell price <strong className="text-primary font-bold">{formatCurrency(vals.sell_price)}</strong>.
+                        </span>
+                    )
+                };
+            case 'ai_delete_stock':
+                return {
+                    title: 'AI: Stock Deleted',
+                    icon: Trash2,
+                    accentColor: 'text-destructive bg-destructive/10 border-destructive/20',
+                    labelColor: 'text-destructive',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Deleted unit <strong className="text-foreground font-semibold">{log.old_values?.name || 'Unit'}</strong> {log.old_values?.serial_number && `(SN: ${log.old_values.serial_number})`}.
+                        </span>
+                    )
+                };
+            case 'ai_create_money_note':
+                return {
+                    title: 'AI: Money Note',
+                    icon: Wallet,
+                    accentColor: 'text-emerald-600 bg-emerald-500/10 border-emerald-500/20 dark:text-emerald-400 dark:bg-emerald-500/15',
+                    labelColor: 'text-emerald-600 dark:text-emerald-400',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Recorded {vals.type === 'income' ? 'income' : 'expense'} <strong className="text-foreground font-semibold">{formatCurrency(vals.amount)}</strong> under category <strong className="text-foreground font-semibold">{vals.category || 'Operasional'}</strong> ({vals.description || '-'}).
+                        </span>
+                    )
+                };
+            case 'ai_run_python':
+                return {
+                    title: 'AI: Python Executed',
+                    icon: Terminal,
+                    accentColor: 'text-purple-600 bg-purple-500/10 border-purple-500/20 dark:text-purple-400 dark:bg-purple-500/15',
+                    labelColor: 'text-purple-600 dark:text-purple-400',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Executed Python script with exit code <strong className="font-mono text-foreground">{vals.exit_code}</strong>. Snippet: <code className="bg-muted px-1 py-0.5 rounded font-mono text-[10px]">{vals.code_snippet}</code>.
                         </span>
                     )
                 };
             default:
                 return {
-                    title: log.action.replace(/_/g, ' ').toUpperCase(),
-                    icon: Clock,
-                    colorClass: 'bg-gray-500/10 text-gray-600 dark:text-gray-400 border border-gray-500/20',
-                    desc: <span>Melakukan aktivitas {log.action} pada sistem.</span>
+                    title: log.action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                    icon: Activity,
+                    accentColor: 'text-muted-foreground bg-muted border-border',
+                    labelColor: 'text-muted-foreground',
+                    desc: <span>Performed activity {log.action} on the system.</span>
                 };
         }
     };
@@ -268,192 +389,237 @@ export default function Timeline({ activities }: TimelineProps) {
         <AuthenticatedLayout>
             <Head title="Activities" />
 
-            <div className="py-8">
-                <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 space-y-8">
+            <div className="py-2 sm:py-6">
+                <div className="mx-auto max-w-2xl px-0 sm:px-6 lg:px-8 space-y-4 sm:space-y-5">
 
-                    {/* Search & Filter Header Panel */}
-                    <div className="rounded-2xl border border-border bg-card p-5 shadow-sm space-y-4 text-card-foreground">
-                        <div className="flex flex-col sm:flex-row gap-3 items-center">
-                            {/* Search Input */}
-                            <div className="relative flex-1 w-full">
-                                <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                    </svg>
-                                </span>
-                                <input
-                                    type="text"
-                                    placeholder="Cari user, email, ip..."
-                                    value={search}
-                                    onChange={e => setSearch(e.target.value)}
-                                    onKeyDown={e => {
-                                        if (e.key === 'Enter') applyFilters(search, actionType, date);
-                                    }}
-                                    className="pl-9 w-full rounded-xl border border-input bg-background py-2 text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                                />
-                            </div>
-
-                            {/* Expand/Collapse Toggle Button */}
+                    {/* View Switcher: All Activities vs Saved Activities */}
+                    <div className="flex items-center justify-between mx-3 sm:mx-0">
+                        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-muted/60 border border-border/60">
                             <button
-                                onClick={() => setShowFilters(!showFilters)}
-                                className={`w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl border transition ${
-                                    showFilters || actionType || date
-                                        ? 'bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900'
-                                        : 'bg-background hover:bg-muted border-input'
+                                onClick={() => {
+                                    setSavedOnly(false);
+                                    applyFilters(search, actionType, date, false);
+                                }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                    !savedOnly
+                                        ? 'bg-card text-foreground shadow-xs'
+                                        : 'text-muted-foreground hover:text-foreground'
                                 }`}
                             >
-                                <Filter className="h-3.5 w-3.5" />
-                                Filter
+                                All Activities
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setSavedOnly(true);
+                                    applyFilters(search, actionType, date, true);
+                                }}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                    savedOnly
+                                        ? 'bg-primary text-primary-foreground shadow-xs'
+                                        : 'text-muted-foreground hover:text-foreground'
+                                }`}
+                            >
+                                <Bookmark className="h-3.5 w-3.5" />
+                                Saved
                             </button>
                         </div>
 
-                        {/* Expandable filters panel */}
+                        <span className="text-xs font-medium text-muted-foreground">
+                            {activities.data.length} logs
+                        </span>
+                    </div>
+
+                    {/* Filter & Search Bar */}
+                    <div className="mx-3 sm:mx-0 rounded-2xl border border-border/80 bg-card p-4 text-card-foreground shadow-xs">
+                        <div className="flex flex-col sm:flex-row gap-2.5 items-center">
+                            <div className="relative flex-1 w-full">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                                <input
+                                    type="text"
+                                    placeholder="Search activity, user, IP..."
+                                    value={search}
+                                    onChange={e => setSearch(e.target.value)}
+                                    onKeyDown={e => {
+                                         if (e.key === 'Enter') applyFilters(search, actionType, date, savedOnly);
+                                    }}
+                                    className="w-full rounded-xl border border-border/70 bg-background py-2 pl-9 pr-3 text-xs sm:text-sm text-foreground focus:outline-none focus:border-primary"
+                                />
+                            </div>
+
+                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                                <button
+                                    onClick={() => setShowFilters(!showFilters)}
+                                    className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition ${
+                                        showFilters || actionType || date
+                                            ? 'bg-primary/10 text-primary border-primary/20'
+                                            : 'bg-background hover:bg-muted border-border/80 text-foreground'
+                                    }`}
+                                >
+                                    <Filter className="h-3.5 w-3.5" />
+                                    Filter
+                                </button>
+                                <button
+                                    onClick={() => applyFilters(search, actionType, date, savedOnly)}
+                                    className="flex-1 sm:flex-initial rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 transition"
+                                >
+                                    Search
+                                </button>
+                            </div>
+                        </div>
+
                         {showFilters && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-border/50 animate-in fade-in duration-200">
-                                {/* Action Filter */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 mt-3 border-t border-border/50 animate-in fade-in duration-200">
                                 <div>
-                                    <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Aktivitas</label>
+                                    <label className="block text-[10px] font-semibold text-muted-foreground uppercase mb-1">Activity</label>
                                     <select
                                         value={actionType}
                                         onChange={e => {
                                             setActionType(e.target.value);
-                                            applyFilters(search, e.target.value, date);
+                                            applyFilters(search, e.target.value, date, savedOnly);
                                         }}
-                                        className="w-full rounded-xl border border-input bg-background py-2 px-3 text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                        className="w-full rounded-xl border border-border/70 bg-background py-1.5 px-2.5 text-xs text-foreground focus:outline-none focus:border-primary"
                                     >
-                                        <option value="">Semua Aktivitas</option>
-                                        <option value="add_stock">Tambah Stok</option>
-                                        <option value="sale_checkout">Penjualan</option>
-                                        <option value="stock_transfer_initiated">Mutasi Unit</option>
+                                        <option value="">All Activities</option>
+                                        <option value="ai_sell_stock">🤖 AI: Sale Completed</option>
+                                        <option value="ai_add_stock">🤖 AI: Stock Added</option>
+                                        <option value="ai_update_stock">🤖 AI: Stock Updated</option>
+                                        <option value="ai_delete_stock">🤖 AI: Stock Deleted</option>
+                                        <option value="ai_create_money_note">🤖 AI: Money Note</option>
+                                        <option value="ai_run_python">🤖 AI: Python Script</option>
+                                        <option value="add_stock">Stock Added</option>
+                                        <option value="sale_checkout">Sale Completed</option>
+                                        <option value="stock_transfer_initiated">Stock Transfer</option>
                                         <option value="shift_clock_in">Clock In</option>
                                         <option value="shift_clock_out">Clock Out</option>
-                                        <option value="sale_void">Void Transaksi</option>
-                                        <option value="sale_deleted_via_stock_restore">Penjualan Dihapus</option>
-                                        <option value="sale_return">Retur Barang</option>
-                                        <option value="warranty_claim">Klaim Garansi</option>
-                                        <option value="warranty_update">Servis Diperbarui</option>
+                                        <option value="sale_void">Void Sale</option>
+                                        <option value="sale_deleted_via_stock_restore">Sale Deleted</option>
+                                        <option value="sale_return">Item Return</option>
+                                        <option value="warranty_claim">Warranty Claim</option>
+                                        <option value="warranty_update">Warranty Updated</option>
                                     </select>
                                 </div>
 
-                                {/* Date Filter */}
                                 <div>
-                                    <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Tanggal</label>
+                                    <label className="block text-[10px] font-semibold text-muted-foreground uppercase mb-1">Date</label>
                                     <input
                                         type="date"
                                         value={date}
                                         onChange={e => {
                                             setDate(e.target.value);
-                                            applyFilters(search, actionType, e.target.value);
+                                            applyFilters(search, actionType, e.target.value, savedOnly);
                                         }}
-                                        className="w-full rounded-xl border border-input bg-background py-2 px-3 text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                        className="w-full rounded-xl border border-border/70 bg-background py-1.5 px-2.5 text-xs text-foreground focus:outline-none focus:border-primary"
                                     />
                                 </div>
 
-                                {/* Reset & Apply actions */}
-                                <div className="sm:col-span-2 flex justify-between items-center pt-2 mt-2 border-t border-border/20">
-                                    {(search || actionType || date) && (
+                                {(search || actionType || date) && (
+                                    <div className="sm:col-span-2 flex justify-end pt-1">
                                         <button
                                             onClick={() => {
                                                 setSearch('');
                                                 setActionType('');
                                                 setDate('');
-                                                router.get(route('timeline.index'), {}, { replace: true });
+                                                router.get(route('timeline.index'), { saved_only: savedOnly ? 1 : undefined }, { replace: true });
                                             }}
-                                            className="text-xs font-semibold text-rose-500 hover:text-rose-600 transition"
+                                            className="text-xs font-semibold text-destructive hover:underline"
                                         >
                                             Reset Filter
                                         </button>
-                                    )}
-                                    <button
-                                        onClick={() => applyFilters(search, actionType, date)}
-                                        className="ml-auto rounded-xl bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
-                                    >
-                                        Terapkan
-                                    </button>
-                                </div>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
 
-                    {/* Timeline Feed Container */}
-                    <div className="space-y-6">
+                    {/* Timeline Activity Stream */}
+                    <div className="divide-y divide-border/60 sm:space-y-4 sm:divide-y-0">
                         {activities.data.length === 0 ? (
-                            <div className="rounded-2xl border border-border bg-card p-12 text-center text-gray-500 shadow-sm text-card-foreground">
-                                <Clock className="mx-auto h-8 w-8 text-gray-400 mb-2" />
-                                <p className="font-semibold text-sm">Belum ada rekaman aktivitas saat ini.</p>
+                            <div className="p-12 text-center text-muted-foreground bg-card sm:rounded-2xl sm:border sm:border-border/60 mx-3 sm:mx-0">
+                                <p className="font-semibold text-sm">
+                                    {savedOnly ? 'No saved activities yet. Bookmark any activity to review it here.' : 'No recorded activities found.'}
+                                </p>
                             </div>
                         ) : (
                             activities.data.map((log) => {
                                 const details = getActionDetails(log);
-                                const Icon = details.icon;
-                                
-                                // User display initials
-                                const userName = log.user?.name || 'Sistem';
-                                const userEmail = log.user?.email || 'system@housephone.com';
+                                const IconComponent = details.icon;
+                                const userName = log.user?.name || 'System';
+                                const userEmail = log.user?.email || 'system@dailyphone.com';
                                 const initials = userName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 
                                 return (
-                                    <div 
-                                        key={log.id} 
-                                        className="rounded-2xl border border-border bg-card p-5 shadow-sm text-card-foreground hover:shadow-md transition-shadow duration-200"
+                                    <article
+                                        key={log.id}
+                                        className="bg-card w-full py-4 px-4 sm:p-5 sm:rounded-2xl sm:border sm:border-border/60 transition-colors relative"
                                     >
-                                        {/* Card Header: User details */}
-                                        <div className="flex items-center justify-between mb-4 border-b border-border/40 pb-3">
-                                            <div className="flex items-center gap-3">
-                                                {/* Initial Circle Avatar */}
-                                                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400 font-bold text-sm tracking-wider shadow-inner">
-                                                    {initials}
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="flex items-center gap-3 min-w-0">
+                                                {/* Category-colored Icon */}
+                                                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${details.accentColor}`}>
+                                                    <IconComponent className="h-4.5 w-4.5" />
                                                 </div>
-                                                <div>
-                                                    <p className="text-sm font-bold text-foreground leading-tight">{userName}</p>
-                                                    <p className="text-[11px] text-gray-400 font-normal leading-none mt-1">{userEmail}</p>
+
+                                                <div className="min-w-0">
+                                                    <p className="text-xs sm:text-sm font-bold text-foreground truncate leading-tight">{userName}</p>
+                                                    <p className="text-[11px] text-muted-foreground truncate leading-none mt-0.5">{userEmail}</p>
                                                 </div>
                                             </div>
-                                            
-                                            {/* Date / Time */}
-                                            <div className="text-right">
-                                                <p className="text-[11px] font-semibold text-gray-400">{getRelativeTime(log.created_at)}</p>
+
+                                            {/* Action Type & Relative Time & Bookmark Button */}
+                                            <div className="flex items-center gap-2 shrink-0">
+                                                <span className="text-[11px] text-muted-foreground font-medium">{getRelativeTime(log.created_at)}</span>
+
+                                                {/* Instagram style bookmark save button */}
+                                                <button
+                                                    onClick={() => toggleSave(log.id)}
+                                                    disabled={savingId === log.id}
+                                                    title={log.is_saved ? 'Remove bookmark' : 'Save activity'}
+                                                    className={`p-1.5 rounded-lg border transition ${
+                                                        log.is_saved
+                                                            ? 'bg-primary/10 border-primary/30 text-primary'
+                                                            : 'bg-background hover:bg-muted border-border/70 text-muted-foreground hover:text-foreground'
+                                                    }`}
+                                                >
+                                                    {log.is_saved ? (
+                                                        <BookmarkCheck className="h-3.5 w-3.5 fill-current" />
+                                                    ) : (
+                                                        <Bookmark className="h-3.5 w-3.5" />
+                                                    )}
+                                                </button>
                                             </div>
                                         </div>
 
-                                        {/* Card Body: Action Badge and Description */}
-                                        <div className="space-y-3 pl-1">
-                                            <div className="flex items-center gap-2">
-                                                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold tracking-wide uppercase ${details.colorClass}`}>
-                                                    <Icon className="h-3 w-3" />
-                                                    {details.title}
-                                                </span>
-                                            </div>
-                                            <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300">
-                                                {details.desc}
-                                            </p>
+                                        <div className="mt-3 text-xs sm:text-sm leading-relaxed text-foreground/90">
+                                            {details.desc}
                                         </div>
 
-                                        {/* Optional details (metadata/ip) */}
-                                        <div className="mt-3 flex items-center justify-between text-[10px] text-gray-400 dark:text-gray-500 pl-1 pt-2 border-t border-border/20">
-                                            <span>Cabang: {log.user?.role === 'superadmin' ? 'Superadmin Access' : (log.user?.store?.name || 'Gudang Utama')}</span>
-                                            <span>IP: {log.ip_address || '-'}</span>
+                                        <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground border-t border-border/40 pt-2">
+                                            <span className={`font-semibold ${details.labelColor}`}>
+                                                {details.title}
+                                            </span>
+                                            <span className="truncate ml-2 text-[10px]">
+                                                {log.user?.role === 'superadmin' ? 'Superadmin' : (log.user?.store?.name || 'Main')}
+                                            </span>
                                         </div>
-                                    </div>
+                                    </article>
                                 );
                             })
                         )}
                     </div>
 
-                    {/* Pagination Links */}
+                    {/* Pagination */}
                     {activities.last_page > 1 && (
-                        <div className="flex justify-center gap-1.5 pt-4">
+                        <div className="flex flex-wrap items-center justify-center gap-1.5 px-3 py-4 max-w-full overflow-x-auto">
                             {activities.links.map((link, idx) => {
-                                // Clear HTML entity tags
                                 const labelClean = link.label
                                     .replace(/&laquo;/g, '«')
                                     .replace(/&raquo;/g, '»');
-                                    
+
                                 if (!link.url) {
                                     return (
-                                        <span 
+                                        <span
                                             key={idx}
-                                            className="px-3.5 py-1.5 text-xs font-semibold rounded-lg text-gray-400 bg-muted/40 border border-border/50 cursor-not-allowed"
+                                            className="px-2.5 py-1 text-xs font-semibold rounded-lg text-muted-foreground/60 bg-muted/30 border border-border/40 cursor-not-allowed select-none shrink-0"
                                         >
                                             {labelClean}
                                         </span>
@@ -463,10 +629,10 @@ export default function Timeline({ activities }: TimelineProps) {
                                     <Link
                                         key={idx}
                                         href={link.url}
-                                        className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-all duration-200 ${
-                                            link.active 
-                                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                                                : 'bg-card text-gray-600 hover:bg-muted border-border hover:text-foreground dark:text-gray-300'
+                                        className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition shrink-0 ${
+                                            link.active
+                                                ? 'bg-primary text-primary-foreground border-primary shadow-xs'
+                                                : 'bg-card text-muted-foreground hover:bg-muted border-border/80 hover:text-foreground'
                                         }`}
                                     >
                                         {labelClean}

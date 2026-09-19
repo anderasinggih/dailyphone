@@ -1,7 +1,7 @@
 {
-  "name": "Housephone SAAS",
-  "short_name": "Housephone",
-  "description": "Aplikasi Manajemen Inventori & Penjualan Housephone",
+  "name": "Daily Phone",
+  "short_name": "Daily Phone",
+  "description": "Aplikasi Manajemen Inventori & Penjualan Daily Phone",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

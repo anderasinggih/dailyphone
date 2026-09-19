@@ -28,6 +28,11 @@ class ActivityLog extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function savedByUsers()
+    {
+        return $this->belongsToMany(User::class, 'saved_activities', 'activity_log_id', 'user_id')->withTimestamps();
+    }
+
     public static function log(string $action, ?string $modelType = null, ?int $modelId = null, ?array $newValues = null, ?array $oldValues = null): void
     {
         $log = self::create([

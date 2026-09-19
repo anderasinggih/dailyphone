@@ -278,10 +278,10 @@ class DashboardController extends Controller
             ->limit(5)
             ->get();
 
-        $activeStoreName = 'Semua Cabang';
+        $activeStoreName = 'All Branches';
         if ($storeId) {
             $activeStore = Store::find($storeId);
-            $activeStoreName = $activeStore ? $activeStore->name : 'Cabang';
+            $activeStoreName = $activeStore ? $activeStore->name : 'Branch';
         }
 
         $activeAffiliatorsCount = $sales->whereNotNull('affiliate_user_id')->pluck('affiliate_user_id')->unique()->count();
@@ -357,10 +357,10 @@ class DashboardController extends Controller
         ];
 
         if (in_array($user->role, ['superadmin', 'viewer'])) {
-            // Combined/Gabungan
+            // Combined/All Branches
             $todayStats['gabungan'] = array_merge(
                 $calculateMetrics($todaySales, $todayReturns, $todayRepairs, $user->role),
-                ['store_name' => 'Gabungan Semua']
+                ['store_name' => 'All Branches']
             );
 
             // Per Store

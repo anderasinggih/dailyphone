@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Slip Gaji - {{ $payroll->user->name }} ({{ $payroll->month }}/{{ $payroll->year }})</title>
+    <title>Payslip - {{ $payroll->user->name }} ({{ $payroll->month }}/{{ $payroll->year }})</title>
     <style>
         * {
             box-sizing: border-box;
@@ -165,42 +165,42 @@
 
     <div class="ticket">
         <div class="header">
-            <h1>SLIP GAJI KARYAWAN</h1>
-            <p>{{ $payroll->user->store->name ?? config('app.name', 'HOUSEPHONE SAAS') }}</p>
-            <span class="badge">Periode: Bulan {{ $payroll->month }} / {{ $payroll->year }}</span>
+            <h1>PAYSLIP KARYAWAN</h1>
+            <p>{{ $payroll->user->store->name ?? config('app.name', 'DAILY PHONE') }}</p>
+            <span class="badge">Period: Month {{ $payroll->month }} / {{ $payroll->year }}</span>
         </div>
 
         <div class="details">
             <div class="row">
-                <span class="label">Nama Karyawan</span>
+                <span class="label">Employee Name</span>
                 <span class="val">{{ $payroll->user->name }}</span>
             </div>
             <div class="row">
-                <span class="label">Gaji Pokok</span>
+                <span class="label">Basic Salary</span>
                 <span class="val">Rp {{ number_format($payroll->basic_salary, 0, ',', '.') }}</span>
             </div>
             @if($payroll->commission > 0)
             <div class="row bonus">
-                <span class="label">Komisi / Bonus</span>
+                <span class="label">Commission / Bonus</span>
                 <span class="val">+Rp {{ number_format($payroll->commission, 0, ',', '.') }}</span>
             </div>
             @endif
             @if($payroll->allowance > 0)
             <div class="row bonus">
-                <span class="label">Tunjangan</span>
+                <span class="label">Allowance</span>
                 <span class="val">+Rp {{ number_format($payroll->allowance, 0, ',', '.') }}</span>
             </div>
             @endif
             @if($payroll->deductions > 0)
             <div class="row deduct">
-                <span class="label">Potongan / Denda</span>
+                <span class="label">Deduction / Denda</span>
                 <span class="val">-Rp {{ number_format($payroll->deductions, 0, ',', '.') }}</span>
             </div>
             @endif
 
             @if($payroll->notes)
             <div class="notes-box">
-                <strong style="display: block; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">Catatan:</strong>
+                <strong style="display: block; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">Notes:</strong>
                 {{ $payroll->notes }}
             </div>
             @endif
@@ -213,7 +213,7 @@
 
         <div class="action-bar">
             <button onclick="window.history.back()" class="btn btn-back">Kembali</button>
-            <button onclick="window.print()" class="btn btn-print">🖨️ Cetak Slip / Download PDF</button>
+            <button onclick="window.print()" class="btn btn-print">🖨️ Print Slip / Download PDF</button>
         </div>
     </div>
 

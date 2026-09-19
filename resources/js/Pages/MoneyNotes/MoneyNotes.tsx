@@ -1,13 +1,13 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, useForm } from '@inertiajs/react';
 import { useState } from 'react';
-import { 
-    Plus, 
-    Trash2, 
-    ArrowUpRight, 
-    ArrowDownRight, 
-    TrendingUp, 
-    TrendingDown, 
+import {
+    Plus,
+    Trash2,
+    ArrowUpRight,
+    ArrowDownRight,
+    TrendingUp,
+    TrendingDown,
     Wallet,
     Calendar,
     Tag,
@@ -18,6 +18,7 @@ import {
     Search,
     Filter
 } from 'lucide-react';
+import StatCard from '@/Components/StatCard';
 
 interface Category {
     id: number;
@@ -54,7 +55,6 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
 
     const [showTransactionModal, setShowTransactionModal] = useState(false);
 
-    // Transaction Form
     const { data, setData, post, processing, reset, errors } = useForm({
         type: 'in' as 'in' | 'out',
         amount: '',
@@ -63,14 +63,12 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
         date: new Date().toISOString().split('T')[0]
     });
 
-    // Category Form State
     const [showNewCatModal, setShowNewCatModal] = useState(false);
     const catForm = useForm({
         name: '',
         type: 'in' as 'in' | 'out'
     });
 
-    // Filter categories depending on transaction type
     const activeCategories = categories.filter(c => c.type === data.type);
 
     const submitTransaction = (e: React.FormEvent) => {
@@ -79,7 +77,7 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
             onSuccess: () => {
                 reset('amount', 'description');
                 setShowTransactionModal(false);
-                alert('Transaksi berhasil dicatat!');
+                alert('Transaction recorded successfully!');
             }
         });
     };
@@ -90,17 +88,17 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
             onSuccess: () => {
                 setShowNewCatModal(false);
                 catForm.reset();
-                alert('Kategori baru berhasil ditambahkan!');
+                alert('New category added successfully!');
             }
         });
     };
 
     const handleDelete = (id: number) => {
-        if (confirm('Apakah Anda yakin ingin menghapus catatan keuangan ini?')) {
+        if (confirm('Are you sure you want to delete this financial note?')) {
             post(route('money-notes.destroy', id), {
                 _method: 'DELETE',
                 onSuccess: () => {
-                    alert('Catatan berhasil dihapus.');
+                    alert('Note deleted successfully.');
                 }
             } as any);
         }
@@ -115,14 +113,13 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
         }).format(val);
     };
 
-    // Filter history logs
     const filteredLogs = logs.filter(log => {
         const matchesType = filterType === 'all' ? true : log.type === filterType;
         const matchesCategory = filterCategory === 'all' ? true : log.category === filterCategory;
-        const matchesSearch = 
+        const matchesSearch =
             log.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
             (log.description && log.description.toLowerCase().includes(searchQuery.toLowerCase()));
-        
+
         let matchesDate = true;
         if (startDate) {
             matchesDate = matchesDate && log.date >= startDate;
@@ -130,11 +127,10 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
         if (endDate) {
             matchesDate = matchesDate && log.date <= endDate;
         }
-        
+
         return matchesType && matchesCategory && matchesSearch && matchesDate;
     });
 
-    // Calculate dynamic summary based on active filters
     const dynamicSummary = filteredLogs.reduce((acc, log) => {
         const amt = Number(log.amount);
         if (log.type === 'in') {
@@ -149,117 +145,89 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
 
     return (
         <AuthenticatedLayout>
-            <Head title="Money Notes - Keuangan Bisnis" />
+            <Head title="Money Notes - Business Finance" />
 
             <div className="py-8">
                 <div className="mx-auto max-w-none px-4 sm:px-6 lg:px-8 space-y-8">
-                    
-                    {/* Header */}
+
+                    {}
                     <div className="flex items-center justify-between">
                         <div>
-                            <h2 className="text-2xl font-black text-foreground tracking-tight">Money Notes</h2>
-                            <p className="text-xs font-semibold text-muted-foreground mt-1">Pencatatan pemasukan dan pengeluaran kas mandiri terpisah.</p>
+                            <h2 className="text-2xl font-bold text-foreground tracking-tight">Money Notes</h2>
+                            <p className="text-xs font-medium text-muted-foreground mt-1">Independent operational cash and petty expense ledger.</p>
                         </div>
                         <button
                             onClick={() => setShowTransactionModal(true)}
-                            className="rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white hover:bg-indigo-700 shadow-md shadow-indigo-600/10 transition flex items-center gap-2"
+                            className="rounded-2xl bg-primary px-4 py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 active:scale-[0.98] shadow-sm transition flex items-center gap-2"
                         >
-                            <Plus className="h-4 w-4" /> Catat Transaksi
+                            <Plus className="h-4 w-4" /> Record Transaction
                         </button>
                     </div>
 
-                    {/* Summary Cards */}
-                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
-                        {/* Total Income */}
-                        <div className="relative overflow-hidden rounded-2xl border border-emerald-500/10 bg-emerald-500/5 p-6 shadow-sm">
-                            <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Total Pemasukan</span>
-                                <div className="rounded-full bg-emerald-500/10 p-2 text-emerald-600 dark:text-emerald-400">
-                                    <TrendingUp className="h-5 w-5" />
-                                </div>
-                            </div>
-                            <p className="mt-2 text-2xl font-black text-emerald-700 dark:text-emerald-400">
-                                {formatCurrency(dynamicSummary.total_income)}
-                            </p>
-                        </div>
-
-                        {/* Total Expenses */}
-                        <div className="relative overflow-hidden rounded-2xl border border-rose-500/10 bg-rose-500/5 p-6 shadow-sm">
-                            <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400">Total Pengeluaran</span>
-                                <div className="rounded-full bg-rose-500/10 p-2 text-rose-600 dark:text-rose-400">
-                                    <TrendingDown className="h-5 w-5" />
-                                </div>
-                            </div>
-                            <p className="mt-2 text-2xl font-black text-rose-700 dark:text-rose-400">
-                                {formatCurrency(dynamicSummary.total_expense)}
-                            </p>
-                        </div>
-
-                        {/* Net Balance */}
-                        <div className={`relative overflow-hidden rounded-2xl border p-6 shadow-sm ${
-                            dynamicSummary.balance >= 0 
-                                ? 'border-indigo-500/10 bg-indigo-500/5' 
-                                : 'border-amber-500/10 bg-amber-500/5'
-                        }`}>
-                            <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">Saldo Bersih</span>
-                                <div className="rounded-full bg-indigo-500/10 p-2 text-indigo-600 dark:text-indigo-400">
-                                    <Wallet className="h-5 w-5" />
-                                </div>
-                            </div>
-                            <p className={`mt-2 text-2xl font-black ${
-                                dynamicSummary.balance >= 0 ? 'text-indigo-700 dark:text-indigo-400' : 'text-amber-700 dark:text-amber-400'
-                            }`}>
-                                {formatCurrency(dynamicSummary.balance)}
-                            </p>
-                        </div>
+                    {}
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                        <StatCard
+                            title="Total Income"
+                            value={dynamicSummary.total_income}
+                            icon={<TrendingUp className="h-4 w-4" />}
+                        />
+                        <StatCard
+                            title="Total Expenses"
+                            value={dynamicSummary.total_expense}
+                            icon={<TrendingDown className="h-4 w-4" />}
+                        />
+                        <StatCard
+                            title="Cash Balance"
+                            value={dynamicSummary.balance}
+                            icon={<Wallet className="h-4 w-4" />}
+                        />
                     </div>
 
+
                     <div className="space-y-6">
-                        {/* HISTORY SECTION */}
-                        <div className="space-y-6">
-                            
-                            {/* Filter panel */}
-                            <div className="rounded-xl border border-border bg-card p-4 shadow-sm text-card-foreground flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        {}
+                        <div className="space-y-4">
+
+                            {}
+                            <div className="apple-card p-4 text-card-foreground flex flex-col md:flex-row md:items-center justify-between gap-4">
                                 <div className="flex flex-wrap items-center gap-3">
-                                    {/* Type filter */}
+                                    {}
                                     <select
                                         value={filterType}
                                         onChange={e => setFilterType(e.target.value as any)}
-                                        className="rounded-xl border border-input bg-card px-3.5 py-2 text-xs font-bold dark:border-input dark:bg-background"
+                                        className="rounded-xl border border-border/60 bg-card px-3 py-1.5 text-xs font-medium text-foreground focus:outline-none focus:border-primary"
                                     >
-                                        <option value="all">Semua Tipe</option>
-                                        <option value="in">Pemasukan (+)</option>
-                                        <option value="out">Pengeluaran (-)</option>
+                                        <option value="all">All Types</option>
+                                        <option value="in">Income (+)</option>
+                                        <option value="out">Expense (-)</option>
                                     </select>
 
-                                    {/* Category filter */}
+                                    {}
                                     <select
                                         value={filterCategory}
                                         onChange={e => setFilterCategory(e.target.value)}
-                                        className="rounded-xl border border-input bg-card px-3.5 py-2 text-xs font-bold dark:border-input dark:bg-background"
+                                        className="rounded-xl border border-border/60 bg-card px-3 py-1.5 text-xs font-medium text-foreground focus:outline-none focus:border-primary"
                                     >
-                                        <option value="all">Semua Kategori</option>
+                                        <option value="all">All Categories</option>
                                         {Array.from(new Set(categories.map(c => c.name))).map(catName => (
-                                            <option key={catName} value={catName}>{catName}</option>
+                                             <option key={catName} value={catName}>{catName}</option>
                                         ))}
                                     </select>
 
-                                    {/* Date range filters */}
+                                    {}
                                     <div className="flex items-center gap-1.5 text-xs">
                                         <input
                                             type="date"
                                             value={startDate}
                                             onChange={e => setStartDate(e.target.value)}
-                                            className="rounded-xl border border-input bg-card px-2.5 py-2 text-[11px] font-bold dark:border-input dark:bg-background"
+                                            className="rounded-xl border border-border/60 bg-card px-2.5 py-1.5 text-[11px] font-medium text-foreground focus:outline-none focus:border-primary"
                                         />
-                                        <span className="text-gray-400 font-bold">s/d</span>
+                                        <span className="text-muted-foreground font-medium">to</span>
                                         <input
                                             type="date"
                                             value={endDate}
                                             onChange={e => setEndDate(e.target.value)}
-                                            className="rounded-xl border border-input bg-card px-2.5 py-2 text-[11px] font-bold dark:border-input dark:bg-background"
+                                            className="rounded-xl border border-border/60 bg-card px-2.5 py-1.5 text-[11px] font-medium text-foreground focus:outline-none focus:border-primary"
                                         />
                                         {(startDate || endDate) && (
                                             <button
@@ -267,7 +235,7 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
                                                     setStartDate('');
                                                     setEndDate('');
                                                 }}
-                                                className="text-[10px] text-rose-500 hover:text-rose-600 font-black ml-1 uppercase"
+                                                className="text-[10px] text-destructive hover:opacity-80 font-bold ml-1 "
                                             >
                                                 Reset
                                             </button>
@@ -276,61 +244,61 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
                                 </div>
 
                                 <div className="relative">
-                                    <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-gray-400" />
+                                    <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
                                     <input
                                         type="text"
-                                        placeholder="Cari keterangan..."
+                                        placeholder="Search description..."
                                         value={searchQuery}
                                         onChange={e => setSearchQuery(e.target.value)}
-                                        className="rounded-xl border border-input bg-card pl-9 pr-4 py-2 text-xs font-bold dark:border-input dark:bg-background w-full md:w-60"
+                                        className="rounded-xl border border-border/60 bg-card pl-9 pr-4 py-1.5 text-xs font-medium text-foreground focus:outline-none focus:border-primary w-full md:w-60"
                                     />
                                 </div>
                             </div>
 
-                            {/* Logs History Table */}
-                            <div className="rounded-xl border border-border bg-card p-6 shadow-sm text-card-foreground">
-                                <h3 className="text-base font-bold text-foreground mb-4">Riwayat Keuangan</h3>
+                            {}
+                            <div className="apple-card p-5 text-card-foreground">
+                                <h3 className="text-base font-semibold text-foreground mb-4">Financial Ledger History</h3>
                                 <div className="overflow-x-auto">
                                     <table className="w-full min-w-[600px] text-left border-collapse text-sm">
                                         <thead>
-                                            <tr className="border-b border-border dark:border-input text-xs font-bold uppercase tracking-wider text-gray-400">
-                                                <th className="pb-3 font-semibold">Tanggal</th>
-                                                <th className="pb-3 font-semibold">Kategori</th>
-                                                <th className="pb-3 font-semibold">Keterangan</th>
-                                                <th className="pb-3 font-semibold text-right">Nominal</th>
-                                                <th className="pb-3 font-semibold text-right">Aksi</th>
+                                            <tr className="border-b border-border/60 text-xs font-semibold tracking-wider text-muted-foreground">
+                                                <th className="pb-3 font-semibold">Date</th>
+                                                <th className="pb-3 font-semibold">Category</th>
+                                                <th className="pb-3 font-semibold">Description</th>
+                                                <th className="pb-3 font-semibold text-right">Amount</th>
+                                                <th className="pb-3 font-semibold text-right">Action</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800 text-sm font-medium text-gray-700 dark:text-gray-300">
+                                        <tbody className="divide-y divide-border/40 text-sm font-medium text-muted-foreground">
                                             {filteredLogs.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={5} className="py-8 text-center text-gray-400">Belum ada catatan transaksi keuangan.</td>
+                                                    <td colSpan={5} className="py-8 text-center text-muted-foreground">No financial records found.</td>
                                                 </tr>
                                             ) : (
                                                 filteredLogs.map(log => (
-                                                    <tr key={log.id} className="hover:bg-muted/50 dark:hover:bg-gray-900/50">
-                                                        <td className="py-4 font-semibold text-xs whitespace-nowrap">
-                                                            {new Date(log.date).toLocaleDateString('id-ID', { year: 'numeric', month: 'short', day: 'numeric' })}
+                                                    <tr key={log.id} className="hover:bg-muted/40 transition">
+                                                        <td className="py-4 font-semibold text-xs whitespace-nowrap text-foreground">
+                                                            {new Date(log.date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                                                         </td>
                                                         <td className="py-4">
-                                                            <span className="rounded-lg bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 px-2 py-1 text-xs font-bold">
+                                                            <span className="rounded-lg bg-primary/10 text-primary px-2 py-0.5 text-xs font-semibold border border-primary/20">
                                                                 {log.category}
                                                             </span>
                                                         </td>
-                                                        <td className="py-4 text-xs font-semibold text-foreground max-w-xs truncate" title={log.description || '-'}>
+                                                        <td className="py-4 text-xs font-medium text-foreground max-w-xs truncate" title={log.description || '-'}>
                                                             {log.description || '-'}
                                                         </td>
-                                                        <td className={`py-4 text-right font-black ${
-                                                            log.type === 'in' 
-                                                                ? 'text-emerald-600 dark:text-emerald-400' 
-                                                                : 'text-rose-600 dark:text-rose-400'
+                                                        <td className={`py-4 text-right font-bold ${
+                                                            log.type === 'in'
+                                                                ? 'text-emerald-600 dark:text-emerald-400'
+                                                                : 'text-foreground'
                                                         }`}>
                                                             {log.type === 'in' ? '+' : '-'} {formatCurrency(log.amount)}
                                                         </td>
                                                         <td className="py-4 text-right">
                                                             <button
                                                                 onClick={() => handleDelete(log.id)}
-                                                                className="text-rose-600 hover:text-rose-900 p-1 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded transition"
+                                                                className="text-muted-foreground hover:text-destructive p-1 rounded-lg transition"
                                                             >
                                                                 <Trash2 className="h-4 w-4" />
                                                             </button>
@@ -347,56 +315,56 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
                 </div>
             </div>
 
-            {/* Create Transaction Modal */}
+            {}
             {showTransactionModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
-                    <div className="w-full max-w-md rounded-lg bg-card p-6 shadow-sm border dark:border-input dark:bg-background my-8">
-                        <div className="flex justify-between items-center pb-4 border-b border-border dark:border-input mb-4">
-                            <h4 className="text-lg font-bold text-foreground">Catat Transaksi Baru</h4>
-                            <button onClick={() => setShowTransactionModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                    <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-xl border border-border/80 text-card-foreground my-8 animate-in fade-in zoom-in-95 duration-150">
+                        <div className="flex justify-between items-center pb-4 border-b border-border/60 mb-4">
+                            <h4 className="text-lg font-bold text-foreground tracking-tight">Record Transaction</h4>
+                            <button onClick={() => setShowTransactionModal(false)} className="text-muted-foreground hover:text-foreground">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
 
                         <form onSubmit={submitTransaction} className="space-y-4">
-                            {/* Type Toggle */}
+                            {}
                             <div>
-                                <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Tipe Transaksi</label>
+                                <label className="block text-[10px] font-bold text-muted-foreground mb-1">Transaction Type</label>
                                 <div className="grid grid-cols-2 gap-2">
                                     <button
                                         type="button"
                                         onClick={() => {
                                             setData(prev => ({ ...prev, type: 'in', category: '' }));
                                         }}
-                                        className={`rounded-xl py-2.5 text-xs font-bold border transition ${
+                                        className={`rounded-xl py-2.5 text-xs font-semibold border transition ${
                                             data.type === 'in'
-                                                ? 'bg-emerald-600 border-emerald-600 text-white shadow-md shadow-emerald-600/15'
-                                                : 'border-input hover:bg-muted text-foreground'
+                                                ? 'bg-primary border-primary text-primary-foreground shadow-sm'
+                                                : 'border-border/60 hover:bg-muted text-foreground'
                                         }`}
                                     >
-                                        Pemasukan (+)
+                                        Income (+)
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => {
                                             setData(prev => ({ ...prev, type: 'out', category: '' }));
                                         }}
-                                        className={`rounded-xl py-2.5 text-xs font-bold border transition ${
+                                        className={`rounded-xl py-2.5 text-xs font-semibold border transition ${
                                             data.type === 'out'
-                                                ? 'bg-rose-600 border-rose-600 text-white shadow-md shadow-rose-600/15'
-                                                : 'border-input hover:bg-muted text-foreground'
+                                                ? 'bg-destructive border-destructive text-destructive-foreground shadow-sm'
+                                                : 'border-border/60 hover:bg-muted text-foreground'
                                         }`}
                                     >
-                                        Pengeluaran (-)
+                                        Expense (-)
                                     </button>
                                 </div>
                             </div>
 
-                            {/* Amount */}
+                            {}
                             <div>
-                                <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Nominal (IDR)</label>
+                                <label className="block text-[10px] font-bold text-muted-foreground mb-1">Amount (IDR)</label>
                                 <div className="relative">
-                                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-xs font-bold text-gray-400">
+                                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-xs font-bold text-muted-foreground">
                                         Rp
                                     </div>
                                     <input
@@ -406,131 +374,131 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
                                         step="any"
                                         value={data.amount}
                                         onChange={e => setData('amount', e.target.value)}
-                                        className="w-full rounded-xl border border-input bg-card pl-10 pr-4 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                        className="w-full rounded-xl border border-border/60 bg-card pl-10 pr-4 py-2 text-sm font-semibold text-foreground focus:outline-none focus:border-primary"
                                         placeholder="0"
                                     />
                                 </div>
-                                {errors.amount && <p className="text-xs text-rose-500 mt-1">{errors.amount}</p>}
+                                {errors.amount && <p className="text-xs text-destructive mt-1">{errors.amount}</p>}
                             </div>
 
-                            {/* Category */}
+                            {}
                             <div>
                                 <div className="flex justify-between items-center mb-1">
-                                    <label className="block text-[10px] font-bold uppercase text-gray-400">Kategori</label>
+                                    <label className="block text-[10px] font-bold text-muted-foreground">Category</label>
                                     <button
                                         type="button"
                                         onClick={() => {
                                             catForm.setData('type', data.type);
                                             setShowNewCatModal(true);
                                         }}
-                                        className="text-[10px] font-bold text-indigo-500 hover:text-indigo-600 flex items-center gap-1"
+                                        className="text-[10px] font-semibold text-primary hover:opacity-80 flex items-center gap-1"
                                     >
-                                        <FolderPlus className="h-3 w-3" /> Tambah Kategori
+                                        <FolderPlus className="h-3 w-3" /> Add Category
                                     </button>
                                 </div>
                                 <select
                                     required
                                     value={data.category}
                                     onChange={e => setData('category', e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                    className="w-full rounded-xl border border-border/60 bg-card px-3.5 py-2 text-sm font-semibold text-foreground focus:outline-none focus:border-primary"
                                 >
-                                    <option value="">-- Pilih Kategori --</option>
+                                    <option value="">-- Select Category --</option>
                                     {activeCategories.map(cat => (
                                         <option key={cat.id} value={cat.name}>{cat.name}</option>
                                     ))}
                                 </select>
-                                {errors.category && <p className="text-xs text-rose-500 mt-1">{errors.category}</p>}
+                                {errors.category && <p className="text-xs text-destructive mt-1">{errors.category}</p>}
                             </div>
 
-                            {/* Date */}
+                            {}
                             <div>
-                                <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Tanggal</label>
+                                <label className="block text-[10px] font-bold text-muted-foreground mb-1">Date</label>
                                 <input
                                     type="date"
                                     required
                                     value={data.date}
                                     onChange={e => setData('date', e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                    className="w-full rounded-xl border border-border/60 bg-card px-3.5 py-2 text-sm font-semibold text-foreground focus:outline-none focus:border-primary"
                                 />
-                                {errors.date && <p className="text-xs text-rose-500 mt-1">{errors.date}</p>}
+                                {errors.date && <p className="text-xs text-destructive mt-1">{errors.date}</p>}
                             </div>
 
-                            {/* Description */}
+                            {}
                             <div>
-                                <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Keterangan / Rincian</label>
+                                <label className="block text-[10px] font-bold text-muted-foreground mb-1">Description / Details</label>
                                 <textarea
                                     value={data.description}
                                     onChange={e => setData('description', e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:border-input dark:bg-background h-24 resize-none"
-                                    placeholder="Contoh: Pembayaran internet bulanan..."
+                                    className="w-full rounded-xl border border-border/60 bg-card px-3.5 py-2 text-sm font-medium text-foreground focus:outline-none focus:border-primary h-24 resize-none"
+                                    placeholder="e.g. Monthly internet bill..."
                                 />
-                                {errors.description && <p className="text-xs text-rose-500 mt-1">{errors.description}</p>}
+                                {errors.description && <p className="text-xs text-destructive mt-1">{errors.description}</p>}
                             </div>
 
                             <button
                                 type="submit"
                                 disabled={processing}
-                                className="w-full rounded-xl bg-indigo-600 py-3 text-xs font-semibold text-white hover:bg-indigo-700 shadow-md shadow-indigo-600/10 transition"
+                                className="w-full rounded-xl bg-primary py-3 text-xs font-semibold text-primary-foreground hover:opacity-90 shadow-sm transition disabled:opacity-50"
                             >
-                                {processing ? 'Menyimpan...' : 'Simpan Transaksi'}
+                                {processing ? 'Saving...' : 'Save Transaction'}
                             </button>
                         </form>
                     </div>
                 </div>
             )}
 
-            {/* Create Category Modal */}
+            {}
             {showNewCatModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="w-full max-w-md rounded-lg bg-card p-6 shadow-sm border dark:border-input dark:bg-background">
-                        <div className="flex justify-between items-center pb-4 border-b border-border dark:border-input mb-4">
-                            <h4 className="text-lg font-bold text-foreground">Tambah Kategori Baru</h4>
-                            <button onClick={() => setShowNewCatModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                    <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-xl border border-border/80 text-card-foreground animate-in fade-in zoom-in-95 duration-150">
+                        <div className="flex justify-between items-center pb-4 border-b border-border/60 mb-4">
+                            <h4 className="text-lg font-bold text-foreground tracking-tight">Add New Category</h4>
+                            <button onClick={() => setShowNewCatModal(false)} className="text-muted-foreground hover:text-foreground">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
 
                         <form onSubmit={submitCategory} className="space-y-4">
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Tipe Kategori</label>
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Category Type</label>
                                 <select
                                     required
                                     value={catForm.data.type}
                                     onChange={e => catForm.setData('type', e.target.value as any)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2.5 text-sm font-bold dark:border-input dark:bg-background"
+                                    className="w-full rounded-xl border border-border/60 bg-card px-3.5 py-2 text-sm font-semibold text-foreground focus:outline-none focus:border-primary"
                                 >
-                                    <option value="in">Pemasukan (+)</option>
-                                    <option value="out">Pengeluaran (-)</option>
+                                    <option value="in">Income (+)</option>
+                                    <option value="out">Expense (-)</option>
                                 </select>
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Nama Kategori</label>
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Category Name</label>
                                 <input
                                     type="text"
                                     required
                                     value={catForm.data.name}
                                     onChange={e => catForm.setData('name', e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                    placeholder="Contoh: ATK, Listrik, Hiburan..."
+                                    className="w-full rounded-xl border border-border/60 bg-card px-3.5 py-2 text-sm font-semibold text-foreground focus:outline-none focus:border-primary"
+                                    placeholder="e.g. Utilities, Stationery, Transport..."
                                 />
-                                {catForm.errors.name && <p className="text-xs text-rose-500 mt-1">{catForm.errors.name}</p>}
+                                {catForm.errors.name && <p className="text-xs text-destructive mt-1">{catForm.errors.name}</p>}
                             </div>
 
-                            <div className="flex gap-3 pt-4 border-t border-border dark:border-input">
+                            <div className="flex gap-3 pt-4 border-t border-border/60">
                                 <button
                                     type="button"
                                     onClick={() => setShowNewCatModal(false)}
-                                    className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-gray-500 hover:bg-muted dark:border-input dark:hover:bg-gray-950"
+                                    className="flex-1 rounded-xl border border-border/60 py-2.5 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground transition"
                                 >
-                                    Batal
+                                    Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={catForm.processing}
-                                    className="flex-1 rounded-xl bg-indigo-600 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+                                    className="flex-1 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition disabled:opacity-50"
                                 >
-                                    {catForm.processing ? 'Menyimpan...' : 'Simpan Kategori'}
+                                    {catForm.processing ? 'Saving...' : 'Save Category'}
                                 </button>
                             </div>
                         </form>
@@ -540,3 +508,4 @@ export default function MoneyNotes({ logs, categories, summary }: MoneyNotesProp
         </AuthenticatedLayout>
     );
 }
+

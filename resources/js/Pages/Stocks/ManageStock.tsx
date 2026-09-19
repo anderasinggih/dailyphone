@@ -1,14 +1,14 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, useForm, router, usePage } from '@inertiajs/react';
 import { useState, useEffect, useRef, Fragment } from 'react';
-import { 
-    Smartphone, 
-    Layers, 
-    Plus, 
-    List, 
-    Trash, 
-    Check, 
-    Settings, 
+import {
+    Smartphone,
+    Layers,
+    Plus,
+    List,
+    Trash,
+    Check,
+    Settings,
     PlusCircle,
     Info,
     CheckCircle,
@@ -22,6 +22,7 @@ import {
     Search,
     Filter
 } from 'lucide-react';
+import StockDetailPanel from './Partials/StockDetailPanel';
 
 interface ParameterValue {
     id: number;
@@ -55,6 +56,7 @@ interface StockItem {
     sell_price_reseller: number | null;
     qty: number;
     status: 'available' | 'transit' | 'sold';
+    created_by?: string | null;
     created_at?: string;
     deleted_at?: string | null;
     store?: { name: string };
@@ -120,26 +122,25 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
     const uniqueProductNames = Array.from(new Set(stocks.map(s => s.name).filter(Boolean)));
 
     const filteredStocks = stocks.filter(item => {
-        // Filter by trash / active
+
         if (trashFilter === 'trash') {
             if (!item.deleted_at) return false;
         } else {
             if (item.deleted_at) return false;
         }
 
-        // Filter by category
         if (categoryFilter !== 'all' && item.category !== categoryFilter) {
             return false;
         }
 
-        const matchesSearch = 
+        const matchesSearch =
             item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
             (item.serial_number && item.serial_number.toLowerCase().includes(searchQuery.toLowerCase())) ||
             (item.imei_1 && item.imei_1.includes(searchQuery)) ||
             (item.color?.value && item.color.value.toLowerCase().includes(searchQuery.toLowerCase())) ||
             (item.brand?.value && item.brand.value.toLowerCase().includes(searchQuery.toLowerCase())) ||
             (item.store?.name && item.store.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-            (item.sale_items && item.sale_items.some(si => 
+            (item.sale_items && item.sale_items.some(si =>
                 (si.sale?.buyer?.name && si.sale.buyer.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
                 (si.sale?.buyer?.phone && si.sale.buyer.phone.includes(searchQuery)) ||
                 (si.sale?.invoice_number && si.sale.invoice_number.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -150,7 +151,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
     const getSortValue = (item: StockItem, key: string) => {
         const saleItem = item.sale_items && item.sale_items[0];
         const sale = saleItem?.sale;
-        
+
         switch (key) {
             case 'created_at':
                 return item.created_at ? new Date(item.created_at).getTime() : 0;
@@ -159,7 +160,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             case 'sold_date':
                 return (item.status === 'sold' && sale?.created_at) ? new Date(sale.created_at).getTime() : 0;
             case 'store':
-                return item.store?.name || 'Gudang Utama';
+                return item.store?.name || 'Main Warehouse';
             case 'type':
                 return item.type || '';
             case 'color':
@@ -211,7 +212,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
     };
 
     const sortedStocks = [...filteredStocks].sort((a, b) => {
-        // Primary sort: non-sold (available, transit) first (0), sold middle (1), deleted/trash last (2)
+
         const aStatusOrder = a.deleted_at ? 2 : (a.status === 'sold' ? 1 : 0);
         const bStatusOrder = b.deleted_at ? 2 : (b.status === 'sold' ? 1 : 0);
 
@@ -219,26 +220,25 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             return aStatusOrder - bStatusOrder;
         }
 
-        // If sorting sold items and the user has not clicked a custom sort header, sort by sold_date desc
         if (a.status === 'sold' && b.status === 'sold' && sortConfig.key === 'created_at') {
             const aSoldDate = Number(getSortValue(a, 'sold_date'));
             const bSoldDate = Number(getSortValue(b, 'sold_date'));
-            return bSoldDate - aSoldDate; // Newest sold first
+            return bSoldDate - aSoldDate;
         }
 
         const aVal = getSortValue(a, sortConfig.key);
         const bVal = getSortValue(b, sortConfig.key);
 
         if (aVal === bVal) return 0;
-        
+
         if (typeof aVal === 'number' && typeof bVal === 'number') {
             return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
         }
-        
+
         const aStr = String(aVal).toLowerCase();
         const bStr = String(bVal).toLowerCase();
-        
-        return sortConfig.direction === 'asc' 
+
+        return sortConfig.direction === 'asc'
             ? aStr.localeCompare(bStr)
             : bStr.localeCompare(aStr);
     });
@@ -251,10 +251,8 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         setSortConfig({ key, direction });
     };
 
-    // Barcode scan refs
     const imeiSingleRef = useRef<HTMLInputElement>(null);
 
-    // Camera scanner state
     const [isScannerOpen, setIsScannerOpen] = useState(false);
     const [scannerInstance, setScannerInstance] = useState<any>(null);
     const [scannerError, setScannerError] = useState<string | null>(null);
@@ -265,10 +263,10 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             import('html5-qrcode').then(({ Html5Qrcode }) => {
                 const element = document.getElementById("reader");
                 if (!element) return;
-                
+
                 html5Qrcode = new Html5Qrcode("reader");
                 setScannerInstance(html5Qrcode);
-                
+
                 html5Qrcode.start(
                     { facingMode: "environment" },
                     {
@@ -287,7 +285,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                         });
                     },
                     (errorMessage: string) => {
-                        // Verbose scanning error logs can go here
+
                     }
                 ).then(() => {
                     const videoElem = element.querySelector('video');
@@ -298,10 +296,10 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                         videoElem.muted = true;
                     }
                 }).catch((err: any) => {
-                    setScannerError("Gagal mengakses kamera: " + err.message);
+                    setScannerError("Failed to access camera: " + err.message);
                 });
             }).catch((err) => {
-                setScannerError("Gagal memuat modul scanner: " + err.message);
+                setScannerError("Failed to load scanner module: " + err.message);
             });
         }
 
@@ -325,7 +323,6 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         }
     };
 
-    // Single Stock Form — use empty string for price fields to avoid 0 prefill
     const singleForm = useForm({
         store_id: stores[0]?.id || '',
         category: 'iphone' as 'iphone' | 'android' | 'accessories' | 'extra',
@@ -417,35 +414,35 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             onSuccess: () => {
                 setIsEditingStock(false);
                 setSelectedStockDetail(null);
-                alert('Stok unit berhasil diperbarui!');
+                alert('Stock unit updated successfully!');
             }
         });
     };
 
     const handleDeleteStock = (stockId: number) => {
-        if (confirm('Apakah Anda yakin ingin menghapus stok unit ini? Unit akan dimasukkan ke tempat sampah (Soft Delete).')) {
+        if (confirm('Are you sure you want to delete this stock unit? The unit will be moved to Trash.')) {
             router.delete(route('stocks.destroy', stockId), {
                 onSuccess: () => {
                     setSelectedStockDetail(null);
-                    alert('Stok unit berhasil dimasukkan ke tempat sampah!');
+                    alert('Stock unit moved to Trash successfully!');
                 }
             });
         }
     };
 
     const handleRestoreStock = (stockId: number) => {
-        if (confirm('Apakah Anda yakin ingin memulihkan unit stok ini dari tempat sampah?')) {
+        if (confirm('Are you sure you want to restore this stock unit from Trash?')) {
             router.post(route('stocks.restore', stockId), {}, {
                 onSuccess: () => {
                     setSelectedStockDetail(null);
-                    alert('Stok unit berhasil dipulihkan!');
+                    alert('Stock unit restored successfully!');
                 }
             });
         }
     };
 
     const handleQuickRestoreToAvailable = (stock: StockItem) => {
-        if (confirm('Apakah Anda yakin ingin membatalkan status TERJUAL unit ini? Unit akan kembali TERSEDIA (available) dan transaksi penjualan unit ini akan DIHAPUS.')) {
+        if (confirm('Are you sure you want to revert this unit from SOLD to AVAILABLE? The sale transaction will be deleted.')) {
             router.put(route('stocks.update', stock.id), {
                 store_id: stock.store_id || '',
                 category: stock.category || 'iphone',
@@ -467,15 +464,23 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
             }, {
                 onSuccess: () => {
                     setSelectedStockDetail(null);
-                    alert('Status unit berhasil dikembalikan ke Tersedia (Available) & data penjualan telah dihapus.');
+                    alert('Unit status successfully reverted to Available and sale record removed.');
                 }
             });
         }
     };
 
-    // Filter values for specific parameters
     const getParamValues = (name: string) => {
-        const param = parameters.find(p => p.name.toLowerCase() === name.toLowerCase());
+        const n = name.toLowerCase();
+        const param = parameters.find(p => {
+            const pn = p.name.toLowerCase();
+            if (pn === n) return true;
+            if ((n === 'color' || n === 'warna') && (pn === 'color' || pn === 'warna')) return true;
+            if ((n === 'storage capacity' || n === 'kapasitas memori' || n === 'memory') && (pn === 'storage capacity' || pn === 'kapasitas memori' || pn === 'memory')) return true;
+            if ((n === 'license type' || n === 'tipe lisensi' || n === 'license') && (pn === 'license type' || pn === 'tipe lisensi' || pn === 'license')) return true;
+            if ((n === 'brand' || n === 'merek') && (pn === 'brand' || pn === 'merek')) return true;
+            return false;
+        });
         return param ? param.values : [];
     };
 
@@ -493,12 +498,11 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                     warranty_duration_days: '', buy_price: '', sell_price: '', sell_price_reseller: '', qty: 1
                 } as any);
                 setIsAddingNewStock(false);
-                alert('Stok unit berhasil ditambahkan!');
+                alert('Stock unit added successfully!');
             }
         });
     };
 
-    // Convert local phone to WA format
     const toWANumber = (phone: string): string => {
         if (!phone) return '';
         const clean = phone.replace(/[^\d]/g, '');
@@ -509,7 +513,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
     const openWAChat = (phone: string, name: string) => {
         const waNum = toWANumber(phone);
         if (!waNum) return;
-        const msg = encodeURIComponent(`Halo ${name}! Terima kasih sudah berbelanja di toko kami. 😊`);
+        const msg = encodeURIComponent(`Hello ${name}! Thank you for shopping with us. 😊`);
         window.open(`https://wa.me/${waNum}?text=${msg}`, '_blank');
     };
 
@@ -517,23 +521,23 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         const waNum = toWANumber(phone);
         if (!waNum) return;
         const invoiceUrl = `${window.location.origin}/invoice/${invoiceNumber}`;
-        const totalLine = total ? `*Total Bayar :* ${formatCurrency(total)}\n` : '';
+        const totalLine = total ? `*Total Payment :* ${formatCurrency(total)}\n` : '';
         const lines = [
             `Halo ${name},`,
             ``,
-            `Terima kasih sudah berbelanja di *Housephone*!`,
-            `Berikut detail transaksi Anda:`,
+            `Thank you for shopping at *Daily Phone*!`,
+            `Here are your transaction details:`,
             ``,
-            `*No. Invoice :* ${invoiceNumber}`,
+            `*Invoice No. :* ${invoiceNumber}`,
             totalLine.trim(),
             ``,
-            `Silakan cek struk pembelian lengkap Anda di tautan berikut:`,
+            `Please view your complete receipt at the following link:`,
             invoiceUrl,
             ``,
-            `Simpan struk ini sebagai bukti garansi resmi produk Anda.`,
+            `Keep this receipt as your official product warranty proof.`,
             ``,
-            `Salam,`,
-            `*Tim Housephone*`,
+            `Best regards,`,
+            `*Daily Phone Team*`,
         ].filter(l => l !== undefined);
         const msg = encodeURIComponent(lines.join('\n'));
         window.open(`https://wa.me/${waNum}?text=${msg}`, '_blank');
@@ -554,13 +558,13 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                 <div className="flex items-stretch gap-2 justify-end w-full">
                         {!isAddingNewStock && !isEditingStock && (
                             <div className="relative flex-1">
-                                <Search className="absolute left-3.5 top-2.5 h-4 w-4 text-gray-400" />
+                                <Search className="absolute left-3.5 top-2.5 h-4 w-4 text-muted-foreground" />
                                 <input
                                     type="text"
-                                    placeholder="Cari unit, SN, IMEI, buyer, no HP..."
+                                    placeholder="Search unit, SN, IMEI, customer, phone..."
                                     value={searchQuery}
                                     onChange={e => setSearchQuery(e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card pl-10 pr-4 py-2 text-sm font-bold text-foreground shadow-sm focus:border-indigo-500 focus:outline-none dark:bg-background"
+                                    className="w-full rounded-xl border border-input bg-card pl-10 pr-4 py-2 text-sm font-medium text-foreground shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                                 />
                             </div>
                         )}
@@ -570,8 +574,8 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                 onClick={() => setShowFilters(!showFilters)}
                                 className={`flex items-center justify-center px-3 rounded-xl border transition shrink-0 ${
                                     showFilters
-                                        ? 'bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900'
-                                        : 'bg-card dark:bg-background hover:bg-muted border-input text-foreground'
+                                        ? 'bg-primary/10 text-primary border-primary/20'
+                                        : 'bg-card hover:bg-muted border-input text-foreground'
                                 }`}
                             >
                                 <Filter className="h-4 w-4" />
@@ -580,8 +584,8 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                         {!isAddingNewStock && !isEditingStock ? (
                             <button
                                 onClick={() => setIsAddingNewStock(true)}
-                                className="flex items-center justify-center rounded-xl bg-indigo-600 px-3 py-2 text-white hover:bg-indigo-700 transition shadow-md whitespace-nowrap shrink-0"
-                                title="Tambah Stok"
+                                className="flex items-center justify-center rounded-xl bg-primary px-3 py-2 text-primary-foreground hover:opacity-90 transition shadow-sm whitespace-nowrap shrink-0"
+                                title="Add Stock"
                             >
                                 <Plus className="h-5 w-5" />
                             </button>
@@ -591,64 +595,64 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                     setIsAddingNewStock(false);
                                     setIsEditingStock(false);
                                 }}
-                                className="flex items-center justify-center rounded-xl border border-input bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted transition shadow-sm whitespace-nowrap shrink-0 dark:bg-background"
+                                className="flex items-center justify-center rounded-xl border border-input bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted transition shadow-sm whitespace-nowrap shrink-0"
                             >
-                                Kembali
+                                Back
                             </button>
                         )}
                 </div>
             }
         >
-            <Head title="Sale Data" />
+            <Head title="Inventory" />
 
             <div className="pb-8 pt-2">
                 <div className="mx-auto max-w-none px-4 sm:px-6 lg:px-8 space-y-8">
 
-                    {/* TAB 1: LIST STOCKS */}
+                    {}
                     {!isAddingNewStock && !isEditingStock ? (
                         <>
                             {showFilters && (
                                 <div className="flex flex-wrap items-center gap-3 p-4 bg-card rounded-2xl border border-border shadow-sm mb-6 transition-all duration-300 w-full">
                                     <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full">
                                         <div className="flex-1 min-w-[200px]">
-                                            <label className="block text-[10px] font-extrabold uppercase text-gray-400 mb-1">Kategori</label>
+                                            <label className="block text-[10px] font-bold text-muted-foreground mb-1">Category</label>
                                             <select
                                                 value={categoryFilter}
                                                 onChange={e => setCategoryFilter(e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-bold text-foreground shadow-sm focus:border-indigo-500 focus:outline-none"
+                                                className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-semibold text-foreground shadow-sm focus:border-primary focus:outline-none"
                                             >
-                                                <option value="all">Semua Kategori</option>
+                                                <option value="all">All Categories</option>
                                                 <option value="iphone">iPhone</option>
                                                 <option value="android">Android</option>
-                                                <option value="accessories">Aksesoris (Bulk)</option>
-                                                <option value="extra">Add-On / Jasa</option>
+                                                <option value="accessories">Accessories</option>
+                                                <option value="extra">Add-On / Services</option>
                                             </select>
                                         </div>
                                         {isSuperAdmin && (
                                             <div className="flex-1 min-w-[200px]">
-                                                <label className="block text-[10px] font-extrabold uppercase text-gray-400 mb-1">Status Unit</label>
+                                                <label className="block text-[10px] font-bold text-muted-foreground mb-1">Unit Status</label>
                                                 <select
                                                     value={trashFilter}
                                                     onChange={(e) => setTrashFilter(e.target.value as any)}
-                                                    className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-bold text-foreground shadow-sm focus:border-indigo-500 focus:outline-none"
+                                                    className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-semibold text-foreground shadow-sm focus:border-primary focus:outline-none"
                                                 >
-                                                    <option value="active">Unit Aktif</option>
-                                                    <option value="trash">Tempat Sampah (Trash)</option>
+                                                    <option value="active">Active Units</option>
+                                                    <option value="trash">Trash / Deleted</option>
                                                 </select>
                                             </div>
                                         )}
                                         {isSuperAdmin && (
                                             <div className="flex-1 min-w-[200px]">
-                                                <label className="block text-[10px] font-extrabold uppercase text-gray-400 mb-1">Cabang</label>
+                                                <label className="block text-[10px] font-bold text-muted-foreground mb-1">Branch</label>
                                                 <select
                                                     value={storeFilterId}
                                                     onChange={(e) => {
                                                         setStoreFilterId(e.target.value);
                                                         router.get(route('sale-data.index'), { store_id: e.target.value }, { preserveState: true });
                                                     }}
-                                                    className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-bold text-foreground shadow-sm focus:border-indigo-500 focus:outline-none"
+                                                    className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-semibold text-foreground shadow-sm focus:border-primary focus:outline-none"
                                                 >
-                                                    <option value="">Semua Cabang</option>
+                                                    <option value="">All Branches</option>
                                                     {stores.map(s => (
                                                         <option key={s.id} value={s.id}>{s.name}</option>
                                                     ))}
@@ -659,20 +663,20 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                 </div>
                             )}
                             <div className="w-full flex flex-col lg:flex-row gap-6 items-stretch lg:items-start">
-                                               {/* Table Column */}
-                            <div className={`rounded-none sm:rounded-lg border-x-0 sm:border border-y sm:border-y-0 border-border bg-transparent sm:bg-card shadow-none sm:shadow-sm text-card-foreground -mx-4 sm:mx-0 w-[calc(100%+2rem)] sm:w-full transition-all duration-300 ${
+                                {}
+                            <div className={`rounded-none sm:rounded-2xl border-x-0 sm:border border-y sm:border-y-0 border-border/60 bg-transparent sm:bg-card shadow-none sm:shadow-sm text-card-foreground -mx-4 sm:mx-0 w-[calc(100%+2rem)] sm:w-full transition-all duration-300 ${
                                 selectedStockDetail ? 'hidden lg:block lg:w-2/3' : ''
                             }`}>
                                 <div className="p-0 sm:p-6">
                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-4 sm:px-0 pt-4 sm:pt-0 mb-4">
-                                    <h3 className="text-lg font-black text-foreground">All Sale Data</h3>
+                                    <h3 className="text-lg font-bold text-foreground tracking-tight">All Sale Data</h3>
                                 </div>
-                                
+
                                 <div className="overflow-x-auto -webkit-overflow-scrolling-touch">
                                     <div style={{ minWidth: 'max-content', width: '100%' }}>
                                     <table className="w-full min-w-[1050px] text-left border-collapse">
                                         <thead>
-                                            <tr className="border-b border-border dark:border-input text-[11px] font-bold uppercase tracking-wider text-gray-400 select-none">
+                                            <tr className="border-b border-border dark:border-input text-[11px] font-bold tracking-wider text-muted-foreground select-none">
                                                 <th onClick={() => requestSort('created_at')} className="pb-3 font-semibold px-3 whitespace-nowrap text-left cursor-pointer hover:text-foreground">
                                                     Stock Date {sortConfig.key === 'created_at' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                                                 </th>
@@ -735,6 +739,9 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 <th onClick={() => requestSort('buyer')} className="pb-3 font-semibold px-3 whitespace-nowrap text-left cursor-pointer hover:text-foreground">
                                                     Buyer {sortConfig.key === 'buyer' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                                                 </th>
+                                                <th onClick={() => requestSort('created_by')} className="pb-3 font-semibold px-3 whitespace-nowrap text-left cursor-pointer hover:text-foreground">
+                                                    Added By {sortConfig.key === 'created_by' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                                                </th>
                                                 <th onClick={() => requestSort('status')} className="pb-3 font-semibold text-right px-3 whitespace-nowrap cursor-pointer hover:text-foreground">
                                                     Status {sortConfig.key === 'status' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                                                 </th>
@@ -743,10 +750,10 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                         <tbody className="divide-y divide-gray-100 dark:divide-gray-800 text-xs font-semibold text-gray-700 dark:text-gray-300">
                                             {sortedStocks.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={isSuperAdmin ? 19 : 15} className="py-8 text-center text-gray-400">Belum ada data unit dalam sistem.</td>
+                                                    <td colSpan={isSuperAdmin ? 20 : 16} className="py-8 text-center text-muted-foreground">No units found in system.</td>
                                                 </tr>
                                             ) : (() => {
-                                                // Sort: available/transit first, sold second, trash last
+
                                                 const displayItems = [...sortedStocks].sort((a, b) => {
                                                     const order = { 'available': 1, 'transit': 2, 'sold': 3 };
                                                     const aOrder = a.deleted_at ? 4 : (order[a.status as keyof typeof order] || 4);
@@ -759,27 +766,27 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                     const absoluteIdx = (currentPage - 1) * itemsPerPage + idx;
                                                     const prevItem = absoluteIdx > 0 ? displayItems[absoluteIdx - 1] : null;
                                                     const isFirstItem = absoluteIdx === 0;
-                                                    // Show available header: first item AND it's available/transit (not sold, not trash)
+
                                                     const showAvailableHeader = isFirstItem && !item.deleted_at && item.status !== 'sold';
-                                                    // Show sold divider: when transitioning from non-sold to sold, OR if first item is already sold
+
                                                     const showSoldDivider = !item.deleted_at && item.status === 'sold' && (
                                                         isFirstItem || (prevItem && prevItem.status !== 'sold' && !prevItem.deleted_at)
                                                     );
-                                                    // Show trash divider: when transitioning from non-trash to trash, OR if first item is trash
+
                                                     const showTrashDivider = !!item.deleted_at && (
                                                         isFirstItem || (prevItem && !prevItem.deleted_at)
                                                     );
 
                                                     const saleItem = item.sale_items && item.sale_items[0];
                                                     const sale = saleItem?.sale;
-                                                    const stockDate = item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '-';
-                                                    const soldDate = (item.status === 'sold' && sale?.created_at) ? new Date(sale.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '-';
-                                                    const stockFor = item.store?.name || 'Gudang Utama';
+                                                    const stockDate = item.created_at ? new Date(item.created_at).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+                                                    const soldDate = (item.status === 'sold' && sale?.created_at) ? new Date(sale.created_at).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+                                                    const stockFor = item.store?.name || 'Main Warehouse';
                                                     const typeText = item.type;
                                                     const colorText = item.color?.value || '-';
                                                     const memoryText = item.memory?.value || '-';
                                                     const licenseText = item.license?.value || '-';
- 
+
                                                     const buyPrice = item.buy_price ? parseFloat(item.buy_price as any) : 0;
                                                     const sellPrice = item.sell_price ? parseFloat(item.sell_price as any) : 0;
                                                     const actualSellPrice = (item.status === 'sold' && saleItem?.actual_sell_price) ? parseFloat(saleItem.actual_sell_price as any) : 0;
@@ -796,25 +803,25 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                         }, 0)
                                                         : 0;
                                                     const actualProfit = actualSellPrice > 0 ? (actualSellPrice - buyPrice - actualAffiliateFee + extrasProfit) : 0;
- 
+
                                                     const soldIn = (item.status === 'sold' && sale?.invoice_number) ? sale.invoice_number : '-';
                                                     const affiliatorName = (item.status === 'sold' && sale?.affiliate_user?.name) ? sale.affiliate_user.name : '-';
                                                     const buyerName = (item.status === 'sold' && sale?.buyer?.name) ? sale.buyer.name : '-';
- 
+
                                                     const isSelected = selectedStockDetail?.id === item.id;
- 
+
                                                     return (
                                                         <Fragment key={item.id}>
                                                             {showAvailableHeader && (
                                                                 <tr className="select-none">
                                                                     <td colSpan={isSuperAdmin ? 19 : 15} className="py-0">
-                                                                        <div className="flex items-center gap-3 px-3 py-2 bg-emerald-500/10 border-y border-emerald-200 dark:border-emerald-900/50">
-                                                                            <div className="w-1 h-5 rounded-full bg-emerald-500 flex-shrink-0" />
-                                                                            <span className="text-[11px] font-black tracking-wider uppercase text-emerald-700 dark:text-emerald-400">
-                                                                                ✓ Unit Tersedia (Available)
+                                                                        <div className="flex items-center gap-3 px-3 py-2 bg-primary/10 border-y border-primary/20">
+                                                                            <div className="w-1 h-5 rounded-full bg-primary flex-shrink-0" />
+                                                                            <span className="text-[11px] font-bold tracking-wider text-primary">
+                                                                                Available Units
                                                                             </span>
-                                                                            <div className="ml-auto text-[10px] font-bold text-emerald-500/60">
-                                                                                {displayItems.filter(i => !i.deleted_at && i.status !== 'sold').length} unit
+                                                                            <div className="ml-auto text-[10px] font-bold text-primary/70">
+                                                                                {displayItems.filter(i => !i.deleted_at && i.status !== 'sold').length} units
                                                                             </div>
                                                                         </div>
                                                                     </td>
@@ -823,13 +830,13 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                             {showSoldDivider && (
                                                                 <tr className="select-none">
                                                                     <td colSpan={isSuperAdmin ? 19 : 15} className="py-0">
-                                                                        <div className="flex items-center gap-3 px-3 py-2 bg-rose-500/10 border-y border-rose-200 dark:border-rose-900/50">
-                                                                            <div className="w-1 h-5 rounded-full bg-rose-500 flex-shrink-0" />
-                                                                            <span className="text-[11px] font-black tracking-wider uppercase text-rose-700 dark:text-rose-400">
-                                                                                ✗ Unit Sudah Terjual (Sold)
+                                                                        <div className="flex items-center gap-3 px-3 py-2 bg-muted/60 border-y border-border">
+                                                                            <div className="w-1 h-5 rounded-full bg-muted-foreground flex-shrink-0" />
+                                                                            <span className="text-[11px] font-bold tracking-wider text-muted-foreground">
+                                                                                Sold Units
                                                                             </span>
-                                                                            <div className="ml-auto text-[10px] font-bold text-rose-500/60">
-                                                                                {displayItems.filter(i => !i.deleted_at && i.status === 'sold').length} unit
+                                                                            <div className="ml-auto text-[10px] font-bold text-muted-foreground/70">
+                                                                                {displayItems.filter(i => !i.deleted_at && i.status === 'sold').length} units
                                                                             </div>
                                                                         </div>
                                                                     </td>
@@ -838,29 +845,29 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                             {showTrashDivider && (
                                                                 <tr className="select-none">
                                                                     <td colSpan={isSuperAdmin ? 19 : 15} className="py-0">
-                                                                        <div className="flex items-center gap-3 px-3 py-2 bg-gray-500/10 border-y border-gray-200 dark:border-gray-800">
-                                                                            <div className="w-1 h-5 rounded-full bg-gray-400 flex-shrink-0" />
-                                                                            <span className="text-[11px] font-black tracking-wider uppercase text-gray-600 dark:text-gray-400">
-                                                                                ⊘ Unit di Tempat Sampah (Trash)
+                                                                        <div className="flex items-center gap-3 px-3 py-2 bg-destructive/10 border-y border-destructive/20">
+                                                                            <div className="w-1 h-5 rounded-full bg-destructive flex-shrink-0" />
+                                                                            <span className="text-[11px] font-bold tracking-wider text-destructive">
+                                                                                Trash / Deleted Units
                                                                             </span>
-                                                                            <div className="ml-auto text-[10px] font-bold text-gray-400/60">
-                                                                                {displayItems.filter(i => !!i.deleted_at).length} unit
+                                                                            <div className="ml-auto text-[10px] font-bold text-destructive/70">
+                                                                                {displayItems.filter(i => !!i.deleted_at).length} units
                                                                             </div>
                                                                         </div>
                                                                     </td>
                                                                 </tr>
                                                             )}
-                                                            <tr 
+                                                            <tr
                                                                 onClick={() => setSelectedStockDetail(item)}
                                                                 className={`cursor-pointer hover:bg-muted/50 dark:hover:bg-gray-900/50 transition-colors ${
-                                                                    isSelected ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
+                                                                    isSelected ? 'bg-primary/10' : ''
                                                                 }`}
                                                             >
                                                                 <td className="py-4 px-3 font-medium whitespace-nowrap text-left">{stockDate}</td>
                                                                 <td className="py-4 px-3 font-bold text-xs whitespace-nowrap text-left">{item.name}</td>
                                                                 <td className="py-4 px-3 font-medium whitespace-nowrap text-left">{soldDate}</td>
                                                                 <td className="py-4 px-3 font-bold text-xs whitespace-nowrap text-left">{stockFor}</td>
-                                                                <td className="py-4 px-3 uppercase text-[10px] font-bold text-indigo-500 whitespace-nowrap text-left">{typeText}</td>
+                                                                <td className="py-4 px-3 text-[10px] font-bold text-primary whitespace-nowrap text-left">{typeText}</td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{colorText}</td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{memoryText}</td>
                                                                 <td className="py-2.5 px-3 font-mono text-[11px] whitespace-nowrap max-w-[120px] text-left">
@@ -871,7 +878,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                 </td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{licenseText}</td>
                                                                 {isSuperAdmin && (
-                                                                    <td className="py-4 px-3 font-bold text-indigo-600 dark:text-indigo-400 whitespace-nowrap text-left">
+                                                                    <td className="py-4 px-3 font-bold text-primary whitespace-nowrap text-left">
                                                                         {formatCurrency(buyPrice)}
                                                                     </td>
                                                                 )}
@@ -879,32 +886,45 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                     {formatCurrency(sellPrice)}
                                                                 </td>
                                                                 {isSuperAdmin && (
-                                                                    <td className="py-4 px-3 font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap text-left">
+                                                                    <td className="py-4 px-3 font-bold text-foreground whitespace-nowrap text-left">
                                                                         {actualSellPrice > 0 ? formatCurrency(actualSellPrice) : '-'}
                                                                     </td>
                                                                 )}
                                                                 {isSuperAdmin && (
-                                                                    <td className="py-4 px-3 font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap text-left">
+                                                                    <td className="py-4 px-3 font-medium text-muted-foreground whitespace-nowrap text-left">
                                                                         {actualAffiliateFee > 0 ? formatCurrency(actualAffiliateFee) : '-'}
                                                                     </td>
                                                                 )}
                                                                 {isSuperAdmin && (
-                                                                    <td className={`py-4 px-3 font-bold whitespace-nowrap text-left ${actualProfit >= 0 ? 'text-teal-600 dark:text-teal-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                                                                    <td className={`py-4 px-3 font-bold whitespace-nowrap text-left ${actualProfit >= 0 ? 'text-primary' : 'text-destructive'}`}>
                                                                         {actualSellPrice > 0 ? formatCurrency(actualProfit) : '-'}
                                                                     </td>
                                                                 )}
                                                                 <td className="py-4 px-3 font-mono text-[10px] whitespace-nowrap text-left">{soldIn}</td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{affiliatorName}</td>
                                                                 <td className="py-4 px-3 whitespace-nowrap text-left">{buyerName}</td>
+                                                                <td className="py-4 px-3 whitespace-nowrap text-left">
+                                                                    {item.created_by ? (
+                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium ${
+                                                                            item.created_by.includes('(AI)')
+                                                                                ? 'bg-primary/10 text-primary border border-primary/20 font-semibold'
+                                                                                : 'bg-muted text-muted-foreground'
+                                                                        }`}>
+                                                                            {item.created_by}
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span className="text-muted-foreground text-[10px]">-</span>
+                                                                    )}
+                                                                </td>
                                                                 <td className="py-4 text-right px-3 whitespace-nowrap">
-                                                                    <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                                                    <span className={`inline-flex rounded-md px-2 py-0.5 text-[10px] font-bold ${
                                                                         item.deleted_at
-                                                                            ? 'bg-gray-500/10 text-gray-600 dark:text-gray-400 border border-gray-500/20'
-                                                                            : item.status === 'available' 
-                                                                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' 
-                                                                                : item.status === 'transit' 
-                                                                                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
-                                                                                    : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                                                                            ? 'bg-muted text-muted-foreground border border-border'
+                                                                            : item.status === 'available'
+                                                                                ? 'bg-primary/10 text-primary border border-primary/20'
+                                                                                : item.status === 'transit'
+                                                                                    ? 'bg-muted text-foreground border border-border'
+                                                                                    : 'bg-muted text-muted-foreground border border-border'
                                                                     }`}>
                                                                         {item.deleted_at ? 'TRASH' : item.status}
                                                                     </span>
@@ -918,12 +938,12 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                     </table>
                                     </div>
                                 </div>
-                                
-                                {/* Pagination Controls */}
+
+                                {}
                                 {Math.ceil(sortedStocks.length / 50) > 1 && (
                                     <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 mt-4 border-t border-border dark:border-input px-4 sm:px-0 pb-4 sm:pb-0">
-                                        <div className="text-xs text-gray-500 font-medium">
-                                            Menampilkan <span className="font-bold text-foreground">{Math.min(sortedStocks.length, (currentPage - 1) * 50 + 1)}</span> - <span className="font-bold text-foreground">{Math.min(sortedStocks.length, currentPage * 50)}</span> dari <span className="font-bold text-foreground">{sortedStocks.length}</span> unit
+                                        <div className="text-xs text-muted-foreground font-medium">
+                                            Showing <span className="font-bold text-foreground">{Math.min(sortedStocks.length, (currentPage - 1) * 50 + 1)}</span> - <span className="font-bold text-foreground">{Math.min(sortedStocks.length, currentPage * 50)}</span> of <span className="font-bold text-foreground">{sortedStocks.length}</span> units
                                         </div>
                                         <div className="flex items-center gap-1.5">
                                             <button
@@ -931,7 +951,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 disabled={currentPage === 1}
                                                 className="px-3.5 py-2 rounded-xl border border-input bg-card text-xs font-bold text-foreground hover:bg-muted disabled:opacity-40 transition shadow-sm dark:bg-background"
                                             >
-                                                Sebelumnya
+                                                Previous
                                             </button>
                                             {(() => {
                                                 const totalPages = Math.ceil(sortedStocks.length / 50);
@@ -949,7 +969,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                             onClick={() => setCurrentPage(i)}
                                                             className={`w-9 h-9 rounded-xl text-xs font-bold transition flex items-center justify-center ${
                                                                 currentPage === i
-                                                                    ? 'bg-indigo-600 text-white shadow-md'
+                                                                    ? 'bg-primary text-primary-foreground shadow-sm'
                                                                     : 'border border-input bg-card text-foreground hover:bg-muted shadow-sm dark:bg-background'
                                                             }`}
                                                         >
@@ -964,322 +984,66 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 disabled={currentPage === Math.ceil(sortedStocks.length / 50)}
                                                 className="px-3.5 py-2 rounded-xl border border-input bg-card text-xs font-bold text-foreground hover:bg-muted disabled:opacity-40 transition shadow-sm dark:bg-background"
                                             >
-                                                Berikutnya
+                                                Next
                                             </button>
                                         </div>
                                     </div>
                                 )}
                                 </div>
                             </div>
- 
-                            {/* Detail Panel */}
+                            {}
                             {selectedStockDetail && (
-                                <div className="w-full lg:w-1/3 rounded-lg border border-border bg-card p-6 shadow-sm text-card-foreground space-y-6 self-start lg:sticky lg:top-4 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto transition-all duration-300">
-                                    
-                                    {/* Breadcrumb & Close Button */}
-                                    <div className="flex items-center justify-between border-b border-border dark:border-input pb-3">
-                                        <nav className="flex items-center text-[10px] font-bold uppercase tracking-wider text-gray-400 overflow-hidden" aria-label="Breadcrumb">
-                                            <span className="hover:text-foreground cursor-pointer whitespace-nowrap" onClick={() => setSelectedStockDetail(null)}>Inventori</span>
-                                            <span className="mx-1.5 flex-shrink-0">/</span>
-                                            <span className="hover:text-foreground cursor-pointer whitespace-nowrap" onClick={() => setSelectedStockDetail(null)}>Detail</span>
-                                            <span className="mx-1.5 flex-shrink-0">/</span>
-                                            <span className="text-indigo-600 dark:text-indigo-400 truncate max-w-[120px]" title={selectedStockDetail.name}>{selectedStockDetail.name}</span>
-                                        </nav>
-                                        <button 
-                                            onClick={() => setSelectedStockDetail(null)}
-                                            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1.5 hover:bg-muted rounded-lg text-lg transition-colors font-bold"
-                                        >
-                                            ✕
-                                        </button>
-                                    </div>
-
-                                    {/* Content */}
-                                    <div>
-                                        <h4 className="text-sm font-bold text-foreground">{selectedStockDetail.name}</h4>
-                                        <div className="flex gap-2 mt-2">
-                                            <span className="inline-flex rounded px-2 py-0.5 text-[10px] font-bold uppercase bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                                                {selectedStockDetail.type}
-                                            </span>
-                                            {selectedStockDetail.deleted_at ? (
-                                                <span className="inline-flex rounded px-2 py-0.5 text-[10px] font-bold uppercase bg-gray-500/10 text-gray-600 dark:text-gray-400 border border-gray-500/20">
-                                                    TRASH / TERHAPUS
-                                                </span>
-                                            ) : (
-                                                <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold uppercase ${
-                                                    selectedStockDetail.status === 'available' 
-                                                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' 
-                                                        : selectedStockDetail.status === 'transit' 
-                                                            ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
-                                                            : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
-                                                }`}>
-                                                    {selectedStockDetail.status}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-4 text-xs font-semibold text-gray-600 dark:text-gray-300">
-                                        <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                            <span className="text-gray-400 uppercase text-[10px]">Cabang</span>
-                                            <span className="text-right font-bold text-foreground">{selectedStockDetail.store?.name || 'Gudang Utama'}</span>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                            <span className="text-gray-400 uppercase text-[10px]">Kategori</span>
-                                            <span className="text-right capitalize text-foreground">{selectedStockDetail.category === 'extra' ? 'Add-On / Jasa' : selectedStockDetail.category}</span>
-                                        </div>
-                                        {selectedStockDetail.category !== 'extra' && (
-                                            <>
-                                                <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                    <span className="text-gray-400 uppercase text-[10px]">Spesifikasi</span>
-                                                    <span className="text-right text-foreground">
-                                                        {selectedStockDetail.memory?.value || '-'} / {selectedStockDetail.color?.value || '-'}
-                                                    </span>
-                                                </div>
-                                                <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                    <span className="text-gray-400 uppercase text-[10px]">Lisensi</span>
-                                                    <span className="text-right text-foreground">{selectedStockDetail.license?.value || '-'}</span>
-                                                </div>
-                                                <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                    <span className="text-gray-400 uppercase text-[10px]">Serial Number</span>
-                                                    <span className="text-right font-mono text-foreground">{selectedStockDetail.serial_number || '-'}</span>
-                                                </div>
-                                                {selectedStockDetail.imei_1 && (
-                                                    <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                        <span className="text-gray-400 uppercase text-[10px]">IMEI</span>
-                                                        <span className="text-right font-mono text-foreground">{selectedStockDetail.imei_1}</span>
-                                                    </div>
-                                                )}
-                                            </>
-                                        )}
-                                        
-                                        {canSeeFinancials && (
-                                            <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                <span className="text-indigo-600 dark:text-indigo-400 uppercase text-[10px]">Harga Beli (HPP)</span>
-                                                <span className="text-right font-bold text-indigo-600 dark:text-indigo-400">
-                                                    {formatCurrency(selectedStockDetail.buy_price)}
-                                                </span>
-                                            </div>
-                                        )}
-                                        
-                                        <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                            <span className="text-gray-400 uppercase text-[10px]">Harga Jual Standar</span>
-                                            <span className="text-right font-bold text-foreground">
-                                                {formatCurrency(selectedStockDetail.sell_price)}
-                                            </span>
-                                        </div>
-
-                                        {canSeeFinancials && selectedStockDetail.status !== 'sold' && (
-                                            <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                <span className="text-gray-400 uppercase text-[10px]">Ekspetasi Profit</span>
-                                                <span className="text-right font-bold text-emerald-600 dark:text-emerald-400">
-                                                    {formatCurrency((selectedStockDetail.sell_price - selectedStockDetail.buy_price) * selectedStockDetail.qty)}
-                                                </span>
-                                            </div>
-                                        )}
-
-                                        {isSuperAdmin && selectedStockDetail.supplier && (
-                                            <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                                <span className="text-indigo-600 dark:text-indigo-400 uppercase text-[10px]">Supplier</span>
-                                                <span className="text-right text-foreground">{selectedStockDetail.supplier}</span>
-                                            </div>
-                                        )}
-
-                                        <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                            <span className="text-gray-400 uppercase text-[10px]">Masa Garansi Toko</span>
-                                            <span className="text-right text-foreground">{selectedStockDetail.warranty_duration_days} Hari</span>
-                                        </div>
-                                    </div>
-                                    {/* Sale Info (If Sold) with WA buttons */}
-                                    {selectedStockDetail.status === 'sold' && selectedStockDetail.sale_items?.[0] && (
-                                        <div className="p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 space-y-3">
-                                            <h5 className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Rincian Transaksi Penjualan</h5>
-                                            
-                                            {(() => {
-                                                const sItem = selectedStockDetail.sale_items[0];
-                                                const sale = sItem.sale;
-                                                const actPrice = sItem.actual_sell_price ? parseFloat(sItem.actual_sell_price as any) : 0;
-                                                const affFee = sale?.affiliate_fee ? parseFloat(sale.affiliate_fee as any) : 0;
-                                                const buyPr = selectedStockDetail.buy_price ? parseFloat(selectedStockDetail.buy_price as any) : 0;
-                                                const extrasProfit = sale?.extras
-                                                    ? sale.extras.reduce((acc, curr) => {
-                                                        const sell = parseFloat(curr.sell_price as any) || 0;
-                                                        const buy = parseFloat(curr.buy_price as any) || 0;
-                                                        if (curr.charge_to === 'buyer') {
-                                                            return acc + (sell - buy);
-                                                        } else {
-                                                            return acc - buy;
-                                                        }
-                                                    }, 0)
-                                                    : 0;
-                                                const netProf = actPrice > 0 ? (actPrice - buyPr - affFee + extrasProfit) : 0;
-                                                const buyerPhone = (sale?.buyer as any)?.phone || '';
-                                                const buyerName = sale?.buyer?.name || '';
-                                                const invoiceNumber = sale?.invoice_number || '';
-
-                                                return (
-                                                    <div className="space-y-2 text-xs text-gray-600 dark:text-gray-300 font-semibold">
-                                                        <div className="flex justify-between">
-                                                            <span className="text-gray-400">No. Invoice</span>
-                                                            <span className="font-mono font-bold text-foreground">{invoiceNumber || '-'}</span>
-                                                        </div>
-                                                        <div className="flex justify-between">
-                                                            <span className="text-gray-400">Tanggal Terjual</span>
-                                                            <span className="text-foreground">
-                                                                {sale?.created_at ? new Date(sale.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '-'}
-                                                            </span>
-                                                        </div>
-                                                        <div className="flex justify-between">
-                                                            <span className="text-gray-400">Nama Pembeli</span>
-                                                            <span className="text-foreground font-bold">{buyerName || '-'}</span>
-                                                        </div>
-                                                        {isSuperAdmin && (
-                                                            <>
-                                                                <div className="flex justify-between">
-                                                                    <span className="text-emerald-600">Harga Jual Real</span>
-                                                                    <span className="text-emerald-600 font-bold">{formatCurrency(actPrice)}</span>
-                                                                </div>
-                                                                {sale?.extras && sale.extras.length > 0 && (
-                                                                    <div className="border-y border-emerald-500/10 py-1.5 my-1 space-y-1">
-                                                                        <span className="text-[10px] text-gray-400 block uppercase font-bold tracking-wider">Layanan Add-On</span>
-                                                                        {sale.extras.map((ex, exIdx) => (
-                                                                            <div key={exIdx} className="flex justify-between pl-2 text-[11px]">
-                                                                                <span className="text-gray-500">• {ex.extra?.name || 'Jasa Lainnya'} <span className="text-[9px] uppercase font-bold text-indigo-500">({ex.charge_to.replace('_', ' ')})</span></span>
-                                                                                <span className="text-foreground font-semibold">{formatCurrency(Number(ex.sell_price))}</span>
-                                                                            </div>
-                                                                        ))}
-                                                                    </div>
-                                                                )}
-                                                                <div className="flex justify-between">
-                                                                    <span className="text-amber-600">Komisi Afiliasi</span>
-                                                                    <span className="text-amber-600 font-bold">{formatCurrency(affFee)}</span>
-                                                                </div>
-                                                                <div className="flex justify-between border-t border-emerald-500/20 pt-1.5 mt-1.5">
-                                                                    <span className="text-teal-600 font-bold">Keuntungan Bersih</span>
-                                                                    <span className="text-teal-600 font-bold">{formatCurrency(netProf)}</span>
-                                                                </div>
-                                                            </>
-                                                        )}
-                                                        {sale?.affiliate_user?.name && (
-                                                            <div className="flex justify-between">
-                                                                <span className="text-gray-400">Sales Affiliate</span>
-                                                                <span className="text-foreground">{sale.affiliate_user.name}</span>
-                                                            </div>
-                                                        )}
-
-                                                        {/* WA Buttons */}
-                                                        {buyerPhone && (
-                                                            <div className="flex gap-2 pt-2 border-t border-emerald-500/20">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => openWAChat(buyerPhone, buyerName)}
-                                                                    className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-emerald-500 py-2 text-[10px] font-bold text-white hover:bg-emerald-600 transition"
-                                                                >
-                                                                    <MessageCircle className="h-3 w-3" /> Chat WA
-                                                                </button>
-                                                                {invoiceNumber && (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => openWAInvoice(buyerPhone, buyerName, invoiceNumber, actPrice || undefined)}
-                                                                        className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-indigo-600 py-2 text-[10px] font-bold text-white hover:bg-indigo-700 transition"
-                                                                    >
-                                                                        <Send className="h-3 w-3" /> Kirim Invoice
-                                                                    </button>
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                        {invoiceNumber && (
-                                                            <a
-                                                                href={`/invoice/${invoiceNumber}`}
-                                                                target="_blank"
-                                                                rel="noopener noreferrer"
-                                                                className="flex items-center justify-center gap-1 w-full rounded-lg border border-emerald-500/20 py-2 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 transition"
-                                                            >
-                                                                <ExternalLink className="h-3 w-3" /> Lihat Invoice Online
-                                                            </a>
-                                                        )}
-                                                    </div>
-                                                );
-                                            })()}
-                                        </div>
-                                    )}
-                                    {isSuperAdmin && (
-                                        <div className="space-y-2 pt-4 border-t border-border dark:border-input">
-                                            {selectedStockDetail.status === 'sold' && !selectedStockDetail.deleted_at && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleQuickRestoreToAvailable(selectedStockDetail)}
-                                                    className="w-full rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 transition flex items-center justify-center gap-1.5"
-                                                >
-                                                    <RotateCcw className="h-4 w-4" /> Kembalikan ke Ready Stock
-                                                </button>
-                                            )}
-                                            <div className="flex gap-3">
-                                                {selectedStockDetail.deleted_at ? (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleRestoreStock(selectedStockDetail.id)}
-                                                        className="flex-1 rounded-xl bg-emerald-600 py-2.5 text-xs font-semibold text-white hover:bg-emerald-700 transition"
-                                                    >
-                                                        Restore Unit
-                                                    </button>
-                                                ) : (
-                                                    <>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => openEditModal(selectedStockDetail)}
-                                                            className="flex-1 rounded-xl bg-indigo-600 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
-                                                        >
-                                                            Edit Unit
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleDeleteStock(selectedStockDetail.id)}
-                                                            className="flex-1 rounded-xl bg-rose-600 py-2.5 text-xs font-semibold text-white hover:bg-rose-700 transition"
-                                                        >
-                                                            Hapus Unit
-                                                        </button>
-                                                    </>
-                                                )}
-                                            </div>
-                                        </div>
-                                    )}
-                                 </div>
-                             )}
-                         </div>
+                                <div className="w-full lg:w-1/3 self-start lg:sticky lg:top-4 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto transition-all duration-300">
+                                    <StockDetailPanel
+                                        stock={selectedStockDetail}
+                                        isSuperAdmin={isSuperAdmin}
+                                        canSeeFinancials={canSeeFinancials}
+                                        onClose={() => setSelectedStockDetail(null)}
+                                        onEdit={openEditModal}
+                                        onDelete={handleDeleteStock}
+                                        onRestore={handleRestoreStock}
+                                        onRestoreToAvailable={handleQuickRestoreToAvailable}
+                                        onChatWA={openWAChat}
+                                        onSendWAInvoice={openWAInvoice}
+                                    />
+                                </div>
+                            )}
+                            </div>
                         </>
+
                     ) : isAddingNewStock ? (
-                        <div className="rounded-none sm:rounded-lg border-x-0 sm:border border-y-0 sm:border-y bg-transparent sm:bg-card p-0 sm:p-6 shadow-none sm:shadow-sm text-card-foreground">
-                            <h3 className="text-lg font-semibold text-foreground mb-6">Tambah Stok Unit Baru</h3>
-                            
+                        <div className="rounded-none sm:rounded-2xl border-x-0 sm:border border-y-0 sm:border-y bg-transparent sm:bg-card p-0 sm:p-6 shadow-none sm:shadow-sm text-card-foreground">
+                            <h3 className="text-lg font-bold text-foreground mb-6">Add New Stock Unit</h3>
+
                             <form onSubmit={submitSingle} className="space-y-6">
                                 {Object.keys(singleForm.errors).length > 0 && (
-                                    <div className="rounded-xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900 p-4 text-xs font-bold text-rose-600 dark:text-rose-400 space-y-1.5">
-                                        <p className="text-sm font-extrabold">Gagal menyimpan! Periksa kolom berikut:</p>
+                                    <div className="rounded-xl bg-destructive/10 border border-destructive/20 p-4 text-xs font-bold text-destructive space-y-1.5">
+                                        <p className="text-sm font-bold">Failed to save! Please check the following fields:</p>
                                         {Object.entries(singleForm.errors).map(([key, err]) => (
                                             <div key={key}>• {key}: {err}</div>
                                         ))}
                                     </div>
                                 )}
-                                {/* Section 1: Lokasi & Kategori */}
-                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">1. Lokasi & Kategori Unit</h4>
+                                {}
+                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                    <h4 className="text-xs font-bold tracking-wider text-primary">1. Unit Location & Category</h4>
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Pilih Cabang Toko</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Select Store Branch</label>
                                             <select
                                                 required
                                                 value={singleForm.data.store_id}
                                                 onChange={e => singleForm.setData('store_id', e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             >
                                                 {singleForm.data.category === 'extra' && (
-                                                    <option value="all">Semua Cabang</option>
+                                                    <option value="all">All Branches</option>
                                                 )}
                                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Kategori Barang</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Item Category</label>
                                             <select
                                                 value={singleForm.data.category}
                                                 onChange={e => {
@@ -1290,83 +1054,83 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                         store_id: cat === 'extra' ? 'all' : ((data.store_id === 'all') ? (stores[0]?.id || '') : data.store_id)
                                                     }));
                                                 }}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             >
                                                 <option value="iphone">iPhone</option>
                                                 <option value="android">Android</option>
-                                                <option value="accessories">Aksesoris (Bulk)</option>
-                                                <option value="extra">Jasa / Add-on (Layanan)</option>
+                                                <option value="accessories">Accessories (Bulk)</option>
+                                                <option value="extra">Services / Add-on</option>
                                             </select>
                                         </div>
                                         {singleForm.data.category !== 'extra' && (
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Kondisi Barang</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Item Condition</label>
                                                 <select
                                                     value={singleForm.data.type}
                                                     onChange={e => singleForm.setData('type', e.target.value as any)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 >
-                                                    <option value="new">Baru (New)</option>
-                                                    <option value="second">Bekas (Second)</option>
+                                                    <option value="new">New</option>
+                                                    <option value="second">Pre-owned (Second)</option>
                                                 </select>
                                             </div>
                                         )}
                                     </div>
                                 </div>
 
-                                {/* Section 2: Spesifikasi & Identitas */}
-                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">2. Detail Spesifikasi & Identitas Barang</h4>
+                                {}
+                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                    <h4 className="text-xs font-bold tracking-wider text-primary">2. Specifications & Identity</h4>
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                         <div className="sm:col-span-2">
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Nama Produk / Jasa</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Product / Service Name</label>
                                             <input
                                                 type="text"
                                                 required
                                                 list="product-names-list"
                                                 value={singleForm.data.name}
                                                 onChange={e => singleForm.setData('name', e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                                placeholder="Contoh: iPhone 15 Pro Max / Jasa IMEI"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                                                placeholder="e.g. iPhone 15 Pro Max / IMEI Service"
                                             />
                                         </div>
 
                                         {singleForm.data.category !== 'accessories' && singleForm.data.category !== 'extra' && (
                                             <>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Warna</label>
-                                                    <select value={singleForm.data.color_id} onChange={e => singleForm.setData('color_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
-                                                        <option value="">-- Pilih Warna --</option>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Color</label>
+                                                    <select value={singleForm.data.color_id} onChange={e => singleForm.setData('color_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
+                                                        <option value="">-- Select Color --</option>
                                                         {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Kapasitas Memori</label>
-                                                    <select value={singleForm.data.memory_id} onChange={e => singleForm.setData('memory_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
-                                                        <option value="">-- Pilih Memori --</option>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Memory Capacity</label>
+                                                    <select value={singleForm.data.memory_id} onChange={e => singleForm.setData('memory_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
+                                                        <option value="">-- Select Memory --</option>
                                                         {getParamValues('kapasitas memori').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Tipe Lisensi / Sinyal</label>
-                                                    <select value={singleForm.data.license_id} onChange={e => singleForm.setData('license_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
-                                                        <option value="">-- Pilih Lisensi --</option>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">License / Network Type</label>
+                                                    <select value={singleForm.data.license_id} onChange={e => singleForm.setData('license_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
+                                                        <option value="">-- Select License --</option>
                                                         {getParamValues('tipe lisensi').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Serial Number (SN)</label>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Serial Number (SN)</label>
                                                     <input
                                                         type="text"
                                                         value={singleForm.data.serial_number}
                                                         onChange={e => singleForm.setData('serial_number', e.target.value.toUpperCase())}
-                                                        className={`w-full rounded-xl border px-3.5 py-2 text-sm font-bold uppercase dark:bg-background ${singleForm.errors.serial_number ? 'border-rose-400' : 'border-input dark:border-input'}`}
-                                                        placeholder="Serial Number HP"
+                                                        className={`w-full rounded-xl border px-3.5 py-2 text-sm font-semibold dark:bg-background ${singleForm.errors.serial_number ? 'border-destructive' : 'border-input'}`}
+                                                        placeholder="Serial Number"
                                                     />
-                                                    {singleForm.errors.serial_number && <p className="mt-1 text-xs text-rose-500">{singleForm.errors.serial_number}</p>}
+                                                    {singleForm.errors.serial_number && <p className="mt-1 text-xs text-destructive">{singleForm.errors.serial_number}</p>}
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">IMEI</label>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">IMEI</label>
                                                     <div className="flex gap-2">
                                                         <input
                                                             type="text"
@@ -1379,165 +1143,165 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                     e.preventDefault();
                                                                 }
                                                             }}
-                                                            className={`flex-1 rounded-xl border px-3.5 py-2 text-sm font-bold dark:bg-background ${singleForm.errors.imei_1 ? 'border-rose-400' : 'border-input dark:border-input'}`}
-                                                            placeholder="Scan atau ketik IMEI"
+                                                            className={`flex-1 rounded-xl border px-3.5 py-2 text-sm font-semibold dark:bg-background ${singleForm.errors.imei_1 ? 'border-destructive' : 'border-input'}`}
+                                                            placeholder="Scan or type IMEI"
                                                         />
                                                         <button
                                                             type="button"
                                                             onClick={() => setIsScannerOpen(true)}
-                                                            title="Scan IMEI dengan kamera"
-                                                            className="rounded-xl border border-input bg-muted px-3 py-2 text-gray-500 hover:bg-accent transition"
+                                                            title="Scan IMEI with Camera"
+                                                            className="rounded-xl border border-input bg-muted px-3 py-2 text-muted-foreground hover:bg-accent transition"
                                                         >
                                                             <QrCode className="h-4 w-4" />
                                                         </button>
                                                     </div>
-                                                    {singleForm.errors.imei_1 && <p className="mt-1 text-xs text-rose-500">{singleForm.errors.imei_1}</p>}
-                                                    <p className="text-[10px] text-gray-400 mt-0.5">Klik ikon QR untuk scan pakai kamera, atau fokus ke kolom untuk scan dengan scanner fisik.</p>
+                                                    {singleForm.errors.imei_1 && <p className="mt-1 text-xs text-destructive">{singleForm.errors.imei_1}</p>}
+                                                    <p className="text-[10px] text-muted-foreground mt-0.5">Click QR icon for camera scan, or focus input for physical barcode reader.</p>
                                                 </div>
                                             </>
                                         )}
- 
-                                        {/* Accessories Color selection */}
+
+                                        {}
                                         {singleForm.data.category === 'accessories' && (
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Warna (Opsional)</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Color (Optional)</label>
                                                 <select
                                                     value={singleForm.data.color_id}
                                                     onChange={e => singleForm.setData('color_id', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 >
-                                                    <option value="">-- Pilih Warna --</option>
+                                                    <option value="">-- Select Color --</option>
                                                     {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                 </select>
                                             </div>
                                         )}
                                     </div>
                                 </div>
- 
-                                {/* Section 3: Harga & Finansial */}
-                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">3. Finansial, Garansi & Distribusi</h4>
+
+                                {}
+                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                    <h4 className="text-xs font-bold tracking-wider text-primary">3. Financial, Warranty & Distribution</h4>
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
                                         <div className="lg:col-span-2">
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Supplier / Pengirim</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Supplier / Sender</label>
                                             <input
                                                 type="text"
                                                 value={singleForm.data.supplier}
                                                 onChange={e => singleForm.setData('supplier', e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                                placeholder="Contoh: PT Distributor Gadget"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                                                placeholder="e.g. PT Distributor Gadget"
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Masa Garansi Toko (Hari)</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Store Warranty (Days)</label>
                                             <input
                                                 type="text"
                                                 required
                                                 inputMode="numeric"
                                                 value={singleForm.data.warranty_duration_days}
                                                 onChange={e => singleForm.setData('warranty_duration_days', parseInt(e.target.value) || 0)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             />
                                         </div>
                                         {(singleForm.data.category === 'accessories' || singleForm.data.category === 'extra') && (
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Quantity (Stok)</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Quantity (Stock)</label>
                                                 <input
                                                     type="text"
                                                     required
                                                     inputMode="numeric"
                                                     value={singleForm.data.qty}
                                                     onChange={e => singleForm.setData('qty', parseInt(e.target.value) || 1)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 />
                                             </div>
                                         )}
                                         {singleForm.data.category === 'extra' && (
                                             <div className="sm:col-span-2 lg:col-span-2">
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">
-                                                    Tanggung Biaya Default
-                                                    <span className="ml-1 normal-case font-normal text-gray-400">(otomatis dipilih saat checkout)</span>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">
+                                                    Default Fee Scheme
+                                                    <span className="ml-1 normal-case font-normal text-muted-foreground">(auto selected during checkout)</span>
                                                 </label>
                                                 <select
                                                     value={singleForm.data.default_charge_to}
                                                     onChange={e => singleForm.setData('default_charge_to', e.target.value as any)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 >
-                                                    <option value="buyer">Buyer (Pembeli Bayar)</option>
-                                                    <option value="seller">Toko Tanggung (HPP)</option>
-                                                    <option value="free_promotion">Promosi Free (Gratis)</option>
+                                                    <option value="buyer">Buyer Pays</option>
+                                                    <option value="seller">Store Cost (COGS)</option>
+                                                    <option value="free_promotion">Free Promotion</option>
                                                 </select>
-                                                <p className="text-[10px] text-gray-400 mt-1">Pilihan ini akan muncul otomatis terisi saat add-on ini dipilih di form checkout — tidak perlu pilih ulang.</p>
+                                                <p className="text-[10px] text-muted-foreground mt-1">This scheme will automatically populate when this service is chosen at checkout.</p>
                                             </div>
                                         )}
                                     </div>
 
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 pt-2">
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Harga Modal Beli (HPP)</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Buy Price (COGS)</label>
                                             <input
                                                 type="text"
                                                 required
                                                 inputMode="decimal"
                                                 value={singleForm.data.buy_price ?? ''}
                                                 onChange={e => singleForm.setData('buy_price', e.target.value === '' ? '' : parseFloat(e.target.value))}
-                                                placeholder="Masukkan harga beli"
-                                                className={`w-full rounded-xl border px-3.5 py-2 text-sm font-bold dark:bg-background ${singleForm.errors.buy_price ? 'border-rose-400' : 'border-input dark:border-input'}`}
+                                                placeholder="Enter buy price"
+                                                className={`w-full rounded-xl border px-3.5 py-2 text-sm font-semibold dark:bg-background ${singleForm.errors.buy_price ? 'border-destructive' : 'border-input'}`}
                                             />
-                                            {singleForm.errors.buy_price && <p className="mt-1 text-xs text-rose-500">{singleForm.errors.buy_price}</p>}
+                                            {singleForm.errors.buy_price && <p className="mt-1 text-xs text-destructive">{singleForm.errors.buy_price}</p>}
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Harga Jual Retail</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Retail Sell Price</label>
                                             <input
                                                 type="text"
                                                 required
                                                 inputMode="decimal"
                                                 value={singleForm.data.sell_price ?? ''}
                                                 onChange={e => singleForm.setData('sell_price', e.target.value === '' ? '' : parseFloat(e.target.value))}
-                                                placeholder="Masukkan harga jual"
-                                                className={`w-full rounded-xl border px-3.5 py-2 text-sm font-bold dark:bg-background ${singleForm.errors.sell_price ? 'border-rose-400' : 'border-input dark:border-input'}`}
+                                                placeholder="Enter sell price"
+                                                className={`w-full rounded-xl border px-3.5 py-2 text-sm font-semibold dark:bg-background ${singleForm.errors.sell_price ? 'border-destructive' : 'border-input'}`}
                                             />
-                                            {singleForm.errors.sell_price && <p className="mt-1 text-xs text-rose-500">{singleForm.errors.sell_price}</p>}
+                                            {singleForm.errors.sell_price && <p className="mt-1 text-xs text-destructive">{singleForm.errors.sell_price}</p>}
                                         </div>
                                     </div>
                                 </div>
 
-                                <div className="pt-4 border-t border-border dark:border-input flex justify-end">
+                                <div className="pt-4 border-t border-border flex justify-end">
                                     <button
                                         type="submit"
                                         disabled={singleForm.processing}
-                                        className="rounded-xl bg-indigo-600 px-6 py-3 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+                                        className="rounded-xl bg-primary px-6 py-3 text-xs font-semibold text-primary-foreground hover:opacity-90 transition shadow-sm"
                                     >
-                                        {singleForm.processing ? 'Menyimpan...' : 'Simpan Stok Unit'}
+                                        {singleForm.processing ? 'Saving...' : 'Save Stock Unit'}
                                     </button>
                                 </div>
                             </form>
                         </div>
                     ) : (
-                        <div className="rounded-none sm:rounded-lg border-x-0 sm:border border-y-0 sm:border-y bg-transparent sm:bg-card p-0 sm:p-6 shadow-none sm:shadow-sm text-card-foreground">
-                            <h3 className="text-lg font-semibold text-foreground mb-6">Edit Unit Stok</h3>
+                        <div className="rounded-none sm:rounded-2xl border-x-0 sm:border border-y-0 sm:border-y bg-transparent sm:bg-card p-0 sm:p-6 shadow-none sm:shadow-sm text-card-foreground">
+                            <h3 className="text-lg font-bold text-foreground mb-6">Edit Stock Unit</h3>
 
                             <form onSubmit={submitEdit} className="space-y-6">
-                                {/* Section 1: Lokasi & Kategori */}
-                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">1. Lokasi & Kategori Unit</h4>
+                                {}
+                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                    <h4 className="text-xs font-bold tracking-wider text-primary">1. Unit Location & Category</h4>
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Pilih Cabang Toko</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Select Store Branch</label>
                                             <select
                                                 required
                                                 value={editForm.data.store_id}
                                                 onChange={e => editForm.setData('store_id', e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             >
                                                 {editForm.data.category === 'extra' && (
-                                                    <option value="all">Semua Cabang</option>
+                                                    <option value="all">All Branches</option>
                                                 )}
                                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Kategori Barang</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Item Category</label>
                                             <select
                                                 value={editForm.data.category}
                                                 onChange={e => {
@@ -1548,81 +1312,81 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                         store_id: cat === 'extra' ? 'all' : ((data.store_id === 'all') ? (stores[0]?.id || '') : data.store_id)
                                                     }));
                                                 }}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             >
                                                 <option value="iphone">iPhone</option>
                                                 <option value="android">Android</option>
-                                                <option value="accessories">Aksesoris (Bulk)</option>
-                                                <option value="extra">Jasa / Add-on (Layanan)</option>
+                                                <option value="accessories">Accessories (Bulk)</option>
+                                                <option value="extra">Services / Add-on</option>
                                             </select>
                                         </div>
                                         {editForm.data.category !== 'extra' && (
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Kondisi Barang</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Item Condition</label>
                                                 <select
                                                     value={editForm.data.type}
                                                     onChange={e => editForm.setData('type', e.target.value as any)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 >
-                                                    <option value="new">Baru (New)</option>
-                                                    <option value="second">Bekas (Second)</option>
+                                                    <option value="new">New</option>
+                                                    <option value="second">Pre-owned (Second)</option>
                                                 </select>
                                             </div>
                                         )}
                                     </div>
                                 </div>
 
-                                {/* Section 2: Spesifikasi & Identitas */}
-                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">2. Detail Spesifikasi & Identitas Barang</h4>
+                                {}
+                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                    <h4 className="text-xs font-bold tracking-wider text-primary">2. Specifications & Identity</h4>
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                         <div className="sm:col-span-2">
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Nama Produk / Jasa</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Product / Service Name</label>
                                             <input
                                                 type="text"
                                                 required
                                                 list="product-names-list"
                                                 value={editForm.data.name}
                                                 onChange={e => editForm.setData('name', e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                                placeholder="Contoh: iPhone 15 Pro Max"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                                                placeholder="e.g. iPhone 15 Pro Max"
                                             />
                                         </div>
 
                                         {editForm.data.category !== 'accessories' && editForm.data.category !== 'extra' && (
                                             <>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Warna</label>
-                                                    <select value={editForm.data.color_id} onChange={e => editForm.setData('color_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
-                                                        <option value="">-- Pilih Warna --</option>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Color</label>
+                                                    <select value={editForm.data.color_id} onChange={e => editForm.setData('color_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
+                                                        <option value="">-- Select Color --</option>
                                                         {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Kapasitas Memori</label>
-                                                    <select value={editForm.data.memory_id} onChange={e => editForm.setData('memory_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
-                                                        <option value="">-- Pilih Memori --</option>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Memory Capacity</label>
+                                                    <select value={editForm.data.memory_id} onChange={e => editForm.setData('memory_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
+                                                        <option value="">-- Select Memory --</option>
                                                         {getParamValues('kapasitas memori').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Tipe Lisensi</label>
-                                                    <select value={editForm.data.license_id} onChange={e => editForm.setData('license_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
-                                                        <option value="">-- Pilih Lisensi --</option>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">License / Network Type</label>
+                                                    <select value={editForm.data.license_id} onChange={e => editForm.setData('license_id', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background">
+                                                        <option value="">-- Select License --</option>
                                                         {getParamValues('tipe lisensi').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Serial Number (SN)</label>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Serial Number (SN)</label>
                                                     <input
                                                         type="text"
                                                         value={editForm.data.serial_number}
                                                         onChange={e => editForm.setData('serial_number', e.target.value.toUpperCase())}
-                                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold uppercase dark:border-input dark:bg-background"
+                                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">IMEI</label>
+                                                    <label className="block text-xs font-bold text-muted-foreground mb-1">IMEI</label>
                                                     <input
                                                         type="text"
                                                         inputMode="numeric"
@@ -1633,7 +1397,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                 e.preventDefault();
                                                             }
                                                         }}
-                                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                     />
                                                 </div>
                                             </>
@@ -1641,13 +1405,13 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
 
                                         {editForm.data.category === 'accessories' && (
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Warna (Opsional)</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Color (Optional)</label>
                                                 <select
                                                     value={editForm.data.color_id}
                                                     onChange={e => editForm.setData('color_id', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 >
-                                                    <option value="">-- Pilih Warna --</option>
+                                                    <option value="">-- Select Color --</option>
                                                     {getParamValues('warna').map(o => <option key={o.id} value={o.id}>{o.value}</option>)}
                                                 </select>
                                             </div>
@@ -1655,33 +1419,33 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                     </div>
                                 </div>
 
-                                {/* Section 3: Harga & Finansial */}
-                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">3. Finansial, Garansi & Distribusi</h4>
+                                {}
+                                <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                    <h4 className="text-xs font-bold tracking-wider text-primary">3. Financial, Warranty & Distribution</h4>
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                         <div className="lg:col-span-2">
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Supplier / Pengirim</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Supplier / Sender</label>
                                             <input
                                                 type="text"
                                                 value={editForm.data.supplier}
                                                 onChange={e => editForm.setData('supplier', e.target.value)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Garansi Toko (Hari)</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Store Warranty (Days)</label>
                                             <input
                                                 type="number"
                                                 required
                                                 inputMode="numeric"
                                                 value={editForm.data.warranty_duration_days}
                                                 onChange={e => editForm.setData('warranty_duration_days', parseInt(e.target.value) || 0)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             />
                                         </div>
                                         {(editForm.data.category === 'accessories' || editForm.data.category === 'extra') && (
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Quantity (Stok)</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Quantity (Stock)</label>
                                                 <input
                                                     type="number"
                                                     required
@@ -1689,27 +1453,27 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                     inputMode="numeric"
                                                     value={editForm.data.qty}
                                                     onChange={e => editForm.setData('qty', parseInt(e.target.value) || 1)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                                 />
                                             </div>
                                         )}
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Status Unit</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Unit Status</label>
                                             <select
                                                 value={editForm.data.status}
                                                 onChange={e => editForm.setData('status', e.target.value as any)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             >
-                                                <option value="available">Tersedia (Available)</option>
-                                                <option value="transit">Transit / Usulan Mutasi</option>
-                                                <option value="sold">Terjual (Sold)</option>
+                                                <option value="available">Available</option>
+                                                <option value="transit">Transit / Transfer Proposed</option>
+                                                <option value="sold">Sold</option>
                                             </select>
                                         </div>
                                     </div>
 
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 pt-2">
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Harga Beli (HPP)</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Buy Price (COGS)</label>
                                             <input
                                                 type="number"
                                                 required
@@ -1717,11 +1481,11 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 inputMode="numeric"
                                                 value={editForm.data.buy_price}
                                                 onChange={e => editForm.setData('buy_price', parseFloat(e.target.value) || 0)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Harga Jual Standar</label>
+                                            <label className="block text-xs font-bold text-muted-foreground mb-1">Standard Sell Price</label>
                                             <input
                                                 type="number"
                                                 required
@@ -1729,45 +1493,45 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                 inputMode="numeric"
                                                 value={editForm.data.sell_price}
                                                 onChange={e => editForm.setData('sell_price', parseFloat(e.target.value) || 0)}
-                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                                className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
                                             />
                                         </div>
                                     </div>
                                 </div>
 
                                 {editForm.data.status === 'sold' && (
-                                    <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
-                                        <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">4. Informasi Pembeli / Pelanggan</h4>
+                                    <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
+                                        <h4 className="text-xs font-bold tracking-wider text-primary">4. Buyer / Customer Information</h4>
                                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Nama Pembeli</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Buyer Name</label>
                                                 <input
                                                     type="text"
                                                     required
                                                     value={editForm.data.buyer_name || ''}
                                                     onChange={e => editForm.setData('buyer_name', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                                    placeholder="Nama Pembeli"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                                                    placeholder="Buyer Name"
                                                 />
                                             </div>
                                             <div>
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">No. HP / WA Pembeli</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Buyer Phone / WhatsApp</label>
                                                 <input
                                                     type="text"
                                                     required
                                                     value={editForm.data.buyer_phone || ''}
                                                     onChange={e => editForm.setData('buyer_phone', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                                    placeholder="Contoh: 081234567890"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                                                    placeholder="e.g. 081234567890"
                                                 />
                                             </div>
                                             <div className="sm:col-span-2">
-                                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Alamat Pembeli</label>
+                                                <label className="block text-xs font-bold text-muted-foreground mb-1">Buyer Address</label>
                                                 <textarea
                                                     value={editForm.data.buyer_address || ''}
                                                     onChange={e => editForm.setData('buyer_address', e.target.value)}
-                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                                    placeholder="Alamat Pembeli (Opsional)"
+                                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-semibold dark:bg-background"
+                                                    placeholder="Buyer Address (Optional)"
                                                     rows={2}
                                                 />
                                             </div>
@@ -1776,16 +1540,16 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                 )}
 
                                 {editForm.data.status === 'sold' && (
-                                    <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border dark:sm:border-input bg-transparent sm:bg-muted/20 space-y-4">
+                                    <div className="p-0 sm:p-4 rounded-none sm:rounded-xl border-0 sm:border border-transparent sm:border-border bg-transparent sm:bg-muted/20 space-y-4">
                                         <div className="flex items-center justify-between">
-                                            <h4 className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">5. Kelola Add-On / Layanan Terjual</h4>
+                                            <h4 className="text-xs font-bold tracking-wider text-primary">5. Manage Sold Add-On Services</h4>
                                         </div>
-                                        <p className="text-xs text-gray-500">Anda dapat **mengubah skema biaya (Buyer/Toko/Free)**, **menambah Add-On baru**, atau **menghapus** Add-On dari transaksi ini. Total invoice & profit akan otomatis dihitung ulang.</p>
-                                        
-                                        {/* List of current extras */}
+                                        <p className="text-xs text-muted-foreground">You can change the fee scheme (Buyer/Store/Free), add new add-ons, or remove services from this transaction. Total invoice and profit will be recalculated automatically.</p>
+
+                                        {}
                                         <div className="space-y-2">
                                             {editForm.data.update_extras.length === 0 ? (
-                                                <p className="text-xs text-gray-400 italic">Belum ada Add-on / Layanan pada transaksi ini.</p>
+                                                <p className="text-xs text-muted-foreground italic">No Add-ons / Services in this transaction.</p>
                                             ) : (
                                                 editForm.data.update_extras.map((ex, exIdx) => (
                                                     <div key={exIdx} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-xl border border-border bg-card gap-2">
@@ -1796,38 +1560,38 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                                     const updated = editForm.data.update_extras.filter((_, idx) => idx !== exIdx);
                                                                     editForm.setData('update_extras', updated);
                                                                 }}
-                                                                className="rounded-lg p-1 text-rose-500 hover:bg-rose-500/10 transition"
-                                                                title="Hapus Add-on ini"
+                                                                className="rounded-lg p-1 text-destructive hover:bg-destructive/10 transition"
+                                                                title="Delete this Add-on"
                                                             >
                                                                 <Trash className="h-4 w-4" />
                                                             </button>
                                                             <div>
                                                                 <span className="text-xs font-bold text-foreground">{ex.name}</span>
-                                                                <p className="text-[10px] text-gray-400">{formatCurrency(ex.sell_price)}</p>
+                                                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ex.sell_price)}</p>
                                                             </div>
                                                         </div>
                                                         <select
                                                             value={ex.charge_to}
                                                             onChange={(e) => {
-                                                                const updated = editForm.data.update_extras.map((item, idx) => 
+                                                                const updated = editForm.data.update_extras.map((item, idx) =>
                                                                     idx === exIdx ? { ...item, charge_to: e.target.value as any } : item
                                                                 );
                                                                 editForm.setData('update_extras', updated);
                                                             }}
-                                                            className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-bold text-foreground focus:border-indigo-500 focus:outline-none"
+                                                            className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-bold text-foreground focus:border-primary focus:outline-none"
                                                         >
-                                                            <option value="buyer">Buyer (Pembeli Bayar)</option>
-                                                            <option value="seller">Toko Tanggung (HPP)</option>
-                                                            <option value="free_promotion">Promosi Free (Gratis)</option>
+                                                            <option value="buyer">Buyer Pays</option>
+                                                            <option value="seller">Store Cost (COGS)</option>
+                                                            <option value="free_promotion">Free Promotion</option>
                                                         </select>
                                                     </div>
                                                 ))
                                             )}
                                         </div>
 
-                                        {/* Dropdown to Add New Add-on */}
+                                        {}
                                         <div className="pt-2">
-                                            <label className="block text-[10px] font-extrabold uppercase text-gray-400 mb-1">+ Tambah Add-On / Layanan Lainnya</label>
+                                            <label className="block text-[10px] font-extrabold text-muted-foreground mb-1">+ Add New Add-On / Service</label>
                                             <select
                                                 value=""
                                                 onChange={(e) => {
@@ -1845,9 +1609,9 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                         editForm.setData('update_extras', [...editForm.data.update_extras, newItem]);
                                                     }
                                                 }}
-                                                className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-bold text-foreground shadow-sm focus:border-indigo-500 focus:outline-none"
+                                                className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-xs font-semibold text-foreground shadow-sm focus:border-primary focus:outline-none"
                                             >
-                                                <option value="">-- Pilih Add-on untuk Ditambahkan --</option>
+                                                <option value="">-- Select Add-on to Add --</option>
                                                 {stocks
                                                     .filter(s => s.category === 'extra' && s.status === 'available')
                                                     .map(addon => (
@@ -1861,12 +1625,12 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                     </div>
                                 )}
 
-                                <div className="flex gap-3 pt-4 border-t border-border dark:border-input justify-end">
-                                    <button type="button" onClick={() => setIsEditingStock(false)} className="rounded-xl border border-input px-6 py-3 text-xs font-semibold text-gray-500 hover:bg-muted dark:border-input">
-                                        Batal
+                                <div className="flex gap-3 pt-4 border-t border-border justify-end">
+                                    <button type="button" onClick={() => setIsEditingStock(false)} className="rounded-xl border border-input px-6 py-3 text-xs font-semibold text-muted-foreground hover:bg-muted">
+                                        Cancel
                                     </button>
-                                    <button type="submit" disabled={editForm.processing} className="rounded-xl bg-indigo-600 px-6 py-3 text-xs font-semibold text-white hover:bg-indigo-700 transition">
-                                        {editForm.processing ? 'Menyimpan...' : 'Simpan Perubahan'}
+                                    <button type="submit" disabled={editForm.processing} className="rounded-xl bg-primary px-6 py-3 text-xs font-semibold text-primary-foreground hover:opacity-90 transition shadow-sm">
+                                        {editForm.processing ? 'Saving...' : 'Save Changes'}
                                     </button>
                                 </div>
                             </form>
@@ -1881,7 +1645,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                 </div>
             </div>
 
-            {/* ── CAMERA SCANNER MODAL ── */}
+            {}
             {isScannerOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="w-full max-w-sm rounded-xl bg-card p-5 shadow-xl dark:bg-background border dark:border-input space-y-4">
@@ -1903,40 +1667,40 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                             }
                         `}</style>
                         <div className="flex justify-between items-center">
-                            <h4 className="text-xs font-black text-foreground uppercase tracking-wider">Scan IMEI / Barcode</h4>
+                            <h4 className="text-xs font-bold text-foreground tracking-wider">Scan IMEI / Barcode</h4>
                             <button
                                 type="button"
                                 onClick={closeScanner}
-                                className="text-gray-400 hover:text-foreground text-xs font-bold"
+                                className="text-muted-foreground hover:text-foreground text-xs font-bold"
                             >
-                                Tutup
+                                Close
                             </button>
                         </div>
-                        
-                        <p className="text-[10px] text-gray-400 leading-normal">
-                            Arahkan kamera belakang HP ke barcode IMEI. Pastikan cahaya cukup dan barcode berada di dalam kotak area scan.
+
+                        <p className="text-[10px] text-muted-foreground leading-normal">
+                            Point camera at the IMEI barcode. Ensure adequate lighting and align the barcode within the target frame.
                         </p>
 
                         <div className="relative border border-input rounded-xl overflow-hidden bg-black h-64 sm:h-72 w-full flex items-center justify-center">
                             <div id="reader" className="w-full h-full"></div>
-                            
-                            {/* Scanning Overlays */}
+
+                            {}
                             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                {/* Dimmed layer with centered clean viewport */}
-                                <div className="w-[85%] h-[40%] border-2 border-indigo-500 rounded-lg relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]">
-                                    <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-indigo-400 rounded-tl" />
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-indigo-400 rounded-tr" />
-                                    <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-indigo-400 rounded-bl" />
-                                    <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-indigo-400 rounded-br" />
-                                    
-                                    {/* Scanning laser animation */}
-                                    <div className="w-[95%] h-0.5 bg-indigo-400 shadow-[0_0_6px_#818cf8] absolute animate-bounce" />
+                                {}
+                                <div className="w-[85%] h-[40%] border-2 border-primary rounded-lg relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]">
+                                    <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-primary rounded-tl" />
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-primary rounded-tr" />
+                                    <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-primary rounded-bl" />
+                                    <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-primary rounded-br" />
+
+                                    {}
+                                    <div className="w-[95%] h-0.5 bg-primary shadow-[0_0_6px_var(--primary)] absolute animate-bounce" />
                                 </div>
                             </div>
 
                             {scannerError && (
                                 <div className="absolute inset-0 bg-black/85 flex items-center justify-center p-4 text-center">
-                                    <p className="text-xs text-rose-400 font-bold">{scannerError}</p>
+                                    <p className="text-xs text-destructive font-bold">{scannerError}</p>
                                 </div>
                             )}
                         </div>
@@ -1945,9 +1709,9 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                             <button
                                 type="button"
                                 onClick={closeScanner}
-                                className="w-full rounded-xl border border-input py-2 text-xs font-semibold text-gray-500 hover:bg-muted"
+                                className="w-full rounded-xl border border-input py-2 text-xs font-semibold text-muted-foreground hover:bg-muted"
                             >
-                                Batal
+                                Cancel
                             </button>
                         </div>
                     </div>

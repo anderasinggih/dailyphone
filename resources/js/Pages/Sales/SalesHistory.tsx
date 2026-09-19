@@ -1,12 +1,12 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, useForm, usePage } from '@inertiajs/react';
 import { useState } from 'react';
-import { 
-    Receipt, 
-    Search, 
-    Ban, 
-    RotateCcw, 
-    ShieldAlert, 
+import {
+    Receipt,
+    Search,
+    Ban,
+    RotateCcw,
+    ShieldAlert,
     ArrowLeft,
     AlertTriangle,
     Coins,
@@ -81,7 +81,6 @@ interface Sale {
     status: 'booking' | 'completed' | 'cancelled';
     affiliate_user_id: number | null;
     affiliate_fee: number;
-    void_requested: boolean;
     void_reason: string | null;
     created_at: string;
     buyer?: { name: string; phone: string; address: string | null };
@@ -116,17 +115,14 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
     const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
     const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
-    // Pagination
     const [currentPage, setCurrentPage] = useState(1);
 
-    // Form Modal states
     const [isVoidOpen, setIsVoidOpen] = useState(false);
     const [isReturnOpen, setIsReturnOpen] = useState(false);
     const [isWarrantyOpen, setIsWarrantyOpen] = useState(false);
     const [isRepairUpdateOpen, setIsRepairUpdateOpen] = useState(false);
     const [selectedRepair, setSelectedRepair] = useState<WarrantyRepair | null>(null);
 
-    // Form handlers
     const voidForm = useForm({ void_reason: '' });
     const returnForm = useForm({
         sale_id: '',
@@ -247,20 +243,20 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
     const renderStatusBadge = (sale: Sale) => {
         if (sale.status === 'cancelled') {
             return (
-                <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-rose-500/10 text-rose-600 border border-rose-500/20">
-                    Batal (Void)
+                <span className="text-[11px] font-semibold text-destructive">
+                    Cancelled
                 </span>
             );
         }
         if (sale.status === 'booking') {
             return (
-                <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                <span className="text-[11px] font-semibold text-muted-foreground">
                     Booking
                 </span>
             );
         }
 
-        const returnedItemsCount = sale.items.filter(item => 
+        const returnedItemsCount = sale.items.filter(item =>
             sale.returns.some(r => r.stock_id === item.stock_id)
         ).length;
 
@@ -269,14 +265,14 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
         if (returnedItemsCount > 0) {
             if (returnedItemsCount === sale.items.length) {
                 return (
-                    <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-gray-500/10 text-gray-500 border border-gray-500/20">
-                        Retur Total
+                    <span className="text-[11px] font-semibold text-muted-foreground">
+                        Returned
                     </span>
                 );
             } else {
                 return (
-                    <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                        Retur Sebagian
+                    <span className="text-[11px] font-semibold text-muted-foreground">
+                        Partial Return
                     </span>
                 );
             }
@@ -286,27 +282,26 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
             const activeRepairs = sale.repairs.filter(r => ['pending', 'approved', 'in_repair'].includes(r.status));
             if (activeRepairs.length > 0) {
                 return (
-                    <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-rose-500/10 text-rose-600 border border-rose-500/20 animate-pulse">
-                        Servis Garansi ({activeRepairs.length})
+                    <span className="text-[11px] font-semibold text-destructive">
+                        Warranty Claim ({activeRepairs.length})
                     </span>
                 );
             } else {
                 return (
-                    <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-purple-500/10 text-purple-600 border border-purple-500/20">
-                        Garansi Selesai
+                    <span className="text-[11px] font-semibold text-primary">
+                        Warranty Resolved
                     </span>
                 );
             }
         }
 
         return (
-            <span className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                Selesai
+            <span className="text-[11px] font-semibold text-primary">
+                Completed
             </span>
         );
     };
 
-    // ── Detail Panel (shared between mobile and desktop) ──
     const DetailPanel = ({ sale }: { sale: Sale }) => {
         const returnableItems = sale.items.filter(
             item => !sale.returns.some(r => r.stock_id === item.stock_id)
@@ -315,163 +310,163 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
 
         return (
             <div className="space-y-5 text-sm">
-                {/* Header */}
+                {}
                 <div className="flex items-start justify-between gap-2">
                     <div>
-                        <p className="font-black text-foreground text-base leading-tight">{sale.invoice_number}</p>
-                        <p className="text-xs text-gray-400 mt-0.5">{new Date(sale.created_at).toLocaleString('id-ID')}</p>
+                        <p className="font-bold text-foreground text-base leading-tight">{sale.invoice_number}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{new Date(sale.created_at).toLocaleString('en-US')}</p>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
                         {renderStatusBadge(sale)}
                         <a
                             href={route('public.invoice', sale.invoice_number)}
                             target="_blank"
-                            className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition"
-                            title="Lihat Invoice"
+                            className="p-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition"
+                            title="View Invoice"
                         >
                             <ExternalLink className="h-3.5 w-3.5" />
                         </a>
                     </div>
                 </div>
 
-                {/* Buyer + Kasir */}
-                <div className="bg-muted/50 dark:bg-background rounded-xl p-3 space-y-1.5 border border-border/50">
+                {}
+                <div className="bg-muted/50 rounded-xl p-3 space-y-1.5 border border-border/50">
                     <div className="flex justify-between text-xs">
-                        <span className="text-gray-400 font-bold">Pelanggan</span>
-                        <span className="text-foreground font-semibold">{sale.buyer?.name || 'Umum'}</span>
+                        <span className="text-muted-foreground font-semibold">Customer</span>
+                        <span className="text-foreground font-semibold">{sale.buyer?.name || 'General'}</span>
                     </div>
                     {sale.buyer?.phone && (
                         <div className="flex justify-between text-xs">
-                            <span className="text-gray-400 font-bold">No. HP</span>
-                            <span className="text-indigo-600 font-bold">{sale.buyer.phone}</span>
+                            <span className="text-muted-foreground font-semibold">Phone</span>
+                            <span className="text-primary font-bold">{sale.buyer.phone}</span>
                         </div>
                     )}
                     <div className="flex justify-between text-xs">
-                        <span className="text-gray-400 font-bold">Kasir</span>
+                        <span className="text-muted-foreground font-semibold">Cashier</span>
                         <span className="text-foreground font-semibold">{sale.user?.name || '—'}</span>
                     </div>
                     <div className="flex justify-between text-xs">
-                        <span className="text-gray-400 font-bold">Pembayaran</span>
-                        <span className="font-bold uppercase text-foreground">{sale.payment_method} {sale.payment_detail ? `(${sale.payment_detail})` : ''}</span>
+                        <span className="text-muted-foreground font-semibold">Payment</span>
+                        <span className="font-bold text-foreground">{sale.payment_method} {sale.payment_detail ? `(${sale.payment_detail})` : ''}</span>
                     </div>
                     {sale.dp_amount > 0 && (
                         <div className="flex justify-between text-xs">
-                            <span className="text-gray-400 font-bold">DP</span>
-                            <span className="font-bold text-amber-600">{formatCurrency(sale.dp_amount)}</span>
+                            <span className="text-muted-foreground font-semibold">Down Payment</span>
+                            <span className="font-bold text-primary">{formatCurrency(sale.dp_amount)}</span>
                         </div>
                     )}
                 </div>
 
-                {/* Items */}
+                {}
                 <div className="space-y-2 border-t border-border/50 pt-3">
-                    <p className="text-[10px] font-black uppercase tracking-wider text-gray-400">Item Terjual</p>
+                    <p className="text-[10px] font-bold tracking-wider text-muted-foreground">Items Sold</p>
                     {sale.items.map(item => {
                         const isReturned = sale.returns.some(r => r.stock_id === item.stock_id);
                         return (
-                            <div key={item.id} className="flex justify-between bg-muted dark:bg-background p-2.5 rounded-lg gap-2">
+                            <div key={item.id} className="flex justify-between bg-muted/40 p-2.5 rounded-xl gap-2 border border-border/40">
                                 <div className="min-w-0">
-                                    <p className="font-bold text-gray-800 dark:text-gray-200 text-xs leading-snug truncate">
+                                    <p className="font-semibold text-foreground text-xs leading-snug truncate">
                                         {item.stock?.name}
-                                        {item.is_trade_in_item && <span className="ml-1 text-rose-500 text-[10px] font-black uppercase">(TT)</span>}
-                                        {isReturned && <span className="ml-1.5 text-rose-600 text-[9px] font-black uppercase bg-rose-500/10 border border-rose-500/20 rounded px-1.5 py-0.5">Retur</span>}
+                                        {item.is_trade_in_item && <span className="ml-1 text-primary text-[10px] font-bold ">(Trade-In)</span>}
+                                        {isReturned && <span className="ml-1.5 text-destructive text-[9px] font-bold bg-destructive/10 border border-destructive/20 rounded px-1.5 py-0.5">Returned</span>}
                                     </p>
                                     {item.stock?.category !== 'extra' && item.stock?.serial_number && (
-                                        <p className="text-[10px] text-gray-400 font-mono">SN: {item.stock?.serial_number}</p>
+                                        <p className="text-[10px] text-muted-foreground font-mono">SN: {item.stock?.serial_number}</p>
                                     )}
                                 </div>
                                 <div className="text-right text-xs flex-shrink-0">
-                                    <p className="font-bold text-indigo-600 dark:text-indigo-400">{formatCurrency(item.actual_sell_price)}</p>
-                                    {item.qty > 1 && <p className="text-gray-400">x{item.qty}</p>}
+                                    <p className="font-bold text-foreground">{formatCurrency(item.actual_sell_price)}</p>
+                                    {item.qty > 1 && <p className="text-muted-foreground">x{item.qty}</p>}
                                 </div>
                             </div>
                         );
                     })}
                 </div>
 
-                {/* Extras */}
+                {}
                 {sale.extras.length > 0 && (
                     <div className="space-y-2 border-t border-border/50 pt-3">
-                        <p className="text-[10px] font-black uppercase tracking-wider text-gray-400">Add-On / Jasa</p>
+                        <p className="text-[10px] font-bold tracking-wider text-muted-foreground">Add-On / Services</p>
                         {sale.extras.map(ex => (
-                            <div key={ex.id} className="flex justify-between text-xs font-bold bg-muted dark:bg-background p-2.5 rounded-lg">
+                            <div key={ex.id} className="flex justify-between text-xs font-semibold bg-muted/40 p-2.5 rounded-xl border border-border/40">
                                 <div>
-                                    <p className="text-gray-800 dark:text-gray-200">{ex.extra?.name}</p>
-                                    <p className="text-[10px] text-gray-400 font-normal">{ex.charge_to === 'buyer' ? 'Dibayar Pembeli' : ex.charge_to === 'seller' ? 'Toko Tanggung' : 'Gratis Promo'}</p>
+                                    <p className="text-foreground">{ex.extra?.name}</p>
+                                    <p className="text-[10px] text-muted-foreground font-normal">{ex.charge_to === 'buyer' ? 'Billed to Customer' : ex.charge_to === 'seller' ? 'Covered by Store' : 'Complimentary Promo'}</p>
                                 </div>
-                                <p className="text-indigo-600 dark:text-indigo-400">{ex.charge_to === 'buyer' ? formatCurrency(ex.sell_price) : '—'}</p>
+                                <p className="text-foreground font-bold">{ex.charge_to === 'buyer' ? formatCurrency(ex.sell_price) : '—'}</p>
                             </div>
                         ))}
                     </div>
                 )}
 
-                {/* Total */}
+                {}
                 <div className="border-t border-border pt-2 flex justify-between items-center">
-                    <span className="font-black text-slate-700 dark:text-slate-200">Total Bayar</span>
-                    <span className="font-black text-indigo-600 text-lg">{formatCurrency(sale.total_amount)}</span>
+                    <span className="font-bold text-foreground">Total Paid</span>
+                    <span className="font-bold text-primary text-lg">{formatCurrency(sale.total_amount)}</span>
                 </div>
 
-                {/* Returns */}
+                {}
                 {sale.returns.length > 0 && (
-                    <div className="space-y-2 pt-3 border-t border-rose-100 dark:border-rose-950">
-                        <p className="text-[10px] font-black uppercase tracking-wider text-rose-500">Catatan Retur</p>
+                    <div className="space-y-2 pt-3 border-t border-border">
+                        <p className="text-[10px] font-bold tracking-wider text-destructive">Return Records</p>
                         {sale.returns.map(ret => (
-                            <div key={ret.id} className="bg-rose-50/50 dark:bg-rose-950/10 border border-rose-100 dark:border-rose-900 p-2.5 rounded-lg text-xs space-y-1">
-                                <div className="flex justify-between font-bold">
+                            <div key={ret.id} className="bg-destructive/5 border border-destructive/20 p-2.5 rounded-xl text-xs space-y-1">
+                                <div className="flex justify-between font-semibold">
                                     <span>Restocking Fee:</span>
-                                    <span className="text-rose-600">{formatCurrency(ret.restocking_fee)}</span>
+                                    <span className="text-destructive font-bold">{formatCurrency(ret.restocking_fee)}</span>
                                 </div>
-                                <div className="flex justify-between font-bold">
+                                <div className="flex justify-between font-semibold">
                                     <span>Refund:</span>
-                                    <span className="text-indigo-600">{formatCurrency(ret.refund_amount)}</span>
+                                    <span className="text-primary font-bold">{formatCurrency(ret.refund_amount)}</span>
                                 </div>
-                                {ret.notes && <p className="text-[10px] text-gray-400 italic">"{ret.notes}"</p>}
+                                {ret.notes && <p className="text-[10px] text-muted-foreground italic">"{ret.notes}"</p>}
                             </div>
                         ))}
                     </div>
                 )}
 
-                {/* Actions */}
+                {}
                 <div className="space-y-2 pt-3 border-t border-border">
-                    {/* Return + Warranty */}
+                    {}
                     {sale.status === 'completed' && authUser.role !== 'viewer' && (
                         <div className="flex gap-2">
                             {!isAllReturned && (
                                 <button
                                     onClick={() => openReturnModal(sale)}
-                                    className="flex-1 flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2.5 text-xs font-bold text-white hover:bg-amber-600 transition"
+                                    className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-card border border-input py-2.5 text-xs font-semibold text-foreground hover:bg-muted transition shadow-sm"
                                 >
-                                    <RotateCcw className="h-4 w-4" /> Retur
+                                    <RotateCcw className="h-4 w-4 text-muted-foreground" /> Return
                                 </button>
                             )}
                             <button
                                 onClick={() => openWarrantyModal(sale)}
-                                className="flex-1 flex items-center justify-center gap-1 rounded-xl bg-rose-500 py-2.5 text-xs font-bold text-white hover:bg-rose-600 transition"
+                                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition shadow-sm"
                             >
-                                <ShieldAlert className="h-4 w-4" /> Garansi
+                                <ShieldAlert className="h-4 w-4" /> Warranty Claim
                             </button>
                         </div>
                     )}
                 </div>
 
-            {/* Warranty Repairs */}
+            {}
             {sale.repairs.length > 0 && (
                 <div className="space-y-3 pt-3 border-t border-border">
-                    <p className="text-[10px] font-black uppercase tracking-wider text-gray-400">Status Servis Garansi</p>
+                    <p className="text-[10px] font-bold tracking-wider text-muted-foreground">Warranty Repair Status</p>
                     {sale.repairs.map(rep => (
-                        <div key={rep.id} className="border border-border dark:border-input p-3 rounded-xl space-y-2">
-                            <div className="flex justify-between text-xs font-bold">
+                        <div key={rep.id} className="border border-border p-3 rounded-xl space-y-2 bg-muted/20">
+                            <div className="flex justify-between text-xs font-semibold">
                                 <span className="truncate pr-2">{rep.damage_description}</span>
-                                <span className="capitalize text-rose-500 flex-shrink-0">{rep.status}</span>
+                                <span className="capitalize text-primary font-bold flex-shrink-0">{rep.status}</span>
                             </div>
-                            <div className="flex justify-between text-[10px] text-gray-400">
-                                <span>Biaya Servis:</span>
-                                <span className="font-bold text-gray-800 dark:text-gray-200">{formatCurrency(rep.repair_cost)}</span>
+                            <div className="flex justify-between text-[10px] text-muted-foreground">
+                                <span>Repair Cost:</span>
+                                <span className="font-bold text-foreground">{formatCurrency(rep.repair_cost)}</span>
                             </div>
                             <button
                                 onClick={() => openRepairUpdateModal(rep)}
-                                className="w-full rounded bg-gray-100 py-1 text-[10px] font-bold text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
+                                className="w-full rounded-xl bg-card border border-input py-1.5 text-[10px] font-semibold text-foreground hover:bg-muted transition"
                             >
-                                Update Status Servis
+                                Update Status
                             </button>
                         </div>
                     ))}
@@ -481,13 +476,12 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
     );
 };
 
-    // ── Pagination component ──
     const Pagination = () => {
         if (totalPages <= 1) return null;
         return (
             <div className="flex items-center justify-between px-2 pt-4 border-t border-border">
-                <p className="text-xs text-gray-400 font-semibold">
-                    {filteredSales.length} transaksi • Hal {currentPage}/{totalPages}
+                <p className="text-xs text-muted-foreground font-medium">
+                    {filteredSales.length} transactions • Page {currentPage}/{totalPages}
                 </p>
                 <div className="flex gap-1">
                     <button
@@ -516,38 +510,38 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
             <div className="py-6 sm:py-8">
                 <div className="mx-auto max-w-none px-4 sm:px-6 lg:px-8 space-y-6">
 
-                    {/* ── MOBILE: Full-Screen Detail ── */}
+                    {}
                     {mobileDetailOpen && selectedSale && (
                         <div className="lg:hidden fixed inset-0 z-40 bg-card overflow-y-auto">
                             <div className="p-4 space-y-4">
-                                {/* Breadcrumb */}
+                                {}
                                 <div className="flex items-center gap-2">
                                     <button
                                         onClick={() => { setMobileDetailOpen(false); }}
-                                        className="flex items-center gap-1 text-sm font-bold text-indigo-600 hover:text-indigo-700"
+                                        className="flex items-center gap-1 text-sm font-semibold text-primary hover:opacity-80"
                                     >
-                                        <ArrowLeft className="h-4 w-4" /> Kembali
+                                        <ArrowLeft className="h-4 w-4" /> Back
                                     </button>
-                                    <span className="text-gray-300 dark:text-gray-600">/</span>
-                                    <span className="text-sm font-bold text-foreground truncate">History Transaksi</span>
-                                    <span className="text-gray-300 dark:text-gray-600">/</span>
-                                    <span className="text-sm font-bold text-gray-500 truncate">{selectedSale.invoice_number}</span>
+                                    <span className="text-muted-foreground">/</span>
+                                    <span className="text-sm font-semibold text-foreground truncate">History</span>
+                                    <span className="text-muted-foreground">/</span>
+                                    <span className="text-sm font-semibold text-muted-foreground truncate">{selectedSale.invoice_number}</span>
                                 </div>
                                 <DetailPanel sale={selectedSale} />
                             </div>
                         </div>
                     )}
 
-                    {/* ── Search & Filter ── */}
+                    {}
                     <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
                         <div className="relative flex-1 max-w-md">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                             <input
                                 type="text"
-                                placeholder="Cari invoice, nama, atau nomor HP..."
+                                placeholder="Search invoice, customer name, or phone..."
                                 value={searchQuery}
                                 onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                                className="w-full rounded-xl border border-input bg-background pl-9 pr-4 py-2 text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                className="w-full rounded-xl border border-input bg-background pl-9 pr-4 py-2 text-sm font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                             />
                         </div>
                         {authUser.role === 'superadmin' && (
@@ -558,9 +552,9 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                                         setStoreFilterId(e.target.value);
                                         window.location.href = route('sales-history.index', { store_id: e.target.value });
                                     }}
-                                    className="w-full rounded-xl border border-input bg-background py-2 px-3 text-sm font-semibold text-foreground focus:outline-none"
+                                    className="w-full rounded-xl border border-input bg-background py-2 px-3 text-sm font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                                 >
-                                    <option value="">Semua Cabang</option>
+                                    <option value="">All Branches</option>
                                     {stores.map(s => (
                                         <option key={s.id} value={s.id}>{s.name}</option>
                                     ))}
@@ -569,39 +563,39 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                         )}
                     </div>
 
-                    {/* ── Main Layout ── */}
+                    {}
                     <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-start">
 
-                        {/* LEFT: Sales List */}
-                        <div className="lg:col-span-2 rounded-lg border border-border bg-card p-4 sm:p-5 shadow-sm text-card-foreground space-y-3">
-                            <h3 className="text-base font-bold text-foreground">
-                                Daftar Transaksi
-                                <span className="ml-2 text-xs font-semibold text-gray-400">({filteredSales.length})</span>
+                        {}
+                        <div className="lg:col-span-2 apple-card p-4 sm:p-5 shadow-sm text-card-foreground space-y-3">
+                            <h3 className="text-base font-semibold text-foreground">
+                                Transactions
+                                <span className="ml-2 text-xs font-semibold text-muted-foreground">({filteredSales.length})</span>
                             </h3>
-                            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                            <div className="divide-y divide-border/40">
                                 {paginatedSales.length === 0 ? (
-                                    <p className="text-center text-sm text-gray-400 py-8">Tidak ada transaksi ditemukan.</p>
+                                    <p className="text-center text-sm text-muted-foreground py-8">No transactions found.</p>
                                 ) : (
                                     paginatedSales.map((sale) => (
                                         <div
                                             key={sale.id}
                                             onClick={() => handleSelectSale(sale)}
-                                            className={`flex flex-col sm:flex-row sm:items-center sm:justify-between py-2.5 px-2.5 my-1 cursor-pointer hover:bg-muted/50 dark:hover:bg-gray-900/50 rounded-xl transition ${
-                                                selectedSale?.id === sale.id ? 'bg-indigo-50/50 dark:bg-indigo-950/20 ring-1 ring-indigo-100 dark:ring-indigo-900/40' : ''
+                                            className={`flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 px-3 my-1 cursor-pointer hover:bg-muted/50 rounded-xl transition ${
+                                                selectedSale?.id === sale.id ? 'bg-primary/10 ring-1 ring-primary/30' : ''
                                             }`}
                                         >
                                             <div className="space-y-0.5">
                                                 <div className="flex items-center gap-2 flex-wrap">
-                                                    <span className="font-black text-sm text-foreground">{sale.invoice_number}</span>
+                                                    <span className="font-bold text-sm text-foreground">{sale.invoice_number}</span>
                                                     {renderStatusBadge(sale)}
                                                 </div>
-                                                <p className="text-xs text-gray-400 font-semibold">
-                                                    {sale.buyer?.name || 'Umum'} {sale.buyer?.phone ? `(${sale.buyer.phone})` : ''} • {new Date(sale.created_at).toLocaleDateString('id-ID')}
+                                                <p className="text-xs text-muted-foreground font-medium">
+                                                    {sale.buyer?.name || 'General'} {sale.buyer?.phone ? `(${sale.buyer.phone})` : ''} • {new Date(sale.created_at).toLocaleDateString('en-US')}
                                                 </p>
                                             </div>
                                             <div className="mt-1.5 sm:mt-0 text-right">
-                                                <p className="text-sm font-black text-indigo-600 dark:text-indigo-400">{formatCurrency(sale.total_amount)}</p>
-                                                <p className="text-[10px] font-bold uppercase text-gray-400">{sale.payment_method}</p>
+                                                <p className="text-sm font-bold text-primary">{formatCurrency(sale.total_amount)}</p>
+                                                <p className="text-[10px] font-semibold text-muted-foreground">{sale.payment_method}</p>
                                             </div>
                                         </div>
                                     ))
@@ -610,14 +604,14 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                             <Pagination />
                         </div>
 
-                        {/* RIGHT: Sticky Detail Panel (desktop only) */}
+                        {}
                         <div className="hidden lg:block lg:sticky lg:top-4">
-                            <div className="rounded-lg border border-border bg-card p-5 shadow-sm text-card-foreground max-h-[calc(100vh-6rem)] overflow-y-auto">
-                                <h3 className="text-base font-bold text-foreground mb-4">Detail Invoice</h3>
+                            <div className="apple-card p-5 text-card-foreground max-h-[calc(100vh-6rem)] overflow-y-auto">
+                                <h3 className="text-base font-semibold text-foreground mb-4">Invoice Details</h3>
                                 {selectedSale ? (
                                     <DetailPanel sale={selectedSale} />
                                 ) : (
-                                    <p className="text-center text-sm text-gray-400 py-12">Pilih transaksi untuk melihat detail.</p>
+                                    <p className="text-center text-sm text-muted-foreground py-12">Select a transaction to view details.</p>
                                 )}
                             </div>
                         </div>
@@ -626,19 +620,19 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                 </div>
             </div>
 
-            {/* ── RETURN MODAL ── */}
+            {}
             {isReturnOpen && selectedSale && (() => {
                 const returnableItems = selectedSale.items.filter(
                     item => !selectedSale.returns.some(r => r.stock_id === item.stock_id)
                 );
                 return (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
-                        <div className="w-full max-w-md rounded-xl bg-card p-6 shadow-xl dark:bg-background border dark:border-input">
-                            <h4 className="text-lg font-bold text-foreground">Retur Barang</h4>
-                            <p className="text-xs text-gray-500 mt-1 mb-4">Pengembalian unit dari Invoice {selectedSale.invoice_number}.</p>
+                        <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-xl border border-border">
+                            <h4 className="text-lg font-bold text-foreground">Process Return</h4>
+                            <p className="text-xs text-muted-foreground mt-1 mb-4">Return item from Invoice {selectedSale.invoice_number}.</p>
                             <form onSubmit={submitReturn} className="space-y-4">
                                 <div>
-                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Item Yang Diretur</label>
+                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Returned Item</label>
                                     <select
                                         required
                                         value={returnForm.data.stock_id}
@@ -648,7 +642,7 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                                             const price = matchedItem ? matchedItem.actual_sell_price : 0;
                                             returnForm.setData(prev => ({ ...prev, stock_id: stockId, restocking_fee: price * 0.1 }));
                                         }}
-                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold text-foreground dark:border-input dark:bg-background"
+                                        className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground"
                                     >
                                         {returnableItems.map(item => (
                                             <option key={item.stock_id} value={item.stock_id}>
@@ -658,27 +652,27 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Restocking Fee (default 10%)</label>
+                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Restocking Fee (default 10%)</label>
                                     <input
                                         type="number" required
                                         value={returnForm.data.restocking_fee === 0 ? '' : returnForm.data.restocking_fee}
                                         onChange={(e) => returnForm.setData('restocking_fee', parseFloat(e.target.value) || 0)}
-                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold text-foreground dark:border-input dark:bg-background"
+                                        className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground"
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Catatan Alasan</label>
+                                    <label className="block text-xs font-bold text-muted-foreground mb-1">Reason / Notes</label>
                                     <input
                                         type="text"
                                         value={returnForm.data.notes}
                                         onChange={(e) => returnForm.setData('notes', e.target.value)}
-                                        className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold text-foreground dark:border-input dark:bg-background"
-                                        placeholder="Contoh: Kamera buram, tukar tipe lain"
+                                        className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground"
+                                        placeholder="e.g. Device color exchange, camera defect"
                                     />
                                 </div>
                                 <div className="flex gap-3 pt-2 border-t border-border">
-                                    <button type="button" onClick={() => setIsReturnOpen(false)} className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-gray-500 hover:bg-muted">Batal</button>
-                                    <button type="submit" disabled={returnForm.processing} className="flex-1 rounded-xl bg-indigo-600 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition">Proses Retur</button>
+                                    <button type="button" onClick={() => setIsReturnOpen(false)} className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-muted-foreground hover:bg-muted">Cancel</button>
+                                    <button type="submit" disabled={returnForm.processing} className="flex-1 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition">Confirm Return</button>
                                 </div>
                             </form>
                         </div>
@@ -686,19 +680,19 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                 );
             })()}
 
-            {/* ── WARRANTY MODAL ── */}
+            {}
             {isWarrantyOpen && selectedSale && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
-                    <div className="w-full max-w-md rounded-xl bg-card p-6 shadow-xl dark:bg-background border dark:border-input">
-                        <h4 className="text-lg font-bold text-foreground">Klaim Garansi Servis</h4>
-                        <p className="text-xs text-gray-500 mt-1 mb-4">Invoice {selectedSale.invoice_number}.</p>
+                    <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-xl border border-border">
+                        <h4 className="text-lg font-bold text-foreground">Warranty Claim</h4>
+                        <p className="text-xs text-muted-foreground mt-1 mb-4">Invoice {selectedSale.invoice_number}.</p>
                         <form onSubmit={submitWarranty} className="space-y-4">
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Item Rusak</label>
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Defective Item</label>
                                 <select
                                     required value={warrantyForm.data.stock_id}
                                     onChange={(e) => warrantyForm.setData('stock_id', e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
+                                    className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground"
                                 >
                                     {selectedSale.items.map(item => (
                                         <option key={item.stock_id} value={item.stock_id}>
@@ -708,51 +702,51 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Deskripsi Kerusakan</label>
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Damage Description</label>
                                 <textarea
                                     required rows={3}
                                     value={warrantyForm.data.damage_description}
                                     onChange={(e) => warrantyForm.setData('damage_description', e.target.value)}
-                                    className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background"
-                                    placeholder="Contoh: Layar green screen setelah update iOS"
+                                    className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground"
+                                    placeholder="e.g. Screen flickering after iOS update"
                                 />
                             </div>
                             <div className="flex gap-3 pt-2 border-t border-border">
-                                <button type="button" onClick={() => setIsWarrantyOpen(false)} className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-gray-500 hover:bg-muted">Batal</button>
-                                <button type="submit" disabled={warrantyForm.processing} className="flex-1 rounded-xl bg-rose-600 py-2.5 text-xs font-semibold text-white hover:bg-rose-700 transition">Ajukan Garansi</button>
+                                <button type="button" onClick={() => setIsWarrantyOpen(false)} className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-muted-foreground hover:bg-muted">Cancel</button>
+                                <button type="submit" disabled={warrantyForm.processing} className="flex-1 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition">Submit Claim</button>
                             </div>
                         </form>
                     </div>
                 </div>
             )}
 
-            {/* ── REPAIR UPDATE MODAL ── */}
+            {}
             {isRepairUpdateOpen && selectedRepair && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
-                    <div className="w-full max-w-md rounded-xl bg-card p-6 shadow-xl dark:bg-background border dark:border-input">
-                        <h4 className="text-lg font-bold text-foreground">Update Status Servis</h4>
+                    <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-xl border border-border">
+                        <h4 className="text-lg font-bold text-foreground">Update Repair Status</h4>
                         <form onSubmit={submitRepairUpdate} className="space-y-4 mt-4">
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Status</label>
-                                <select value={repairForm.data.status} onChange={(e) => repairForm.setData('status', e.target.value as any)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background">
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Status</label>
+                                <select value={repairForm.data.status} onChange={(e) => repairForm.setData('status', e.target.value as any)} className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground">
                                     <option value="pending">Pending</option>
                                     <option value="approved">Approved</option>
                                     <option value="in_repair">In Repair</option>
-                                    <option value="repaired">Selesai</option>
-                                    <option value="rejected">Ditolak</option>
+                                    <option value="repaired">Repaired</option>
+                                    <option value="rejected">Rejected</option>
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Biaya Servis</label>
-                                <input type="number" value={repairForm.data.repair_cost} onChange={(e) => repairForm.setData('repair_cost', parseFloat(e.target.value) || 0)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background" />
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Repair Cost</label>
+                                <input type="number" value={repairForm.data.repair_cost} onChange={(e) => repairForm.setData('repair_cost', parseFloat(e.target.value) || 0)} className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground" />
                             </div>
                             <div>
-                                <label className="block text-xs font-bold uppercase text-gray-400 mb-1">Catatan</label>
-                                <input type="text" value={repairForm.data.notes} onChange={(e) => repairForm.setData('notes', e.target.value)} className="w-full rounded-xl border border-input bg-card px-3.5 py-2 text-sm font-bold dark:border-input dark:bg-background" placeholder="Keterangan tambahan" />
+                                <label className="block text-xs font-bold text-muted-foreground mb-1">Notes</label>
+                                <input type="text" value={repairForm.data.notes} onChange={(e) => repairForm.setData('notes', e.target.value)} className="w-full rounded-xl border border-input bg-background px-3.5 py-2 text-sm font-medium text-foreground" placeholder="Additional details" />
                             </div>
                             <div className="flex gap-3 pt-2 border-t border-border">
-                                <button type="button" onClick={() => setIsRepairUpdateOpen(false)} className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-gray-500 hover:bg-muted">Batal</button>
-                                <button type="submit" disabled={repairForm.processing} className="flex-1 rounded-xl bg-indigo-600 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition">Simpan</button>
+                                <button type="button" onClick={() => setIsRepairUpdateOpen(false)} className="flex-1 rounded-xl border border-input py-2.5 text-xs font-semibold text-muted-foreground hover:bg-muted">Cancel</button>
+                                <button type="submit" disabled={repairForm.processing} className="flex-1 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition">Save Status</button>
                             </div>
                         </form>
                     </div>
@@ -761,3 +755,4 @@ export default function SalesHistory({ sales, affiliates, stores, filters }: Sal
         </AuthenticatedLayout>
     );
 }
+

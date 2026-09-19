@@ -14,7 +14,7 @@ export default {
     theme: {
         extend: {
             fontFamily: {
-                sans: ['Geist Variable', ...defaultTheme.fontFamily.sans],
+                sans: ['"Helvetica Neue"', 'Helvetica', '-apple-system', 'BlinkMacSystemFont', 'Arial', ...defaultTheme.fontFamily.sans],
             },
             colors: {
                 border: "var(--border)",

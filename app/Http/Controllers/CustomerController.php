@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Buyer;
+use App\Models\DynamicParameter;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -31,6 +32,8 @@ class CustomerController extends Controller
                 'name' => $buyer->name,
                 'phone' => $buyer->phone,
                 'address' => $buyer->address,
+                'flag' => $buyer->flag ?? 'regular',
+                'notes' => $buyer->notes,
                 'total_purchases' => $totalSales,
                 'total_spent' => (float)$totalSpent,
                 'total_items_bought' => $totalItems,
@@ -38,8 +41,33 @@ class CustomerController extends Controller
             ];
         });
 
+        // Fetch dynamic flag options configured in parameters
+        $flagParam = DynamicParameter::where('name', 'Customer Flags')->with(['values' => function($q) {
+            $q->where('is_active', true)->orderBy('value', 'asc');
+        }])->first();
+
+        $flagOptions = $flagParam ? $flagParam->values->map(function($v) {
+            return [
+                'value' => $v->value,
+                'color' => $v->color ?? 'blue',
+            ];
+        }) : [];
+
         return Inertia::render('Customers', [
-            'customers' => $customers
+            'customers' => $customers,
+            'flagOptions' => $flagOptions,
         ]);
+    }
+
+    public function updateFlagAndNotes(Request $request, Buyer $buyer)
+    {
+        $validated = $request->validate([
+            'flag' => 'required|string|max:50',
+            'notes' => 'nullable|string|max:2000',
+        ]);
+
+        $buyer->update($validated);
+
+        return redirect()->back()->with('success', 'Customer flag and notes updated.');
     }
 }

@@ -21,7 +21,6 @@ class Sale extends Model
         'status',
         'affiliate_user_id',
         'affiliate_fee',
-        'void_requested',
         'void_reason'
     ];
 

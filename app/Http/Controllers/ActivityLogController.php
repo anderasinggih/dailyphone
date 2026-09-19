@@ -11,7 +11,15 @@ class ActivityLogController extends Controller
 {
     public function index(Request $request): Response
     {
+        $user = $request->user();
         $query = ActivityLog::with(['user.store']);
+
+        // Filter saved only
+        if ($request->boolean('saved_only')) {
+            $query->whereHas('savedByUsers', function ($q) use ($user) {
+                $q->where('users.id', $user->id);
+            });
+        }
 
         // Apply search query
         if ($request->filled('search')) {
@@ -40,9 +48,33 @@ class ActivityLogController extends Controller
             ->paginate(50)
             ->withQueryString();
 
+        // Attach is_saved flag
+        $savedIds = $user->savedActivities()->pluck('activity_logs.id')->flip()->all();
+        $activities->getCollection()->transform(function ($activity) use ($savedIds) {
+            $activity->is_saved = isset($savedIds[$activity->id]);
+            return $activity;
+        });
+
         return Inertia::render('Timeline/Index', [
             'activities' => $activities,
-            'filters' => $request->only(['search', 'action_type', 'date']),
+            'filters' => array_merge(
+                $request->only(['search', 'action_type', 'date']),
+                ['saved_only' => $request->boolean('saved_only')]
+            ),
         ]);
+    }
+
+    public function toggleSave(Request $request, ActivityLog $activityLog)
+    {
+        $user = $request->user();
+        $alreadySaved = $user->savedActivities()->where('activity_logs.id', $activityLog->id)->exists();
+
+        if ($alreadySaved) {
+            $user->savedActivities()->detach($activityLog->id);
+        } else {
+            $user->savedActivities()->attach($activityLog->id);
+        }
+
+        return redirect()->back();
     }
 }

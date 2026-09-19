@@ -19,10 +19,8 @@ class Stock extends Model
         'color_id',
         'memory_id',
         'license_id',
-        'grade',
         'serial_number',
         'imei_1',
-        'imei_2',
         'supplier',
         'warranty_duration_days',
         'buy_price',
@@ -30,10 +28,7 @@ class Stock extends Model
         'sell_price_reseller',
         'qty',
         'status',
-        'ktp_number',
-        'ktp_name',
-        'ktp_photo_path',
-        'brand_rebate_status',
+        'created_by',
         'default_charge_to'
     ];
 
