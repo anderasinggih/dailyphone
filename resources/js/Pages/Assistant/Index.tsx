@@ -17,9 +17,12 @@ import {
     Sparkles,
     Brain,
     ChevronDown,
+    ChevronUp,
     ChevronLeft,
     Copy,
     Check,
+    CheckCircle2,
+    CircleDashed,
     Megaphone,
     Reply,
     X,
@@ -105,6 +108,9 @@ export default function Assistant({
     const [replyingTo, setReplyingTo] = useState<Message | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [thinkingStep, setThinkingStep] = useState<string>('Thinking...');
+    const [thinkingStepsList, setThinkingStepsList] = useState<string[]>([]);
+    const [currentStepIdx, setCurrentStepIdx] = useState<number>(0);
+    const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(true);
     const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // sidebar closed by default
     const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -250,11 +256,14 @@ export default function Assistant({
             ];
         }
 
+        setThinkingStepsList(dynamicSteps);
         let stepIndex = 0;
+        setCurrentStepIdx(0);
         setThinkingStep(dynamicSteps[0]);
 
         const stepInterval = setInterval(() => {
             stepIndex = (stepIndex + 1) % dynamicSteps.length;
+            setCurrentStepIdx(stepIndex);
             setThinkingStep(dynamicSteps[stepIndex]);
         }, 1400);
 
@@ -835,10 +844,14 @@ export default function Assistant({
 
                             {isLoading && (
                                 <div className="max-w-3xl mx-auto animate-in fade-in-50 duration-200">
-                                    {/* Gemini / Antigravity Style Clean Thinking Card */}
-                                    <div className="rounded-2xl border border-primary/20 bg-primary/5 dark:bg-primary/8 px-4 py-3 text-xs space-y-2.5 shadow-2xs">
-                                        <div className="flex items-center justify-between gap-2 border-b border-primary/15 pb-2">
-                                            <div className="flex items-center gap-2">
+                                    {/* Antigravity / Gemini Style Interactive Thinking Card with Full Milestones */}
+                                    <div className="rounded-2xl border border-primary/20 bg-primary/5 dark:bg-primary/8 text-xs shadow-sm overflow-hidden transition-all">
+                                        {/* Header Bar */}
+                                        <div 
+                                            onClick={() => setIsThinkingExpanded(!isThinkingExpanded)}
+                                            className="flex items-center justify-between gap-2 px-4 py-2.5 cursor-pointer hover:bg-primary/10 transition border-b border-primary/15 select-none"
+                                        >
+                                            <div className="flex items-center gap-2.5">
                                                 <div className="relative flex items-center justify-center">
                                                     <Brain className="h-4 w-4 text-primary animate-pulse" />
                                                     <span className="absolute -top-1 -right-1 flex h-2 w-2">
@@ -846,30 +859,86 @@ export default function Assistant({
                                                         <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
                                                     </span>
                                                 </div>
-                                                <span className="font-semibold text-primary tracking-tight">Thinking</span>
-                                                <span className="text-[10px] font-mono text-muted-foreground bg-background/60 dark:bg-background/40 px-1.5 py-0.5 rounded-md border border-border/40">
-                                                    {thinkingSeconds}s
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-semibold text-primary tracking-tight">Thinking Process</span>
+                                                    <span className="text-[10px] font-mono text-muted-foreground bg-background/70 dark:bg-background/50 px-1.5 py-0.5 rounded-md border border-border/40">
+                                                        {thinkingSeconds}s
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[11px] text-muted-foreground hidden sm:inline font-mono">
+                                                    Step {currentStepIdx + 1} of {thinkingStepsList.length || 5}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    className="p-1 rounded-md text-primary/70 hover:text-primary hover:bg-primary/10 transition"
+                                                >
+                                                    {isThinkingExpanded ? (
+                                                        <ChevronUp className="h-3.5 w-3.5" />
+                                                    ) : (
+                                                        <ChevronDown className="h-3.5 w-3.5" />
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Milestone Body */}
+                                        <div className="p-4 space-y-3">
+                                            {/* Current Live Active Highlight */}
+                                            <div className="flex items-center gap-2.5 text-foreground font-medium bg-background/60 dark:bg-background/40 p-2 rounded-xl border border-primary/15 shadow-2xs">
+                                                <div className="relative flex h-2 w-2">
+                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
+                                                </div>
+                                                <span className="font-mono text-[11px] text-foreground tracking-tight">
+                                                    {thinkingStep}
                                                 </span>
                                             </div>
 
-                                            <div className="flex items-center gap-1.5 text-[11px] text-primary/80 font-medium">
-                                                <Sparkles className="h-3 w-3 text-primary animate-spin" style={{ animationDuration: '3s' }} />
-                                                <span className="text-[10px] text-muted-foreground hidden sm:inline">Daily Intelligence</span>
+                                            {/* Expanded Detailed Milestones (like Antigravity / ChatGPT reasoning) */}
+                                            {isThinkingExpanded && thinkingStepsList.length > 0 && (
+                                                <div className="pt-1 space-y-1.5 border-t border-primary/10">
+                                                    <div className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1">
+                                                        Execution Milestones
+                                                    </div>
+                                                    {thinkingStepsList.map((step, idx) => {
+                                                        const isDone = idx < currentStepIdx;
+                                                        const isCurrent = idx === currentStepIdx;
+                                                        const isUpcoming = idx > currentStepIdx;
+
+                                                        return (
+                                                            <div 
+                                                                key={idx}
+                                                                className={`flex items-start gap-2.5 text-[11px] font-mono py-1 px-1.5 rounded-lg transition ${
+                                                                    isCurrent
+                                                                        ? 'text-primary font-semibold bg-primary/10'
+                                                                        : isDone
+                                                                        ? 'text-muted-foreground line-through opacity-70'
+                                                                        : 'text-muted-foreground/60 opacity-50'
+                                                                }`}
+                                                            >
+                                                                <div className="mt-0.5 shrink-0">
+                                                                    {isDone ? (
+                                                                        <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                                                                    ) : isCurrent ? (
+                                                                        <Loader2 className="h-3 w-3 text-primary animate-spin" />
+                                                                    ) : (
+                                                                        <CircleDashed className="h-3 w-3 text-muted-foreground/40" />
+                                                                    )}
+                                                                </div>
+                                                                <span className="leading-snug">{step}</span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+
+                                            {/* Subtle Skeleton Progress */}
+                                            <div className="space-y-1 pt-1 opacity-60">
+                                                <div className="h-1 bg-primary/20 rounded-full animate-pulse w-full" />
                                             </div>
-                                        </div>
-
-                                        {/* Current active step */}
-                                        <div className="flex items-center gap-2 text-foreground/90 font-medium">
-                                            <div className="h-1.5 w-1.5 rounded-full bg-primary animate-ping" />
-                                            <span className="animate-in fade-in-50 duration-300 font-mono text-[11px]">
-                                                {thinkingStep}
-                                            </span>
-                                        </div>
-
-                                        {/* Pulsing Skeleton bars */}
-                                        <div className="space-y-1.5 pt-1 opacity-70">
-                                            <div className="h-1.5 bg-primary/20 rounded-full animate-pulse w-4/5" />
-                                            <div className="h-1.5 bg-primary/15 rounded-full animate-pulse w-3/5" style={{ animationDelay: '150ms' }} />
                                         </div>
                                     </div>
                                 </div>
