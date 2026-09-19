@@ -379,6 +379,15 @@ class AiAssistantController extends Controller
                     // is already stripped client-side; the RAW text (which still
                     // contains the ```ai_memo blocks) is what we inspect here.
                     $rawReply = $result['raw_reply'] ?? $result['reply'];
+                    if (!$this->hasPersistableMemo($rawReply)) {
+                        // The model stayed silent AND emitted no ```ai_memo
+                        // block this turn. Deterministically grab any clearly
+                        // memory-worthy fact (preference / family relation) from
+                        // the user's message and save it so the neuron still
+                        // learns — no announcement, fully behind the scenes.
+                        $this->silentlyPersistUserFact($result, $user, $userText);
+                        $rawReply = $result['raw_reply'] ?? $rawReply;
+                    }
                     $this->persistTrainingMemos($rawReply, $user);
 
                     // The AI cites which neuron nodes it actually consulted in a
