@@ -293,8 +293,27 @@ class AiAssistantController extends Controller
                 // 4. Save AI reply to database in this session
                 if (!empty($result['reply'])) {
                     // Persist any training memos the AI wrote, then hide the raw block
-                    $this->persistTrainingMemos($result['reply'], $user);
-                    $result['reply'] = $this->stripTrainingMemos($result['reply']);
+                    $rawReply = $result['reply'];
+                    $savedCount = $this->persistTrainingMemos($rawReply, $user);
+                    $result['reply'] = $this->stripTrainingMemos($rawReply);
+
+                    // Honesty guard (end-to-end): the model only *really* saves a
+                    // memory when a valid ```ai_memo block is persisted. If it
+                    // claimed the memory was saved (or the user explicitly asked
+                    // to save) but nothing was persisted this turn, recover the
+                    // fact programmatically instead of leaving a false claim.
+                    if ($savedCount === 0
+                        && !str_contains($rawReply, '```ai_memo')
+                        && $this->shouldRecoverMemory($userText, $rawReply)) {
+                        $recovery = $this->recoverMissingMemo($userText, $rawReply, $messagesForModel, $user);
+                        if ($recovery === 'saved') {
+                            $result['reply'] .= "\n\n✅ Memori berhasil dipulihkan & tersimpan ke neuron network.";
+                        } elseif ($recovery === 'duplicate') {
+                            $result['reply'] .= "\n\nℹ️ Catatan tersebut sebenarnya sudah ada di jaringan neuron — tidak perlu dicatat ulang.";
+                        } else {
+                            $result['reply'] .= "\n\n⚠️ *Catatan tidak tersimpan.* Aku tidak berhasil menulis blok memori yang valid. Tolong ulangi dengan jelas: `catat: <faktanya>`.";
+                        }
+                    }
 
                     $hasProposal = str_contains($result['reply'], '```action_proposal') || str_contains($result['reply'], '```json' . "\n" . '{' . "\n" . '  "action":');
                     $aiChat = \App\Models\AiChat::create([
@@ -648,53 +667,169 @@ class AiAssistantController extends Controller
         $saved = 0;
         foreach ($matches[1] as $raw) {
             $decoded = json_decode(trim($raw), true);
-            $content = trim((string)($decoded['content'] ?? ''));
-            if (!is_array($decoded) || $content === '') {
-                continue;
-            }
-
-            $kind = strtolower((string)($decoded['kind'] ?? 'knowledge'));
-            if ($kind !== 'rule') {
-                $kind = 'knowledge';
-            }
-            if ($kind === 'rule' && $user->role !== 'superadmin') {
-                $kind = 'knowledge';
-            }
-
-            // The AI may also propose a short node label and the related
-            // keywords that define where this memory plugs into the neuron map.
-            $title = trim((string)($decoded['title'] ?? ''));
-            $title = $title === '' ? null : mb_substr($title, 0, 200);
-            $related = array_values(array_unique(array_filter(array_map(function ($r) {
-                return strtolower(trim((string)$r));
-            }, (array)($decoded['related'] ?? [])), fn($r) => $r !== '')));
-            $related = array_slice($related, 0, 8);
-
-            $hash = md5($content);
-            $graph = app(\App\Services\AiMemoryGraphService::class);
-            if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists() || $graph->isDuplicateContent($content)) {
-                continue;
-            }
-
-            try {
-                \App\Models\AiTrainingNote::create([
-                    'user_id' => $user->id,
-                    'author_name' => $user->name,
-                    'author_role' => $user->role,
-                    'content' => $content,
-                    'title' => $title,
-                    'related_keywords' => $related === [] ? null : $related,
-                    'content_hash' => $hash,
-                    'kind' => $kind,
-                    'is_active' => true,
-                ]);
+            if ($this->persistMemo(is_array($decoded) ? $decoded : [], $user)) {
                 $saved++;
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Failed to persist AI training memo: ' . $e->getMessage());
             }
         }
 
         return $saved;
+    }
+
+    /**
+     * Persist one decoded ```ai_memo payload as a new neuron node.
+     * Returns true only when a brand-new node was actually created
+     * (invalid, empty, privileged-kind or duplicate payloads return false).
+     */
+    protected function persistMemo(array $decoded, $user): bool
+    {
+        $content = trim((string)($decoded['content'] ?? ''));
+        if (!is_array($decoded) || $content === '') {
+            return false;
+        }
+
+        $kind = strtolower((string)($decoded['kind'] ?? 'knowledge'));
+        if ($kind !== 'rule') {
+            $kind = 'knowledge';
+        }
+        if ($kind === 'rule' && $user->role !== 'superadmin') {
+            $kind = 'knowledge';
+        }
+
+        // The AI may also propose a short node label and the related
+        // keywords that define where this memory plugs into the neuron map.
+        $title = trim((string)($decoded['title'] ?? ''));
+        $title = $title === '' ? null : mb_substr($title, 0, 200);
+        $related = array_values(array_unique(array_filter(array_map(function ($r) {
+            return strtolower(trim((string)$r));
+        }, (array)($decoded['related'] ?? [])), fn($r) => $r !== '')));
+        $related = array_slice($related, 0, 8);
+
+        $hash = md5($content);
+        if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists()
+            || app(\App\Services\AiMemoryGraphService::class)->isDuplicateContent($content)) {
+            return false;
+        }
+
+        try {
+            \App\Models\AiTrainingNote::create([
+                'user_id' => $user->id,
+                'author_name' => $user->name,
+                'author_role' => $user->role,
+                'content' => $content,
+                'title' => $title,
+                'related_keywords' => $related === [] ? null : $related,
+                'content_hash' => $hash,
+                'kind' => $kind,
+                'is_active' => true,
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to persist AI training memo: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * True when the reply proactively claims that a memory/node was saved.
+     * Used by the honesty guard to detect the classic "said it saved, but
+     * never emitted a memo block" failure mode.
+     */
+    protected function claimsMemorySaved(string $text): bool
+    {
+        $text = strtolower(trim($text));
+        $patterns = [
+            // Indonesian: "sudah/udah/telah dicatat/disimpan/ditambahkan/..."
+            '/\b(?:sudah|udah|uwis|telah)\s+(?:di|ke-)?(?:catat|catet|simpen|simpan|tambah|tambahkan|buat|masuk|rekam|input|nyatet)\b/',
+            // Indonesian: "berhasil/sukses dicatat/disimpan/..." or "... tercatat/ketata"
+            '/\b(?:berhasil|sukses|suks?s)\s+(?:di)(?:catat|catet|simpen|simpan|tambah|buat|rekam|input|nyatet|nyimpen|disimpan)\b/',
+            '/\b(?:sudah|udah|uwis|telah|berhasil)\s+(?:tercatat|ketata|ketatata|tertulis)\b/',
+            // Javanese: "kasil disimpen", "kasil dicatet", "katulis"
+            '/\bkasil\s+(?:di|ny|n)?(?:catet|cetat|nyatet|simpen|nyimpen|nulis|buat|tambah)\b/',
+            '/\b(?:u)?wis\s+tak\s+(?:catet|catetke|simpen|tulis|lebokake|lebokno)\b/',
+            // Javanese: "uwis tak lebokake (dadi) node anyar"
+            '/\b(?:uwis|sudah|udah|berhasil|kasil)\b[^.\n]{0,24}\bnode\s+(?:anyar|baru)\b/',
+            // "tersimpan / disimpen di (jaringan) neuron/memory"
+            '/\b(?:tersimpan|disimpen)\s+(?:di\s+|neng\s+)?(?:jaringan\s+)?(?:neuron|memory|memori)\b/',
+            // "disambungke / tersambung ke profil/node"
+            '/\b(?:disambung(?:ake|ke)?|tersambung|nyambung(?:ake)?)\s+(?:(?:ke|menyang|marang|sama|karo)\s+)?(?:profil|node|neuron|memori|memory)\b/',
+            // "(sudah) masuk ke node / jaringan neuron"
+            '/\b(?:dimasuk(?:kan)?|masuk)\s+(?:ke\s+)?(?:node|jaringan\s+neuron|neuron)\b/',
+            // "node baru ... (dibuat/disimpan/ditambahkan/...) ..."
+            '/\bnode\s+baru[^.\n]{0,40}\b(?:dibuat|disimpan|ditambahkan|tersimpan|tercatat|masuk)\b/',
+            // English
+            '/\b(?:saved\s+(?:to\s+memory|as\s+a\s+node)|memory\s+node|node\s+created|recorded\s+as\s+a\s+node)\b/',
+        ];
+
+        foreach ($patterns as $re) {
+            if (preg_match($re, $text)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * True when the user explicitly asked the AI to record/remember something
+     * ("catat ya", "simpen ini", "ingatkan", "jangan lupa", "tambahkan node").
+     * Deliberately excludes bare recall questions like "kamu ingat ini?".
+     */
+    protected function wantsToSaveMemory(string $text): bool
+    {
+        $text = strtolower(trim($text));
+        $patterns = [
+            '/\b(?:catat|catet|catt(?:e|in)?|simpanlah|simpen|rekam)\b/',
+            '/\b(?:ingatkan|ingetkan|ingat\s+yaa?|ingat\s+ini|ingat\s+itu|jangan\s+lupa)\b/',
+            '/\b(?:remember\s+this|remember\s+that|save\s+this|save\s+that|note\s+this|write\s+this\s+down|make\s+a\s+note)\b/',
+            '/\b(?:tambah|tambahkan|masuk(?:kan)?)\s+(?:ke|sebagai|menjadi)\s+node\b/',
+        ];
+
+        foreach ($patterns as $re) {
+            if (preg_match($re, $text)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the post-generation honesty guard should run for this turn.
+     */
+    protected function shouldRecoverMemory(string $userText, string $rawReply): bool
+    {
+        if (trim($rawReply) === '') {
+            return false;
+        }
+        return $this->claimsMemorySaved($rawReply) || $this->wantsToSaveMemory($userText);
+    }
+
+    /**
+     * Recovery pass: when the assistant claimed a memory was saved but no real
+     * ```ai_memo block was persisted, ask Gemini to extract the exact fact and
+     * persist it as a node. Returns 'saved', 'duplicate' or 'failed'.
+     */
+    protected function recoverMissingMemo(string $userText, string $assistantReply, array $messagesForModel, $user): string
+    {
+        $memo = $this->geminiService->recoverMemoFromReply($userText, $messagesForModel, $assistantReply, $user->role === 'superadmin');
+        if (!is_array($memo)) {
+            return 'failed';
+        }
+
+        // Classify duplicates separately so we can say "already exists" instead
+        // of a false "failed to save" scare message.
+        $content = trim((string)($memo['content'] ?? ''));
+        $isDuplicate = false;
+        if ($content !== '') {
+            $isDuplicate = \App\Models\AiTrainingNote::where('content_hash', md5($content))->exists()
+                || app(\App\Services\AiMemoryGraphService::class)->isDuplicateContent($content);
+        }
+
+        if ($this->persistMemo($memo, $user)) {
+            return 'saved';
+        }
+
+        return $isDuplicate ? 'duplicate' : 'failed';
     }
 
     /**

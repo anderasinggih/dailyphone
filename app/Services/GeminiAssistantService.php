@@ -544,20 +544,23 @@ CRITICAL: Only emit ```action_proposal when the user role is 'superadmin'. For n
 {$customInst}
 {$sessionRulesPrompt}
 
-PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (AI MENULIS SENDIRI — SANGAT PENTING):
+PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (ATURAN PENYIMPANAN WAJIB):
 - Memory kamu adalah jaringan neuron yang HIDUP & TIDAK TERBATAS: setiap catatan menjadi sebuah NODE, dan setiap node otomatis tersambung ke node-node terkait membentuk mind map.
-- Ketika pengguna memberimu instruksi, feedback, koreksi perilaku, atau fakta toko yang layak diingat selamanya (contoh: "jangan pernah sebut nomor HPP/modal", "diskon maksimal 200 ribu", "warna unit wajib diisi", "customer X sering ngotot garansi"), kamu HARUS:
-  1. Mengecek apakah hal itu sudah tercatat di GLOBAL AI TRAINING MEMORY di bawah. Jika sudah ada (ide sama), JANGAN mencatat ulang.
-  2. Jika belum, kamu BISA membuat node BARU dan menentukan relasinya: pilih "related" (kata kunci) yang paling menggambarkan node-node mana saja yang harus tersambung dengannya (contoh: nama produk, "harga", "customer", "garansi", dsb).
-- Jika belum tercatat, AKHIRI balasanmu dengan blok persis seperti ini (skala kecil, max 2 blok per balasan):
+- MENYIMPAN HANYA TERJADI LEWAT SATU MEKANISME: blok ```ai_memo di akhir balasanmu. Menulis kalimat konfirmasi seperti "sudah tersimpan", "berhasil dicatat", "node baru dibuat", atau "📝 Node baru: ..." DI TEKS BIASA TANPA blok ```ai_memo BERARTI TIDAK ADA APA-APA YANG TERSIMPAN — itu mengelabui/membohongi pengguna. JANGAN PERNAH klaim tersimpan tanpa blok nyata.
+- Kapan kamu WAJIB mengeluarkan blok ```ai_memo:
+  1. Pengguna secara EKSPLISIT memintamu mencatat/mengingat/menyimpan sesuatu ("catat ya...", "catet", "simpen ini", "ingatkan saya", "jangan lupa ...", "tambahkan ke node", "simpan di memori").
+  2. Pengguna memberitahumu fakta/relasi yang layak diingat selamanya (relasi keluarga seperti "Yaya adalah adik Singgih", profil/kebiasaan pelanggan, kebijakan toko, preferensi, koreksi perilaku, dll).
+  3. Kamu sendiri menyimpulkan aturan/fakta penting yang belum tercatat.
+- Sebelum mencatat, cek GLOBAL AI TRAINING MEMORY di bawah. Jika ide yang sama SUDAH tercatat: JANGAN keluarkan blok — cukup jawab jujur bahwa hal itu memang sudah tercatat.
+- Jika belum tercatat, AKHIRI balasanmu dengan blok persis seperti ini (skala kecil, max 1 blok per balasan):
 ```ai_memo
-{"kind": "rule", "title": "label pendek untuk node (maks 5 kata)", "related": ["kata-kunci-relasi-1", "kata-kunci-relasi-2"], "content": "instruksi singkat, spesifik, 1-2 kalimat"}
+{"kind": "rule", "title": "label pendek untuk node (maks 5 kata)", "related": ["kata-kunci-relasi-1", "kata-kunci-relasi-2"], "content": "fakta/instruksi singkat, spesifik, 1-2 kalimat"}
 ```
-- Penting: blok ```ai_memo hanya untuk mencatat ATURAN/FAKTA singkat yang kamu simpulkan sendiri. JANGAN membuat ai_memo yang mengklaim "seluruh isi dokumen/PDF tersimpan" — dokumen yang sudah diindeks sistem tidak perlu kamu catat ulang (sudah menjadi node sendiri).
+- JANGAN membuat ai_memo yang mengklaim "seluruh isi dokumen/PDF tersimpan" — dokumen yang sudah diindeks sistem sudah menjadi node sendiri (lihat SISTEM INGEST di bawah).
 - "kind" harus "rule" HANYA jika pengguna SUPERADMIN (lihat ACCESS RULES). Untuk pengguna lain gunakan "kind": "knowledge".
-- "title" boleh dihilangkan (otomatis dibuat dari content). "related" juga opsional tapi sangat dianjurkan karena itulah cara kamu menentukan "relasinya kemana" di dalam neuron map — isi 2-4 kata kunci spesifik yang menghubungkan node ini ke node lain yang relevan.
+- "title" boleh dihilangkan (otomatis dibuat dari content). "related" sangat dianjurkan: 2-4 kata kunci spesifik yang menentukan relasi node ini di neuron map.
 - Tulis content padat & actionable, hanya aturan/fakta yang belum tercatat.
-- Di teks normal balasanmu, konfirmasikan catatan singkat (mis. "📝 Node baru: ...") supaya pengguna tahu catatan tersimpan & tersambung.
+- Konfirmasi visual "📝 Node baru: ..." di teks normal HANYA boleh muncul BERSAMA blok ```ai_memo yang benar-benar kamu keluarkan pada balasan yang sama.
 
 GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, setiap baris = satu node):
 {$trainingNotesStr}
@@ -680,6 +683,105 @@ PROMPT;
             'success' => false,
             'reply' => "I encountered an error communicating with Gemini: {$lastErrorMsg}"
         ];
+    }
+
+    /**
+     * Recovery pass for the honesty guard. When the assistant *claimed* it saved
+     * a memory ("sudah tersimpan", "node baru", ...) but never emitted a valid
+     * ```ai_memo block, this re-asks the model to extract exactly that fact as
+     * compact JSON so the backend can persist it for real.
+     *
+     * @param  array  $messages  The recent session messages sent to the model.
+     * @return array{kind?: string, title?: string, related?: array<int,string>, content?: string}|null
+     */
+    public function recoverMemoFromReply(string $userText, array $messages, string $assistantReply, bool $superadmin = false): ?array
+    {
+        if (!$this->isConfigured()) {
+            return null;
+        }
+
+        $history = collect($messages)->slice(-5)->values();
+        $historyText = $history->map(function ($m) {
+            return strtoupper((string)($m['role'] ?? 'user')) . ': ' . trim((string)($m['content'] ?? ''));
+        })->implode("\n");
+
+        $prompt = <<<PROMPT
+You are a strict memory-extraction tool for a store AI assistant.
+
+A customer asked the assistant to remember a fact. The assistant SAID the note was saved into its neuron memory, but it FAILED to emit the structured memo block, so in reality NOTHING was stored. You must extract the exact fact and return it as ONE compact JSON object — with NO markdown, NO code fence, NO extra commentary.
+
+Rules:
+- Find the single concrete fact the customer wanted remembered: a customer/family relationship, a store rule, a customer habit, a behaviour correction, or a lasting preference.
+- Prefer the most factual, self-contained sentence (in Indonesian, as the customer wrote it).
+- If the assistant or customer confirmed saving "Yaya/adik/keluarga/relasi" style relationship facts, extract exactly that.
+- Output format: {"kind":"rule","title":"label pendek maks 5 kata","related":["2-4 kata kunci relasi"],"content":"fakta singkat, spesifik, 1-2 kalimat"}
+- Use "knowledge" instead of "rule" when the user is NOT a superadmin.
+- If there is genuinely NO factual memory to save, output exactly: {"skip":true}
+
+Conversation (most recent last):
+{$historyText}
+
+Assistant's reply:
+{$assistantReply}
+PROMPT;
+
+        $payload = [
+            'system_instruction' => [
+                'parts' => [['text' => 'You only ever emit valid JSON.']],
+            ],
+            'contents' => [
+                [
+                    'role' => 'user',
+                    'parts' => [['text' => $prompt]],
+                ],
+            ],
+            'generationConfig' => [
+                'temperature' => 0.0,
+                'maxOutputTokens' => 512,
+            ],
+        ];
+
+        // Use the cheapest model for the recovery pass unless the session
+        // already configured a different one.
+        $candidateModels = array_values(array_unique(array_filter([
+            'gemini-3.5-flash-lite',
+            $this->model,
+        ])));
+
+        foreach ($candidateModels as $modelToTry) {
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
+                $response = Http::timeout(30)->connectTimeout(10)->post($url, $payload);
+                if (!$response->successful()) {
+                    Log::warning("Gemini memo recovery ({$modelToTry}) HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                    continue;
+                }
+
+                $text = trim((string)$response->json('candidates.0.content.parts.0.text', ''));
+                // Strip any accidental markdown fence the model may add.
+                $text = trim((string)preg_replace('/^```(?:json)?\s*|\s*```$/', '', $text));
+                if ($text === '') {
+                    continue;
+                }
+
+                $decoded = json_decode($text, true);
+                if (!is_array($decoded)) {
+                    continue;
+                }
+                if (($decoded['skip'] ?? false) === true) {
+                    return null;
+                }
+                if (trim((string)($decoded['content'] ?? '')) === '') {
+                    continue;
+                }
+
+                return $decoded;
+            } catch (\Throwable $e) {
+                Log::warning("Gemini memo recovery ({$modelToTry}) failed: " . $e->getMessage());
+            }
+        }
+
+        return null;
     }
 
     /**
