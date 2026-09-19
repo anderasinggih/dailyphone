@@ -1,66 +1,53 @@
 import { useEffect, useState, useRef } from 'react';
 import { router } from '@inertiajs/react';
+import { Loader2 } from 'lucide-react';
 
 /**
- * PageLoader — Inertia page transition loading indicator.
- * Shows a thin animated top progress bar and a very subtle page-dimming
- * overlay whenever Inertia is navigating between pages.
- * No external dependencies.
+ * PageLoader — global Inertia navigation loading indicator.
+ * Shows a thin animated top progress bar driven by Inertia's real progress
+ * events, plus a centered loading pill that appears when a request is slow,
+ * so navigation never feels frozen. No external dependencies.
  */
 export default function PageLoader() {
-    const [loading, setLoading] = useState(false);
-    const [progress, setProgress] = useState(0);
     const [visible, setVisible] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [showSpinner, setShowSpinner] = useState(false);
 
-    const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const fadeOutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    const startProgress = () => {
-        setProgress(0);
-        setVisible(true);
-        setLoading(true);
-
-        // Simulate natural-feeling progress that slows near the end
-        let p = 0;
-        progressRef.current = setInterval(() => {
-            p += Math.random() * 8 + 3; // advance 3–11% each tick
-            if (p >= 90) {
-                p = 90; // hold at 90% until done
-                if (progressRef.current) clearInterval(progressRef.current);
-            }
-            setProgress(p);
-        }, 140);
-    };
-
-    const finishProgress = () => {
-        if (progressRef.current) {
-            clearInterval(progressRef.current);
-        }
-        setProgress(100);
-        setLoading(false);
-
-        // Brief delay then fade out
-        fadeOutRef.current = setTimeout(() => {
-            setVisible(false);
-            setProgress(0);
-        }, 350);
-    };
+    const spinnerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
         const removeStart = router.on('start', () => {
             if (fadeOutRef.current) clearTimeout(fadeOutRef.current);
-            startProgress();
+            setProgress(0);
+            setVisible(true);
+            setShowSpinner(false);
+            spinnerRef.current = setTimeout(() => setShowSpinner(true), 350);
+        });
+
+        const removeProgress = router.on('progress', (event) => {
+            const percentage = (event as any).detail?.progress?.percentage;
+            if (typeof percentage === 'number') {
+                setProgress(Math.min(100, Math.max(0, percentage)));
+            }
         });
 
         const removeFinish = router.on('finish', () => {
-            finishProgress();
+            if (spinnerRef.current) clearTimeout(spinnerRef.current);
+            setProgress(100);
+            setShowSpinner(false);
+            fadeOutRef.current = setTimeout(() => {
+                setVisible(false);
+                setProgress(0);
+            }, 300);
         });
 
         return () => {
             removeStart();
+            removeProgress();
             removeFinish();
-            if (progressRef.current) clearInterval(progressRef.current);
             if (fadeOutRef.current) clearTimeout(fadeOutRef.current);
+            if (spinnerRef.current) clearTimeout(spinnerRef.current);
         };
     }, []);
 
@@ -71,32 +58,20 @@ export default function PageLoader() {
             {/* ── Top progress bar ── */}
             <div
                 className="fixed top-0 left-0 right-0 z-[9999] pointer-events-none"
-                style={{ height: '2.5px' }}
+                style={{ height: '3px' }}
             >
                 <div
-                    className="h-full bg-primary shadow-[0_0_8px_2px] shadow-primary/60 transition-all ease-out"
+                    className="h-full bg-primary shadow-[0_0_10px_3px] shadow-primary/50 transition-all ease-out"
                     style={{
                         width: `${progress}%`,
-                        transitionDuration: progress === 100 ? '200ms' : '400ms',
                         opacity: progress >= 100 ? 0 : 1,
-                        transition: `width ${progress === 100 ? '200ms' : '400ms'} ease-out, opacity 300ms ease`,
+                        transition: 'width 250ms ease-out, opacity 250ms ease',
                     }}
                 />
-                {/* Subtle shimmer glow at the tip */}
-                {loading && progress < 100 && (
-                    <div
-                        className="absolute top-0 h-full w-20 rounded-full"
-                        style={{
-                            left: `calc(${progress}% - 5rem)`,
-                            background: 'linear-gradient(90deg, transparent, rgba(var(--primary-rgb, 0, 122, 255), 0.6), transparent)',
-                            filter: 'blur(3px)',
-                        }}
-                    />
-                )}
             </div>
 
-            {/* ── Very subtle page dim (only during active load, not on finish) ── */}
-            {loading && (
+            {/* ── Very subtle page dim during active load ── */}
+            {progress < 100 && (
                 <div
                     className="fixed inset-0 z-[9998] pointer-events-none"
                     style={{
@@ -104,6 +79,16 @@ export default function PageLoader() {
                         backdropFilter: 'brightness(0.97)',
                     }}
                 />
+            )}
+
+            {/* ── Centered loading pill for slow loads ── */}
+            {showSpinner && progress < 100 && (
+                <div className="fixed inset-0 z-[9998] pointer-events-none flex items-center justify-center">
+                    <div className="apple-floating-glass rounded-full px-4 py-2 flex items-center gap-2 shadow-xl border border-border/60">
+                        <Loader2 className="h-4 w-4 text-primary animate-spin" />
+                        <span className="text-xs font-semibold text-foreground">Loading…</span>
+                    </div>
+                </div>
             )}
         </>
     );
