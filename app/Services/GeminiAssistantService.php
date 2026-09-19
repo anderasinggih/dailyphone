@@ -771,8 +771,22 @@ PROMPT;
                         ->post($url, $payload);
 
                     if (!$response->successful()) {
-                        $lastErrorMsg = $response->json('error.message') ?? $response->body();
-                        Log::warning("Gemini stream key #" . ($i + 1) . "/{$totalKeys} failed: {$lastErrorMsg}");
+                        // Streaming responses do not buffer the body, so read the
+                        // raw bytes from the PSR stream to surface the real error.
+                        try {
+                            $psr = $response->toPsrResponse();
+                            $psr->getBody()->rewind();
+                            $rawBody = (string) $psr->getBody();
+                        } catch (\Throwable $e) {
+                            $rawBody = '';
+                        }
+                        $lastErrorMsg = $response->json('error.message');
+                        if ($lastErrorMsg === null) {
+                            $lastErrorMsg = $rawBody !== ''
+                                ? mb_substr($rawBody, 0, 500)
+                                : ('HTTP ' . $response->status());
+                        }
+                        Log::warning("Gemini stream key #" . ($i + 1) . "/{$totalKeys} failed ({$response->status()}): {$lastErrorMsg}");
                         $this->logKeyRotation($i, $totalKeys);
                         continue;
                     }
