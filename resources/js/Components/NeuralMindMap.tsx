@@ -40,30 +40,46 @@ interface Point {
     y: number;
 }
 
-const STORAGE_KEY = 'dp-ai-neural-map-v1';
-const MIN_ZOOM = 0.22;
-const MAX_ZOOM = 2.6;
+interface View {
+    x: number;
+    y: number;
+    k: number;
+}
+
+const STORAGE_KEY = 'dp-ai-neural-map-v2';
+const MIN_ZOOM = 0.18;
+const MAX_ZOOM = 3.2;
+const ELASTIC = 0.5;
+const NODE_H = 44;
+const GRID_SIZE = 40;
+
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
 
 function hash1(seed: number): number {
     const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
     return x - Math.floor(x);
 }
 
-// Deterministic force-directed layout over the whole graph (each connected
-// cluster emerges on its own, neuron-style).
+function nodeWidth(n: MindMapNode | undefined): number {
+    const len = n?.title?.length || 0;
+    const hub = n ? Math.min(n.degree || 0, 6) * 9 : 0;
+    return Math.min(248, Math.max(118, len * 7.6 + 58 + hub));
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Galaxy layout: each connected component becomes a small
+   galaxy (hub at the center, memories on depth rings), then
+   every galaxy is packed into a larger cosmos.
+   ───────────────────────────────────────────────────────────── */
 function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<number, Point> {
     const n = nodes.length;
     const result: Record<number, Point> = {};
     if (n === 0) return result;
 
-    nodes.forEach((node, i) => {
-        const angle = i * 2.399963 + hash1(node.id) * 6.283;
-        const radius = 70 + (i % 8) * 62;
-        result[node.id] = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
-    });
+    const nodeById = new Map(nodes.map(nd => [nd.id, nd]));
 
     const adj: Record<number, number[]> = {};
-    nodes.forEach(node => (adj[node.id] = []));
+    nodes.forEach(nd => (adj[nd.id] = []));
     links.forEach(l => {
         if (adj[l.source] && adj[l.target]) {
             adj[l.source].push(l.target);
@@ -71,73 +87,140 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<numbe
         }
     });
 
-    const iterations = n > 400 ? 50 : n > 160 ? 110 : 190;
-    const area = Math.max(1400, n * 460);
-    const k = Math.sqrt(area / n);
-    const repConst = k * k;
+    // Connected components
+    const compOf: Record<number, number> = {};
+    const comps: number[][] = [];
+    nodes.forEach(nd => {
+        if (compOf[nd.id] !== undefined) return;
+        const stack = [nd.id];
+        const comp: number[] = [];
+        compOf[nd.id] = comps.length;
+        while (stack.length) {
+            const cur = stack.pop()!;
+            comp.push(cur);
+            for (const nb of adj[cur]) {
+                if (compOf[nb] === undefined) {
+                    compOf[nb] = comps.length;
+                    stack.push(nb);
+                }
+            }
+        }
+        comps.push(comp);
+    });
 
-    for (let it = 0; it < iterations; it++) {
-        const disp: Record<string, Point> = {};
-        nodes.forEach(node => (disp[node.id] = { x: 0, y: 0 }));
+    const layoutComponent = (ids: number[]) => {
+        let hub = ids[0];
+        ids.forEach(id => {
+            if ((adj[id] || []).length > (adj[hub] || []).length) hub = id;
+        });
 
-        for (let i = 0; i < n; i++) {
-            const a = nodes[i];
-            for (let j = i + 1; j < n; j++) {
-                const b = nodes[j];
-                const dx = result[a.id].x - result[b.id].x;
-                const dy = result[a.id].y - result[b.id].y;
-                const d2 = Math.max(dx * dx + dy * dy, 0.05);
-                const f = Math.min(repConst / d2, k);
-                const d = Math.sqrt(d2);
-                const fx = (dx / d) * f;
-                const fy = (dy / d) * f;
-                disp[a.id].x += fx;
-                disp[a.id].y += fy;
-                disp[b.id].x -= fx;
-                disp[b.id].y -= fy;
+        const depth: Record<number, number> = { [hub]: 0 };
+        const queue = [hub];
+        while (queue.length) {
+            const cur = queue.shift()!;
+            for (const nb of adj[cur] || []) {
+                if (depth[nb] === undefined) {
+                    depth[nb] = (depth[cur] ?? 0) + 1;
+                    queue.push(nb);
+                }
             }
         }
 
-        links.forEach(l => {
-            const p1 = result[l.source];
-            const p2 = result[l.target];
-            if (!p1 || !p2) return;
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const d = Math.max(Math.hypot(dx, dy), 0.01);
-            const f = (d * d) / (k * 7);
-            const fx = (dx / d) * f;
-            const fy = (dy / d) * f;
-            disp[l.source].x += fx;
-            disp[l.source].y += fy;
-            disp[l.target].x -= fx;
-            disp[l.target].y -= fy;
+        const byDepth: Record<string, number[]> = {};
+        ids.forEach(id => {
+            const d = depth[id] ?? 0;
+            (byDepth[d] ||= []).push(id);
         });
 
-        const cooling = 0.12 * (1 - it / iterations);
-        nodes.forEach(node => {
-            const moving = disp[node.id];
-            const d = Math.hypot(moving.x, moving.y) || 0.001;
-            const step = Math.min(d, cooling * k);
-            result[node.id].x += (moving.x / d) * step;
-            result[node.id].y += (moving.y / d) * step;
-        });
-    }
+        const pos: Record<number, Point> = {};
+        const base = 92;
+        const spacing = 122;
 
-    // Normalize into a tight world box so the graph fills the viewport nicely.
+        Object.keys(byDepth).forEach(ds => {
+            const d = +ds;
+            const ring = byDepth[ds];
+            const avgW = ring.reduce((s, id) => s + nodeWidth(nodeById.get(id)), 0) / ring.length;
+            const ringR = Math.max(base + d * spacing, (ring.length * Math.max(avgW, 150) * 1.18) / (2 * Math.PI));
+            ring.forEach((id, i) => {
+                const jx = (hash1(id) - 0.5) * 30;
+                const jy = (hash1(id + 3) - 0.5) * 30;
+                const ang = d * 1.618 + (i * 2 * Math.PI) / ring.length;
+                pos[id] = { x: Math.cos(ang) * ringR + jx, y: Math.sin(ang) * ringR + jy };
+            });
+        });
+
+        let radius = 0;
+        const offsets: Point[] = [];
+        ids.forEach(id => {
+            const p = pos[id];
+            offsets.push(p);
+            const w = nodeWidth(nodeById.get(id));
+            radius = Math.max(radius, Math.hypot(p.x, p.y) + w / 2 + 44);
+        });
+        return { ids, offsets, radius: Math.max(radius, 120) };
+    };
+
+    const compLayouts = comps.map(c => layoutComponent(c));
+
+    // Galaxy packing: largest galaxy at the center, the rest on a golden spiral.
+    const sorted = compLayouts
+        .map((c, i) => ({ ...c, count: c.ids.length, index: i }))
+        .sort((a, b) => b.count - a.count);
+    const placed: { x: number; y: number; r: number }[] = [];
+    const global: Record<number, Point> = {};
+    const golden = 2.39996323;
+
+    sorted.forEach((comp, i) => {
+        let cx = 0;
+        let cy = 0;
+        if (i === 0) {
+            cx = 0;
+            cy = 0;
+        } else {
+            const angle = i * golden;
+            let r = comp.radius + 120;
+            const step = 110;
+            let guard = 0;
+            while (guard++ < 400) {
+                let ok = true;
+                for (const p of placed) {
+                    const d = Math.hypot(Math.cos(angle) * r - p.x, Math.sin(angle) * r - p.y);
+                    if (d < p.r + comp.radius + 130) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok) break;
+                r += step;
+            }
+            cx = Math.cos(angle) * r;
+            cy = Math.sin(angle) * r;
+        }
+        placed.push({ x: cx, y: cy, r: comp.radius });
+        comp.offsets.forEach((p, idx) => {
+            global[comp.ids[idx]] = { x: p.x + cx, y: p.y + cy };
+        });
+    });
+
+    // Normalize into a tight world box so the cosmos fills the viewport.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     nodes.forEach(node => {
-        const p = result[node.id];
-        minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-        maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+        const p = global[node.id];
+        const w = nodeWidth(node);
+        minX = Math.min(minX, p.x - w / 2);
+        minY = Math.min(minY, p.y - NODE_H / 2);
+        maxX = Math.max(maxX, p.x + w / 2);
+        maxY = Math.max(maxY, p.y + NODE_H / 2);
     });
     const boxW = Math.max(maxX - minX, 1);
     const boxH = Math.max(maxY - minY, 1);
-    const scale = Math.min(1500 / boxW, 950 / boxH);
+    const scale = Math.min(1700 / boxW, 1040 / boxH);
     nodes.forEach(node => {
-        const p = result[node.id];
-        p.x = (p.x - (minX + maxX) / 2) * scale;
-        p.y = (p.y - (minY + maxY) / 2) * scale;
+        const p = global[node.id];
+        result[node.id] = {
+            x: (p.x - (minX + maxX) / 2) * scale,
+            y: (p.y - (minY + maxY) / 2) * scale,
+        };
     });
 
     return result;
@@ -159,7 +242,12 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerSize, setContainerSize] = useState({ w: 900, h: 600 });
 
-    const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+    const [view, setView] = useState<View>({ x: 0, y: 0, k: 1 });
+    const viewRef = useRef(view);
+    useEffect(() => {
+        viewRef.current = view;
+    }, [view]);
+
     const [selectedId, setSelectedId] = useState<number | null>(null);
     const [hoveredLink, setHoveredLink] = useState<number | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
@@ -167,13 +255,15 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const [layoutSeed, setLayoutSeed] = useState(0);
     const [savedPos, setSavedPos] = useState<Record<number, Point> | null>(() => loadSavedPositions());
 
+    const animRef = useRef<{ raf: number } | null>(null);
+
     const [drag, setDrag] = useState<{
         kind: 'pan' | 'node';
         nodeId?: number;
         startX: number;
         startY: number;
         origin?: Point;
-        viewOrigin?: { x: number; y: number };
+        viewOrigin?: View;
         moved: boolean;
     } | null>(null);
 
@@ -191,7 +281,6 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
     const layout = useMemo(() => computeLayout(nodes, links), [nodes, links, layoutSeed]);
 
-    // Merge persisted positions with freshly computed ones for any new node.
     const positions = useMemo<Record<number, Point>>(() => {
         const merged: Record<number, Point> = {};
         nodes.forEach(node => {
@@ -232,76 +321,90 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     }, [nodes, links]);
 
     const nodeTitle = (id: number) => nodeById[id]?.title || `#${id}`;
-    const nodeWidth = (title: string) => Math.min(224, Math.max(120, title.length * 8 + 54));
-    const NODE_H = 44;
+
+    // ── Animated / elastic zoom ────────────────────────────────
+    const animateZoom = useCallback((target: View, dur: number) => {
+        if (animRef.current) cancelAnimationFrame(animRef.current.raf);
+        const from = { ...viewRef.current };
+        const start = performance.now();
+        let raf = 0;
+        const tick = (now: number) => {
+            const t = Math.min(1, (now - start) / dur);
+            const e = easeOutCubic(t);
+            const next: View = {
+                k: from.k + (target.k - from.k) * e,
+                x: from.x + (target.x - from.x) * e,
+                y: from.y + (target.y - from.y) * e,
+            };
+            setView(next);
+            viewRef.current = next;
+            if (t < 1) raf = requestAnimationFrame(tick);
+            else animRef.current = null;
+        };
+        animRef.current = { raf };
+        raf = requestAnimationFrame(tick);
+    }, []);
+
+    // Rubber-band zoom: overshoot past the limits slightly, then spring back.
+    const flexZoomPoint = useCallback(
+        (cx: number, cy: number, factor: number) => {
+            const prev = viewRef.current;
+            const tk = prev.k * factor;
+            const lo = MIN_ZOOM - ELASTIC;
+            const hi = MAX_ZOOM + ELASTIC;
+            const bK = Math.min(hi, Math.max(lo, tk));
+            const ratio = bK / prev.k;
+            const target: View = { k: bK, x: cx - (cx - prev.x) * ratio, y: cy - (cy - prev.y) * ratio };
+            animateZoom(target, 250);
+            if (tk > MAX_ZOOM || tk < MIN_ZOOM) {
+                const cK = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, tk));
+                const cr = cK / prev.k;
+                window.setTimeout(() => {
+                    animateZoom({ k: cK, x: cx - (cx - prev.x) * cr, y: cy - (cy - prev.y) * cr }, 200);
+                }, 300);
+            }
+        },
+        [animateZoom]
+    );
+
+    const zoomBy = (factor: number) => {
+        flexZoomPoint(containerSize.w / 2, containerSize.h / 2, factor);
+    };
+
+    const computeFit = useCallback(() => {
+        if (nodes.length === 0) return null;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        nodes.forEach(node => {
+            const p = positions[node.id];
+            const w = nodeWidth(nodeById[node.id]);
+            minX = Math.min(minX, p.x - w / 2 - 60);
+            minY = Math.min(minY, p.y - NODE_H / 2 - 60);
+            maxX = Math.max(maxX, p.x + w / 2 + 60);
+            maxY = Math.max(maxY, p.y + NODE_H / 2 + 60);
+        });
+        const bw = Math.max(maxX - minX, 1);
+        const bh = Math.max(maxY - minY, 1);
+        const k = Math.min((containerSize.w - 80) / bw, (containerSize.h - 120) / bh, 1.15);
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        return { k: Math.max(k, MIN_ZOOM), x: containerSize.w / 2 - centerX * k, y: containerSize.h / 2 - centerY * k };
+    }, [containerSize, nodes, positions, nodeById]);
+
+    const fitToView = useCallback(() => {
+        const fit = computeFit();
+        if (!fit) return;
+        animateZoom(fit, 320);
+    }, [computeFit, animateZoom]);
 
     // Initial "fit to world" once we know the size.
     const fittedRef = useRef(false);
     useEffect(() => {
         if (fittedRef.current || containerSize.w < 100 || nodes.length === 0) return;
         fittedRef.current = true;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        nodes.forEach(node => {
-            const p = positions[node.id];
-            const w = nodeWidth(nodeById[node.id]?.title || '');
-            minX = Math.min(minX, p.x - w / 2 - 60);
-            minY = Math.min(minY, p.y - NODE_H / 2 - 60);
-            maxX = Math.max(maxX, p.x + w / 2 + 60);
-            maxY = Math.max(maxY, p.y + NODE_H / 2 + 60);
-        });
-        const bw = Math.max(maxX - minX, 1);
-        const bh = Math.max(maxY - minY, 1);
-        const k = Math.min((containerSize.w - 80) / bw, (containerSize.h - 120) / bh, 1.15);
-        const centerX = (minX + maxX) / 2;
-        const centerY = (minY + maxY) / 2;
-        setView({
-            k: Math.max(k, MIN_ZOOM),
-            x: containerSize.w / 2 - centerX * k,
-            y: containerSize.h / 2 - centerY * k,
-        });
+        const fit = computeFit();
+        if (!fit) return;
+        setView(fit);
     }, [containerSize, nodes.length]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    const clampZoom = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
-
-    const zoomAt = (cx: number, cy: number, factor: number) => {
-        setView(prev => {
-            const k = clampZoom(prev.k * factor);
-            const ratio = k / prev.k;
-            return {
-                k,
-                x: cx - (cx - prev.x) * ratio,
-                y: cy - (cy - prev.y) * ratio,
-            };
-        });
-    };
-
-    const zoomBy = (factor: number) => {
-        zoomAt(containerSize.w / 2, containerSize.h / 2, factor);
-    };
-
-    const fitToView = useCallback(() => {
-        fittedRef.current = true;
-        if (nodes.length === 0) return;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        nodes.forEach(node => {
-            const p = positions[node.id];
-            const w = nodeWidth(nodeById[node.id]?.title || '');
-            minX = Math.min(minX, p.x - w / 2 - 60);
-            minY = Math.min(minY, p.y - NODE_H / 2 - 60);
-            maxX = Math.max(maxX, p.x + w / 2 + 60);
-            maxY = Math.max(maxY, p.y + NODE_H / 2 + 60);
-        });
-        const bw = Math.max(maxX - minX, 1);
-        const bh = Math.max(maxY - minY, 1);
-        const k = Math.min((containerSize.w - 80) / bw, (containerSize.h - 120) / bh, 1.15);
-        const centerX = (minX + maxX) / 2;
-        const centerY = (minY + maxY) / 2;
-        setView({
-            k: Math.max(k, MIN_ZOOM),
-            x: containerSize.w / 2 - centerX * k,
-            y: containerSize.h / 2 - centerY * k,
-        });
-    }, [containerSize, nodes, positions, nodeById]);
 
     const resetLayout = () => {
         if (!confirm('Reset node positions to AI auto-layout?')) return;
@@ -318,12 +421,10 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         const p = positions[id];
         if (!p) return;
         setSelectedId(id);
-        setView({
-            k: clampZoom(1.1),
-            x: containerSize.w / 2 - p.x * 1.1,
-            y: containerSize.h / 2 - p.y * 1.1,
-        });
+        animateZoom({ k: 1.1, x: containerSize.w / 2 - p.x * 1.1, y: containerSize.h / 2 - p.y * 1.1 }, 300);
     };
+
+    const clampZoom = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
 
     const toLocal = (clientX: number, clientY: number) => {
         const rect = containerRef.current?.getBoundingClientRect();
@@ -346,11 +447,24 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const handleWheel = (e: React.WheelEvent) => {
         e.preventDefault();
         const local = toLocal(e.clientX, e.clientY);
-        zoomAt(local.x, local.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+        flexZoomPoint(local.x, local.y, e.deltaY < 0 ? 1.14 : 1 / 1.14);
+    };
+
+    const handleDoubleClick = (e: React.MouseEvent) => {
+        const local = toLocal(e.clientX, e.clientY);
+        if (viewRef.current.k < 1.25) {
+            flexZoomPoint(local.x, local.y, 1.9);
+        } else {
+            fitToView();
+        }
     };
 
     const handlePointerDown = (e: React.PointerEvent, nodeId?: number) => {
         if (e.button !== 0 && e.pointerType === 'mouse') return;
+        if (animRef.current) {
+            cancelAnimationFrame(animRef.current.raf);
+            animRef.current = null;
+        }
         const local = toLocal(e.clientX, e.clientY);
         if (nodeId !== undefined) {
             const origin = positions[nodeId];
@@ -360,7 +474,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                 startX: local.x,
                 startY: local.y,
                 origin,
-                viewOrigin: { x: view.x, y: view.y },
+                viewOrigin: { ...viewRef.current },
                 moved: false,
             });
         } else {
@@ -368,7 +482,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                 kind: 'pan',
                 startX: local.x,
                 startY: local.y,
-                viewOrigin: { x: view.x, y: view.y },
+                viewOrigin: { ...viewRef.current },
                 moved: false,
             });
         }
@@ -381,17 +495,21 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         const dy = local.y - drag.startY;
 
         if (drag.kind === 'pan' && drag.viewOrigin) {
-            setView({ ...view, x: drag.viewOrigin.x + dx, y: drag.viewOrigin.y + dy });
+            setView({
+                ...drag.viewOrigin,
+                x: drag.viewOrigin.x + dx,
+                y: drag.viewOrigin.y + dy,
+            });
         } else if (drag.kind === 'node' && drag.nodeId !== undefined && drag.origin && drag.viewOrigin) {
-            const origin = drag.origin;
+            const k = drag.viewOrigin.k;
             const next = {
                 ...positions,
                 [drag.nodeId]: {
-                    x: origin.x + dx / view.k,
-                    y: origin.y + dy / view.k,
+                    x: drag.origin.x + dx / k,
+                    y: drag.origin.y + dy / k,
                 },
             };
-            setView({ x: drag.viewOrigin.x, y: drag.viewOrigin.y, k: view.k });
+            setView({ ...drag.viewOrigin });
             persistPositions(next);
         }
 
@@ -413,11 +531,13 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const selectedNode = selectedId !== null ? nodeById[selectedId] : null;
     const selectedNeighbors = selectedNode ? Array.from(neighbors[selectedNode.id] || []) : [];
 
+    const searching = searchQuery.trim().length > 0;
+
     return (
         <div className="relative rounded-2xl border border-border/60 bg-background overflow-hidden select-none apple-card">
-            {/* Top-left stats + search */}
+            {/* Top-left: stats + search */}
             <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm">
                     <Network className="h-3.5 w-3.5 text-primary" />
                     <span className="text-[11px] font-semibold text-foreground">
                         {nodes.length} nodes
@@ -427,18 +547,25 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                         {links.length} synapses
                     </span>
                 </div>
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm w-56">
+                <div className="flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full bg-background/90 dark:bg-card/90 backdrop-blur-xl border border-border/60 shadow-sm w-64 focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10 transition">
                     <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                     <input
                         value={searchQuery}
                         onChange={e => setSearchQuery(e.target.value)}
                         placeholder="Find a memory..."
-                        className="w-full bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none"
+                        spellCheck={false}
+                        autoComplete="off"
+                        className="w-full h-5 bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground/80 focus:outline-none"
                     />
+                    {searching && matches.size > 0 && (
+                        <span className="shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/10 text-primary text-[9px] font-bold flex items-center justify-center">
+                            {matches.size}
+                        </span>
+                    )}
                     {searchQuery && (
                         <button
                             onClick={() => setSearchQuery('')}
-                            className="p-0.5 rounded text-muted-foreground hover:text-foreground"
+                            className="p-1 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition shrink-0"
                             title="Clear search"
                         >
                             <X className="h-3 w-3" />
@@ -476,9 +603,10 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
             <div
                 ref={containerRef}
-                className="relative w-full overflow-hidden"
+                className="relative w-full overflow-hidden bg-gradient-to-br from-[#F2F3F5] to-[#E8EAEE] dark:from-[#141516] dark:to-[#0A0B0D]"
                 style={{ height: 'min(68vh, 720px)', touchAction: 'none', cursor: drag ? (drag.kind === 'pan' ? 'grabbing' : 'default') : 'grab' }}
                 onWheel={handleWheel}
+                onDoubleClick={handleDoubleClick}
                 onPointerDown={e => handlePointerDown(e)}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
@@ -505,20 +633,15 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                         style={{ touchAction: 'none' }}
                     >
                         <defs>
-                            <marker
-                                id="arrow"
-                                viewBox="0 0 10 10"
-                                refX="8"
-                                refY="5"
-                                markerWidth="6"
-                                markerHeight="6"
-                                orient="auto-start-reverse"
-                            >
-                                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(0,122,255,0.0)" />
-                            </marker>
+                            <pattern id="dp-grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse">
+                                <circle cx="1.6" cy="1.6" r="1.3" fill="var(--border)" opacity="0.6" />
+                            </pattern>
                         </defs>
 
                         <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
+                            {/* Cosmic dot grid — expands with the universe */}
+                            <rect x={-400000} y={-400000} width={800000} height={800000} fill="url(#dp-grid)" />
+
                             {/* Edges */}
                             {links.map(link => {
                                 const p1 = positions[link.source];
@@ -535,12 +658,21 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
                                 return (
                                     <g key={link.id}>
+                                        {active && (
+                                            <path
+                                                d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
+                                                fill="none"
+                                                stroke="#007AFF"
+                                                strokeWidth={6}
+                                                opacity={0.14}
+                                            />
+                                        )}
                                         <path
                                             d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
                                             fill="none"
-                                            stroke={active || hovered ? 'rgba(0,122,255,0.9)' : 'currentColor'}
+                                            stroke={active || hovered ? '#007AFF' : 'currentColor'}
                                             className={active || hovered ? '' : 'text-border'}
-                                            strokeWidth={active || hovered ? 2.2 : 1.3}
+                                            strokeWidth={active || hovered ? 2.4 : 1.4}
                                             strokeDasharray={link.label ? 'none' : '0'}
                                             style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
                                             onPointerDown={e => e.stopPropagation()}
@@ -564,8 +696,8 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                                 className="text-muted-foreground"
                                                 style={{
                                                     paintOrder: 'stroke',
-                                                    stroke: 'rgba(255,255,255,0.85)',
-                                                    strokeWidth: 3,
+                                                    stroke: 'color-mix(in srgb, var(--background) 88%, transparent)',
+                                                    strokeWidth: 3.5,
                                                     letterSpacing: 0.2,
                                                     pointerEvents: 'none',
                                                 }}
@@ -580,16 +712,24 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                             {/* Nodes */}
                             {nodes.map(node => {
                                 const p = positions[node.id];
-                                const w = nodeWidth(nodeById[node.id]?.title || '');
+                                const w = nodeWidth(nodeById[node.id]);
                                 const x = p.x - w / 2;
                                 const y = p.y - NODE_H / 2;
                                 const isSelected = selectedId === node.id;
                                 const isMatch = matches.size > 0 && matches.has(node.id);
                                 const dimmed = matches.size > 0 && !matches.has(node.id);
                                 const isRule = node.kind === 'rule';
+                                const isHub = node.degree >= 2;
+                                const glowR = Math.max(w / 2 + 14, 46);
 
                                 return (
                                     <g key={node.id} transform={`translate(${p.x},${p.y})`}>
+                                        {(isSelected || isHub) && (
+                                            <circle
+                                                r={glowR}
+                                                fill={isSelected ? 'rgba(0,122,255,0.12)' : 'rgba(0,122,255,0.05)'}
+                                            />
+                                        )}
                                         <foreignObject
                                             x={-w / 2}
                                             y={-NODE_H / 2}
@@ -598,21 +738,21 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                             style={{ pointerEvents: 'none' }}
                                         >
                                             <div
-                                                className={`flex items-center gap-1.5 h-full w-full px-2.5 rounded-xl border transition ${
+                                                className={`group flex items-center gap-1.5 h-full w-full px-2.5 rounded-xl border-[1.5px] transition ${
                                                     isRule
-                                                        ? 'bg-primary/10 border-primary/30'
-                                                        : 'bg-card/90 border-border/70'
-                                                } ${!node.is_active ? 'opacity-50' : ''} ${
-                                                    isSelected
-                                                        ? 'ring-2 ring-primary shadow-lg shadow-primary/10'
-                                                        : 'shadow-xs'
-                                                } ${isMatch ? 'ring-2 ring-primary/70' : ''} ${
+                                                        ? 'bg-primary/15 border-primary/45 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_6px_18px_-6px_rgba(0,122,255,0.45)] hover:border-primary/70'
+                                                        : 'bg-white dark:bg-[#1B1C1E] border-black/[0.08] dark:border-white/[0.14] shadow-[0_1px_2px_rgba(0,0,0,0.10),0_6px_16px_-4px_rgba(0,0,0,0.22)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.55)] hover:border-primary/40'
+                                                } ${!node.is_active ? 'opacity-55' : ''} ${
+                                                    isSelected ? 'ring-2 ring-primary' : ''
+                                                } ${isMatch ? 'ring-2 ring-primary/60' : ''} ${
                                                     dimmed ? 'opacity-25' : ''
                                                 }`}
                                             >
                                                 <span
-                                                    className={`shrink-0 h-2 w-2 rounded-full ${
-                                                        isRule ? 'bg-primary' : 'bg-muted-foreground/60'
+                                                    className={`shrink-0 h-2 w-2 rounded-full transition ${
+                                                        isRule
+                                                            ? 'bg-primary shadow-[0_0_0_3px_rgba(0,122,255,0.18)]'
+                                                            : 'bg-muted-foreground/60 group-hover:bg-primary'
                                                     }`}
                                                 />
                                                 <span
@@ -622,7 +762,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                                     {node.title}
                                                 </span>
                                                 {node.degree > 0 && (
-                                                    <span className="ml-auto shrink-0 pl-1 text-[9px] font-mono text-muted-foreground">
+                                                    <span className="ml-auto shrink-0 pl-1 text-[9px] font-mono text-muted-foreground bg-black/[0.05] dark:bg-white/[0.08] rounded-md px-1 py-0.5">
                                                         {node.degree}
                                                     </span>
                                                 )}
@@ -631,8 +771,8 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
                                         {/* Invisible hit area for drag + click */}
                                         <rect
-                                            x={-w / 2}
-                                            y={-NODE_H / 2}
+                                            x={x}
+                                            y={y}
                                             width={w}
                                             height={NODE_H}
                                             rx={10}
