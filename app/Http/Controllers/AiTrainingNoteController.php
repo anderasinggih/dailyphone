@@ -75,10 +75,12 @@ class AiTrainingNoteController extends Controller
         $note = AiTrainingNote::findOrFail($id);
         $note->update(['is_active' => !$note->is_active]);
 
+        $snippet = mb_strimwidth((string)$note->content, 0, 60, '…');
+
         return redirect()->route('settings.ai.training-notes')
             ->with('success', $note->is_active
-                ? "Training note '{...}' is now active."
-                : "Training note '{...}' is now paused.");
+                ? "Training note '{$snippet}' is now active."
+                : "Training note '{$snippet}' is now paused.");
     }
 
     public function destroy(Request $request, $id): RedirectResponse

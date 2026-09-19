@@ -279,7 +279,8 @@ export default function Authenticated({
                                     className={navLink(
                                         !!route().current('settings.general') ||
                                         !!route().current('settings.parameters') ||
-                                        !!route().current('users.index')
+                                        !!route().current('users.index') ||
+                                        !!route().current('settings.ai.training-notes')
                                     )}
                                     title="Settings"
                                 >
@@ -437,13 +438,13 @@ export default function Authenticated({
                                     href={route('settings.general')}
                                     onClick={() => setShowMobileMore(false)}
                                     className={`flex items-center gap-2.5 px-3 py-2 rounded-xl transition ${
-                                        route().current('settings.general') || route().current('settings.parameters')
+                                        route().current('settings.general') || route().current('settings.parameters') || route().current('settings.ai.training-notes')
                                             ? 'bg-primary/10 text-primary'
                                             : 'hover:bg-muted text-foreground'
                                     }`}
                                 >
                                     <div className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                        route().current('settings.general') || route().current('settings.parameters')
+                                        route().current('settings.general') || route().current('settings.parameters') || route().current('settings.ai.training-notes')
                                             ? 'bg-primary text-primary-foreground'
                                             : 'bg-muted text-muted-foreground'
                                     }`}>

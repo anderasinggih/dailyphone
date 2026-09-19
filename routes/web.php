@@ -116,6 +116,12 @@ Route::prefix('application/dp')->group(function () {
         Route::post('/assistant/undo', [\App\Http\Controllers\AiAssistantController::class, 'undoAction'])->name('assistant.undo');
         Route::post('/assistant/proposal-status', [\App\Http\Controllers\AiAssistantController::class, 'updateProposalStatus'])->name('assistant.proposal-status');
         Route::post('/settings/ai/test', [\App\Http\Controllers\AiAssistantController::class, 'testConnection'])->name('settings.ai.test');
+
+        // AI Training Notes / Persistent Memory (superadmin)
+        Route::get('/settings/ai/training-notes', [\App\Http\Controllers\AiTrainingNoteController::class, 'index'])->name('settings.ai.training-notes');
+        Route::post('/settings/ai/training-notes', [\App\Http\Controllers\AiTrainingNoteController::class, 'store'])->name('settings.ai.training-notes.store');
+        Route::post('/settings/ai/training-notes/{id}/toggle', [\App\Http\Controllers\AiTrainingNoteController::class, 'toggle'])->name('settings.ai.training-notes.toggle');
+        Route::delete('/settings/ai/training-notes/{id}', [\App\Http\Controllers\AiTrainingNoteController::class, 'destroy'])->name('settings.ai.training-notes.destroy');
     });
 
     require __DIR__.'/auth.php';

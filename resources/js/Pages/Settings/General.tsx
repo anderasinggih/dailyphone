@@ -14,7 +14,8 @@ import {
     ChevronRight,
     ChevronLeft,
     MapPin,
-    Check
+    Check,
+    BrainCircuit
 } from 'lucide-react';
 import { FormEvent, useState, useEffect } from 'react';
 
@@ -435,6 +436,32 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                                     <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
                                                 </div>
                                             </button>
+
+                                            {/* AI Training & Memory */}
+                                            <Link
+                                                href={route('settings.ai.training-notes')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <BrainCircuit className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            AI Training & Memory
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Rules & notes the AI learns from
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="caption text-muted-foreground font-mono">
+                                                        superadmin
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </Link>
 
                                             {/* Shift Schedules */}
                                             <button
