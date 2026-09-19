@@ -852,16 +852,41 @@ PROMPT;
         // yields nothing ("empty stream"). Scan the byte stream for balanced
         // top-level objects, honouring braces inside JSON strings, and decode
         // each complete object as soon as it arrives (keeps live token flow).
+        //
+        // IMPORTANT: bytes before a consumed object are dropped, never seen
+        // again; the remainder is re-scanned only with a RESET scanner state
+        // (depth/start/inStr), so braces that span chunk boundaries cannot be
+        // re-counted. Re-scanning a whole uncleared buffer per read inflates
+        // $depth and the closing brace never reaches 0 — which silently drops
+        // the tail of the response (the model appears to "stop mid-sentence").
+        // $scan is a cursor of already-examined bytes in the current buffer.
         $buffer = '';
         $depth = 0;
-        $start = -1;
+        $start = -1;   // index of the current object's opening brace; -1 = idle
+        $scan = 0;     // bytes already examined in the current buffer
         $inStr = false;
         $esc = false;
 
         while (!$body->eof()) {
             $buffer .= $body->read(8192);
             $len = strlen($buffer);
-            for ($i = 0; $i < $len; $i++) {
+
+            // When idle (between objects), drop leading separators so the
+            // buffer always starts exactly at the next object boundary.
+            if ($start < 0) {
+                $cut = 0;
+                while ($cut < $len && strpos(" \t\r\n[],", $buffer[$cut]) !== false) {
+                    $cut++;
+                }
+                if ($cut > 0) {
+                    $buffer = substr($buffer, $cut);
+                    $len = strlen($buffer);
+                    $scan = 0;
+                }
+            }
+
+            $i = $scan;
+            while ($i < $len) {
                 $ch = $buffer[$i];
 
                 if ($inStr) {
@@ -872,13 +897,14 @@ PROMPT;
                     } elseif ($ch === '"') {
                         $inStr = false;
                     }
+                    $i++;
                     continue;
                 }
 
                 if ($ch === '"') {
                     $inStr = true;
                 } elseif ($ch === '{') {
-                    if ($depth === 0) {
+                    if ($start < 0) {
                         $start = $i;
                     }
                     $depth++;
@@ -889,21 +915,23 @@ PROMPT;
                         if (is_array($json)) {
                             $emitJson($json);
                         }
+                        // Drop the consumed object and restart scanning the
+                        // remainder from 0: at this point $inStr is false and
+                        // depth/start were reset, so re-examining the remainder
+                        // is safe — it cannot re-count the object just emitted.
                         $buffer = substr($buffer, $i + 1);
                         $len = strlen($buffer);
-                        $i = -1;
+                        $depth = 0;
                         $start = -1;
+                        $scan = 0;
+                        $i = 0;
+                        continue;
                     }
                 }
+                $i++;
             }
 
-            // Drop leading non-object junk (whitespace, "["/"]", ",") so the
-            // buffer never grows unbounded while waiting for the next object.
-            if ($depth === 0) {
-                $clean = ltrim($buffer, " \t\r\n[],");
-                $buffer = $clean;
-                $start = -1;
-            }
+            $scan = $len;
         }
 
         $this->streamVisible($pending, $inMemo, function (string $s) use (&$out, $onChunk): void {
