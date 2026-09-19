@@ -14,6 +14,11 @@ use Illuminate\Support\Facades\Log;
  * the synapses — adding or removing connections so the mind map always reflects
  * its understanding instead of the raw scoring heuristic. This is what lets the
  * AI "tidy its own mind map" when something does not fit.
+ *
+ * {consolidate()} is the deterministic weekly job (item 10): it dedupes
+ * near-identical neurons via the embedding index, retires stale unused nodes,
+ * and merges repeated validation patterns into one strong neuron — keeping the
+ * index clean instead of letting it grow into overlapping noise.
  */
 class AiBrainMaintenanceService
 {
@@ -329,5 +334,249 @@ USER;
         }
 
         return null;
+    }
+
+    /**
+     * Deterministic weekly memory consolidation (item 10). Runs without any AI
+     * round-trip so it is cheap and repeatable:
+     *
+     *  1. DEDUPE — near-duplicate notes (cosine ≥ threshold on the stored
+     *     embedding, or high Jaccard on token overlap when the vector is cold)
+     *     are collapsed into the most-used survivor; the redundant node is
+     *     soft-deactivated and its links rewired to the survivor.
+     *  2. PROMOTE — repeated validation patterns for the same action (the
+     *     feedback loop from rejected proposals) are merged into one strong
+     *     "validation" neuron so the AI learns the lesson once, not N times.
+     *  3. RETIRE — active knowledge nodes that were never consulted and are
+     *     older than the cutoff are soft-deactivated (recoverable), keeping the
+     *     index clean as the brain grows.
+     *
+     * @return array{deduped: int, promoted: int, retired: int, scanned: int}
+     */
+    public function consolidate(float $dedupeThreshold = 0.92, int $retireAfterDays = 120): array
+    {
+        $result = ['deduped' => 0, 'promoted' => 0, 'retired' => 0, 'scanned' => 0];
+
+        $graph = app(AiMemoryGraphService::class);
+        $embedder = app(\App\Services\AiEmbeddingService::class);
+
+        $active = AiTrainingNote::where('is_active', true)
+            ->where('kind', '!=', 'rule')
+            ->orderBy('id', 'asc')
+            ->get();
+        $result['scanned'] = $active->count();
+
+        // ── 1. Dedupe near-identical knowledge notes ─────────────────────
+        // Warm any cold vectors first so the similarity pass actually works.
+        if ($active->count() > 1) {
+            try {
+                $embedder->embedMissing($active);
+                $active = AiTrainingNote::where('is_active', true)
+                    ->where('kind', '!=', 'rule')
+                    ->orderBy('id', 'asc')
+                    ->get();
+            } catch (\Throwable $e) {
+                Log::warning('Consolidation embedding warm-up failed: ' . $e->getMessage());
+            }
+        }
+
+        $survivors = $active->keyBy('id');
+        $toDeactivate = [];
+
+        foreach ($active as $note) {
+            if (!isset($survivors[$note->id]) || in_array($note->id, $toDeactivate, true)) {
+                continue;
+            }
+            $vector = $this->decodeVector((string)($note->embedding ?? ''));
+            $tokens = null;
+
+            foreach ($active as $other) {
+                if ($other->id <= $note->id) {
+                    continue;
+                }
+                if (!isset($survivors[$other->id]) || in_array($other->id, $toDeactivate, true)) {
+                    continue;
+                }
+
+                $score = 0.0;
+                if ($vector !== null) {
+                    $otherVector = $this->decodeVector((string)($other->embedding ?? ''));
+                    if ($otherVector !== null) {
+                        $score = $embedder->cosine($vector, $otherVector);
+                    }
+                }
+
+                // Cold-vector fallback: Jaccard over shared tokens.
+                if ($score <= 0.0) {
+                    if ($tokens === null) {
+                        $tokens = $graph->tokenize((string)$note->content);
+                    }
+                    $otherTokens = $graph->tokenize((string)$other->content);
+                    $union = array_unique(array_merge($tokens, $otherTokens));
+                    if (count($union) > 0) {
+                        $score = count(array_intersect($tokens, $otherTokens)) / count($union);
+                    }
+                }
+
+                if ($score < $dedupeThreshold) {
+                    continue;
+                }
+
+                [$keep, $drop] = ((int)$note->used_count >= (int)$other->used_count)
+                    ? [$note, $other]
+                    : [$other, $note];
+
+                // Re-point the redundant node's synapses to the survivor.
+                $this->redirectLinks((int)$drop->id, (int)$keep->id);
+                $keep->increment('used_count', (int)$drop->used_count);
+
+                $toDeactivate[] = (int)$drop->id;
+                unset($survivors[$drop->id]);
+                $result['deduped']++;
+            }
+        }
+
+        if ($toDeactivate !== []) {
+            AiTrainingNote::whereIn('id', $toDeactivate)->update(['is_active' => false]);
+        }
+
+        // ── 2. Promote repeated validation patterns for the same action ──
+        $validations = AiTrainingNote::where('is_active', true)
+            ->where('kind', 'validation')
+            ->get()
+            ->filter(function ($note) {
+                $content = (string)$note->content;
+
+                return str_contains($content, 'Proposal aksi') || str_contains($content, "aksi '");
+            });
+
+        $byAction = [];
+        foreach ($validations as $note) {
+            if (preg_match("/aksi '([^']+)'/", (string)$note->content, $m)) {
+                $byAction[$m[1]][] = $note;
+            }
+        }
+
+        foreach ($byAction as $action => $notes) {
+            if (count($notes) < 2) {
+                continue;
+            }
+            usort($notes, fn ($a, $b) => (int)$b->used_count <=> (int)$a->used_count);
+            $champion = $notes[0];
+
+            $mergedContent = '';
+            $seen = [];
+            foreach ($notes as $n) {
+                $line = trim((string)$n->content);
+                if ($line === '' || isset($seen[$line])) {
+                    continue;
+                }
+                $seen[$line] = true;
+                $mergedContent .= ($mergedContent === '' ? '' : ' ') . $line;
+            }
+            $mergedContent = mb_substr($mergedContent, 0, 1200);
+
+            foreach (array_slice($notes, 1) as $dup) {
+                $this->redirectLinks((int)$dup->id, (int)$champion->id);
+                $champion->increment('used_count', (int)$dup->used_count);
+                $toDeactivate[] = (int)$dup->id;
+                $result['promoted']++;
+            }
+
+            $champion->content = $mergedContent ?: $champion->content;
+            $champion->related_keywords = array_values(array_unique(array_filter(array_merge(
+                (array)($champion->related_keywords ?? []),
+                [$action, 'validation', 'proposal']
+            ))));
+            $champion->saveQuietly();
+            $this->embedNoteQuietly($champion);
+        }
+
+        if ($toDeactivate !== []) {
+            AiTrainingNote::whereIn('id', $toDeactivate)->update(['is_active' => false]);
+        }
+
+        // ── 3. Retire stale knowledge that was never consulted ────────────
+        $cutoff = now()->subDays($retireAfterDays);
+
+        $stale = AiTrainingNote::where('is_active', true)
+            ->where('kind', '!=', 'rule')
+            ->where('created_at', '<=', $cutoff)
+            ->where(function ($q) {
+                $q->whereNull('used_count')->orWhere('used_count', 0);
+            })
+            ->count();
+
+        if ($stale > 0) {
+            AiTrainingNote::where('is_active', true)
+                ->where('kind', '!=', 'rule')
+                ->where('created_at', '<=', $cutoff)
+                ->where(function ($q) {
+                    $q->whereNull('used_count')->orWhere('used_count', 0);
+                })
+                ->update(['is_active' => false]);
+            $result['retired'] = (int)$stale;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Re-point every synapse that touched $from to $to, overwriting nothing
+     * that already exists, and prune the orphaned edges from the dropped node.
+     */
+    protected function redirectLinks(int $from, int $to): void
+    {
+        if ($from === $to) {
+            return;
+        }
+
+        AiTrainingNoteLink::where(function ($q) use ($from) {
+            $q->where('note_id', $from)->orWhere('linked_note_id', $from);
+        })->get()->each(function ($link) use ($from, $to) {
+            $a = (int)$link->note_id;
+            $b = (int)$link->linked_note_id;
+            $a = $a === $from ? $to : $a;
+            $b = $b === $from ? $to : $b;
+
+            if ($a === $b || AiTrainingNoteLink::where('note_id', $a)->where('linked_note_id', $b)->exists()) {
+                $link->delete();
+
+                return;
+            }
+
+            $link->note_id = $a;
+            $link->linked_note_id = $b;
+            $link->saveQuietly();
+        });
+    }
+
+    /**
+     * Re-embed a note into its current embedding model (best effort).
+     */
+    protected function embedNoteQuietly($note): void
+    {
+        try {
+            app(\App\Services\AiEmbeddingService::class)->embedNote($note);
+        } catch (\Throwable $e) {
+            Log::warning('Re-embed after consolidation failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Decode a stored JSON embedding vector to a float array (null when empty).
+     */
+    protected function decodeVector(string $raw): ?array
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded) || $decoded === []) {
+            return null;
+        }
+
+        return array_map('floatval', $decoded);
     }
 }

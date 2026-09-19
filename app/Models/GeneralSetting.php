@@ -19,12 +19,25 @@ class GeneralSetting extends Model
         'ai_api_keys',
         'ai_model',
         'ai_system_instruction',
+        'ai_embedding_model',
+        'ai_tools_enabled',
+        'ai_grounding_enabled',
+        'ai_context_caching_enabled',
+        'ai_retrieval_top_k',
+        'ai_retrieval_min_score',
+        'ai_context_token_budget',
     ];
 
     protected $casts = [
         'geofence_lock_enabled' => 'boolean',
         'ai_enabled' => 'boolean',
         'ai_api_keys' => 'array',
+        'ai_tools_enabled' => 'boolean',
+        'ai_grounding_enabled' => 'boolean',
+        'ai_context_caching_enabled' => 'boolean',
+        'ai_retrieval_top_k' => 'integer',
+        'ai_retrieval_min_score' => 'float',
+        'ai_context_token_budget' => 'integer',
     ];
 
     /**

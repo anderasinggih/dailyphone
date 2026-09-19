@@ -233,6 +233,11 @@ class AiAssistantController extends Controller
             ->reverse()
             ->values();
 
+        // Rolling conversation summary (item 7, token-budget trimming): turn
+        // the older -part already compressed into ai_summary into a compact
+        // memory block the model can trust instead of the full transcript.
+        $sessionSummary = $session->ai_summary;
+
         $messagesForModel = $recentChats->map(function ($c) {
             return [
                 'role' => $c->role,
@@ -249,7 +254,22 @@ class AiAssistantController extends Controller
         // Resolve the per-session model override once, before streaming starts.
         $requestedModel = $request->input('model') ?: null;
 
-        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $requestedModel) {
+        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $requestedModel, $sessionSummary) {
+            $startTime = microtime(true);
+            $run = [
+                'user_id' => $user->id,
+                'session_id' => $sessionId,
+                'query' => mb_substr($userText, 0, 4000),
+                'model' => $requestedModel ?: $this->geminiService->getModel(),
+                'status' => 'success',
+                'error' => null,
+                'ai_chat_id' => null,
+                'neurons_retrieved' => null,
+                'tools_called' => null,
+                'citations' => null,
+                'retrieval_confidence' => null,
+                'usage' => null,
+            ];
             // Large attachments (PDF books, archives) can make the Gemini round
             // trip take minutes; make sure PHP's execution clock never cuts the
             // stream mid-flight, otherwise the client sees an empty response.
@@ -325,13 +345,24 @@ class AiAssistantController extends Controller
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
+                // Feedback loop (item 3): when the superadmin rejected the last
+                // proposal and now writes a corrective instruction, fold the
+                // rejection + revision into a 'validation' neuron so the AI
+                // "knows next time" instead of repeating the same mistake.
+                try {
+                    $this->learnFromProposalRejection($sessionId, $userText, $user);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Proposal feedback learning failed: ' . $e->getMessage());
+                }
+
                 // 3. Send to Gemini with full session memory & custom session rules/training
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments,
                     function (string $delta) use ($emit) {
                         $emit(['type' => 'chunk', 'text' => $delta]);
                     },
                     $ingestNotice,
-                    $requestedModel
+                    $requestedModel,
+                    $sessionSummary
                 );
 
                 // 4. Save AI reply to database in this session
@@ -364,6 +395,35 @@ class AiAssistantController extends Controller
 
                     $result['message_id'] = (string)$aiChat->id;
                     $result['timestamp'] = $aiChat->created_at->format('H:i');
+
+                    // Observability (item 12): persist what this run actually
+                    // used — which neurons matched, which tools were called,
+                    // token usage, latency and grounding citations — so a bad
+                    // answer can be replayed and diagnosed instead of guessed.
+                    try {
+                        $this->recordAssistantRun(array_merge($run, [
+                            'ai_chat_id' => (int)$aiChat->id,
+                            'status' => 'success',
+                            'latency_ms' => (int)round((microtime(true) - $startTime) * 1000),
+                            'usage' => $result['usage'] ?? null,
+                            'neurons_retrieved' => isset($neurons) ? array_column($neurons, 'id') : null,
+                            'tools_called' => $result['tools_called'] ?? null,
+                            'citations' => collect($result['grounding']['sources'] ?? [])->values()->all(),
+                            'retrieval_confidence' => $result['retrieval']['best_score'] ?? null,
+                        ]));
+                    } catch (\Throwable $e) {
+                        \Illuminate\Support\Facades\Log::warning('AI run observability failed: ' . $e->getMessage());
+                    }
+                }
+
+                // Token-budget context trimming (item 7): once a session has run
+                // long enough that a large share of history is outside the
+                // verbatim window, fold the older turns into the rolling
+                // ai_summary so the next request never runs out of room.
+                try {
+                    $this->rollSessionSummary($session, $sessionSummary, $sessionId, $user);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('AI context summarization failed: ' . $e->getMessage());
                 }
 
                 // Touch session updated_at to keep recent sessions on top
@@ -748,6 +808,145 @@ class AiAssistantController extends Controller
         }
 
         return array_values(array_unique($ids));
+    }
+
+    /**
+     * Persist one assistant execution for per-chat observability (item 12).
+     * Fields that are not present are stored as null so partial runs still
+     * leave a useful trace for later diagnosis.
+     */
+    protected function recordAssistantRun(array $data): void
+    {
+        $run = new \App\Models\AiAssistantRun([
+            'user_id' => $data['user_id'] ?? null,
+            'session_id' => $data['session_id'] ?? null,
+            'ai_chat_id' => $data['ai_chat_id'] ?? null,
+            'query' => $data['query'] ?? null,
+            'model' => $data['model'] ?? null,
+            'status' => $data['status'] ?? 'success',
+            'latency_ms' => max(0, (int)($data['latency_ms'] ?? 0)),
+            'error' => $data['error'] ?? null,
+        ]);
+
+        $usage = is_array($data['usage'] ?? null) ? $data['usage'] : [];
+        $run->prompt_tokens = (int)($usage['prompt_tokens'] ?? 0);
+        $run->completion_tokens = (int)($usage['completion_tokens'] ?? 0);
+        $run->total_tokens = (int)($usage['total_tokens'] ?? 0);
+        $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
+        $run->tools_called = $data['tools_called'] ?? null;
+        $run->citations = $data['citations'] ?? null;
+        $run->retrieval_confidence = $data['retrieval_confidence'] ?? null;
+
+        $run->save();
+    }
+
+    /**
+     * Token-budget context trimming (item 7). Once most of the session's
+     * history sits outside the 10-message verbatim window (and comfortably past
+     * the configured token budget), ask Gemini to fold the older turns into the
+     * rolling ai_summary — the next request keeps only the recent turns plus
+     * this summary instead of the full transcript.
+     */
+    protected function rollSessionSummary($session, ?string $priorSummary, int $sessionId, $user): void
+    {
+        $settings = GeneralSetting::first();
+        $budget = (int)($settings?->ai_context_token_budget ?? 10000);
+        if ($budget < 1000) {
+            $budget = 10000;
+        }
+
+        $history = \App\Models\AiChat::where('session_id', $sessionId)
+            ->where('role', '!=', 'system')
+            ->orderBy('id', 'asc')
+            ->get(['id', 'role', 'content']);
+
+        // The last 10 messages travel verbatim; everything older is the part a
+        // summary would replace. Only start folding once there is a meaningful
+        // surplus — so short chats never pay the summarization round-trip.
+        $older = collect($history)->values();
+        $verbatim = $older->slice(-10);
+        $summarizable = $older->slice(0, $older->count() - $verbatim->count());
+
+        if ($summarizable->isEmpty()) {
+            return;
+        }
+
+        $olderChars = mb_strlen($summarizable->implode('content', ''));
+        if ($olderChars < $budget * 3) {
+            return;
+        }
+
+        $messages = $summarizable->map(function ($c) {
+            return [
+                'role' => ($c->role === 'user') ? 'user' : 'model',
+                'content' => (string)$c->content,
+            ];
+        })->values()->all();
+
+        $summary = $this->geminiService->summarizeConversation($messages, $priorSummary);
+        if ($summary === null || trim($summary) === '') {
+            return;
+        }
+
+        $session->update(['ai_summary' => $summary]);
+    }
+
+    /**
+     * Feedback loop (item 3). When the last assistant message in this session is
+     * a REJECTED proposal and the superadmin is now writing a corrective
+     * instruction, extract the rejected proposal and the new instruction and
+     * persist them as a 'validation' neuron — so next time a similar action is
+     * proposed, semantic retrieval surfaces the rejection and the AI gets it
+     * right without being told twice.
+     */
+    protected function learnFromProposalRejection(int $sessionId, string $userText, $user): void
+    {
+        $latest = \App\Models\AiChat::where('session_id', $sessionId)
+            ->where('role', 'assistant')
+            ->orderBy('id', 'desc')
+            ->first();
+
+        if (!$latest || $latest->action_status !== 'rejected' || (string)$latest->content === '') {
+            return;
+        }
+
+        if (!preg_match('/```(?:action_proposal|json)?\s*(\{[\s\S]*?\})\s*```/', (string)$latest->content, $m)) {
+            return;
+        }
+
+        $decoded = json_decode($m[1], true);
+        if (!is_array($decoded)) {
+            return;
+        }
+
+        $action = trim((string)($decoded['action'] ?? ''));
+        $title = trim((string)($decoded['title'] ?? ''));
+        if ($action === '') {
+            return;
+        }
+
+        $instruction = mb_strimwidth(trim($userText), 0, 500, '…');
+        $graph = app(\App\Services\AiMemoryGraphService::class);
+
+        $content = "VALIDATION (PENOLAKAN PROPOSAL): Superadmin menolak proposal aksi '{$action}'"
+            . ($title !== '' ? " ({$title})" : '')
+            . " dengan instruksi revisi: \"{$instruction}\". Sebelum mengusulkan aksi '{$action}' lagi, pastikan proposal memenuhi instruksi tersebut.";
+
+        if ($graph->isDuplicateContent($content)) {
+            return;
+        }
+
+        \App\Models\AiTrainingNote::create([
+            'user_id' => $user->id,
+            'author_name' => 'System (proposal feedback)',
+            'author_role' => 'superadmin',
+            'content' => $content,
+            'title' => $action . ' revision',
+            'related_keywords' => ['proposal', 'rejection', 'validation', $action],
+            'content_hash' => md5($content),
+            'kind' => 'validation',
+            'is_active' => true,
+        ]);
     }
 
     /**

@@ -34,6 +34,13 @@ interface GeneralSetting {
     ai_api_keys?: string[] | null;
     ai_model?: string;
     ai_system_instruction?: string | null;
+    ai_embedding_model?: string;
+    ai_tools_enabled?: boolean;
+    ai_grounding_enabled?: boolean;
+    ai_context_caching_enabled?: boolean;
+    ai_retrieval_top_k?: number;
+    ai_retrieval_min_score?: number;
+    ai_context_token_budget?: number;
 }
 
 interface User {
@@ -168,6 +175,13 @@ export default function General({ settings, schedules, employees, stores }: Gene
         ai_api_keys: failoverSlots,
         ai_model: settings.ai_model || 'gemini-3.5-flash-lite',
         ai_system_instruction: settings.ai_system_instruction || '',
+        ai_embedding_model: settings.ai_embedding_model || 'text-embedding-004',
+        ai_tools_enabled: settings.ai_tools_enabled ?? true,
+        ai_grounding_enabled: settings.ai_grounding_enabled ?? true,
+        ai_context_caching_enabled: settings.ai_context_caching_enabled ?? true,
+        ai_retrieval_top_k: settings.ai_retrieval_top_k ?? 12,
+        ai_retrieval_min_score: settings.ai_retrieval_min_score ?? 0.3,
+        ai_context_token_budget: settings.ai_context_token_budget ?? 10000,
         clear_ai_api_key: false,
     });
 
@@ -924,6 +938,128 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                                 {testResult.message}
                                             </span>
                                         )}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <h3 className="h3 text-foreground">Intelligence & Memory</h3>
+
+                                    <div className="space-y-2">
+                                        <label className="text1 text-foreground block font-medium">
+                                            Embedding Model (Semantic Retrieval)
+                                        </label>
+                                        <select
+                                            value={aiForm.data.ai_embedding_model}
+                                            onChange={e => aiForm.setData('ai_embedding_model', e.target.value)}
+                                            className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                        >
+                                            <option value="text-embedding-004">text-embedding-004 (Recommended)</option>
+                                            <option value="gemini-embedding-001">gemini-embedding-001</option>
+                                        </select>
+                                        <p className="caption text-muted-foreground">
+                                            Used to match memory nodes by meaning, not literal keywords ("kena air" finds "water damage"). Run <code className="font-mono text-primary">php artisan ai:embed-backfill</code> after changing.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text1 font-semibold text-foreground block">Live Data Tools (Function Calling)</span>
+                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={aiForm.data.ai_tools_enabled}
+                                                    onChange={e => aiForm.setData('ai_tools_enabled', e.target.checked)}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                            </label>
+                                        </div>
+                                        <p className="text2 text-muted-foreground">
+                                            AI calls <span className="font-mono">get_stock</span>, <span className="font-mono">get_sales_today</span>, <span className="font-mono">get_aging_stock</span> and <span className="font-mono">get_customer</span> on demand instead of pasting the whole store snapshot into every prompt — fewer tokens, fewer hallucinated numbers.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text1 font-semibold text-foreground block">Google Search Grounding</span>
+                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={aiForm.data.ai_grounding_enabled}
+                                                    onChange={e => aiForm.setData('ai_grounding_enabled', e.target.checked)}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                            </label>
+                                        </div>
+                                        <p className="text2 text-muted-foreground">
+                                            Grounds general knowledge answers in live web search so the AI does not make up facts.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text1 font-semibold text-foreground block">Context Caching</span>
+                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={aiForm.data.ai_context_caching_enabled}
+                                                    onChange={e => aiForm.setData('ai_context_caching_enabled', e.target.checked)}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                            </label>
+                                        </div>
+                                        <p className="text2 text-muted-foreground">
+                                            Reuses the static system prompt + tool declarations via Gemini cachedContents — cuts cost and latency on long conversations.
+                                        </p>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Retrieval Top-K
+                                            </label>
+                                            <input
+                                                type="number"
+                                                min={3}
+                                                max={80}
+                                                value={aiForm.data.ai_retrieval_top_k}
+                                                onChange={e => aiForm.setData('ai_retrieval_top_k', parseInt(e.target.value) || 12)}
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Confidence Floor (0–1)
+                                            </label>
+                                            <input
+                                                type="number"
+                                                step="0.05"
+                                                min={0}
+                                                max={1}
+                                                value={aiForm.data.ai_retrieval_min_score}
+                                                onChange={e => aiForm.setData('ai_retrieval_min_score', parseFloat(e.target.value) || 0.3)}
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text1 text-foreground block font-medium">
+                                            Context Token Budget
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={1000}
+                                            step={1000}
+                                            value={aiForm.data.ai_context_token_budget}
+                                            onChange={e => aiForm.setData('ai_context_token_budget', parseInt(e.target.value) || 10000)}
+                                            className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 font-mono text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                        />
+                                        <p className="caption text-muted-foreground">
+                                            Once the older part of a chat exceeds ~3× this budget, it is folded into a rolling summary automatically (token-budget trimming).
+                                        </p>
                                     </div>
                                 </div>
 

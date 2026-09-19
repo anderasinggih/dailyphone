@@ -25,6 +25,15 @@ class GeminiAssistantService
     protected ?string $notesCacheKey = null;
     protected ?\Illuminate\Support\Collection $notesCache = null;
 
+    // Retrieval telemetry for the current request: the highest embedding
+    // similarity seen for the query and how the pool was built. Used both for
+    // the abstention floor (item 13) and for the per-chat observability log.
+    protected ?array $retrievalState = null;
+
+    // Accumulated Gemini usage metadata while tools/grounding land multiple
+    // round-trips under one chat() call.
+    protected array $usageTotals = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
+
     public function __construct()
     {
         $this->reloadSettings();
@@ -188,7 +197,7 @@ class GeminiAssistantService
     /**
      * Generate structured store context to ground the AI response.
      */
-    public function generateStoreContext($user): string
+    public function generateStoreContext($user, bool $liveTools = false): string
     {
         $storeFilter = null;
         if ($user && $user->role === 'karyawan' && $user->store_id) {
@@ -293,6 +302,49 @@ class GeminiAssistantService
         $userRole = $user ? $user->role : 'user';
         $parameterContext = $this->generateParametersContext();
 
+        if ($liveTools) {
+            // Function-calling mode (item 2): do NOT paste the whole inventory /
+            // customer directory into every prompt. Keep only the authoritative
+            // counts + audit flags here; the model pulls the actual rows on
+            // demand through get_stock / get_sales_today / get_aging_stock /
+            // get_customer. This is the biggest token win and kills the
+            // hallucinated numbers that a stale 70-row snapshot used to cause.
+            return <<<CONTEXT
+SYSTEM CONTEXT & LIVE STORE DATA:
+- Current Date & Time: {$today}
+- Active User Role: {$userRole}
+- Active Store Scope: {$userStoreName}
+- Total Active Branches: {$stores->count()}
+{$storeListStr}
+
+LIVE INVENTORY HIGHLIGHTS:
+- Total Units Available: {$availableCount}
+- (Use the get_stock tool to search specific units, prices, IMEI/serial.)
+
+RECENTLY DELETED / TRASHED UNITS (Keranjang Sampah):
+{$trashedStockStr}
+
+TODAYS OPERATIONS:
+- Today's Completed Sales Count: {$salesTodayCount}
+- Today's Sales Volume: Rp {$formattedSales}
+- Total Registered Customers: {$customerCount}
+- (Use get_sales_today / get_customer for method-level or per-customer detail.)
+
+OPERATIONAL AUDIT DATA:
+- Aging/Dead Stock (>45 days): {$agingCount} units
+{$agingSample}
+- (Use get_aging_stock for the full aging list.)
+- Void Transactions (Last 7 Days):
+{$voidAuditStr}
+- Pending Inter-Store Transfers: {$pendingTransferCount} pending
+{$transferStr}
+
+LIVE PARAMETER & DROPDOWN OPTIONS REFERENCE (AUTHORITATIVE):
+Use the EXACT values below as the complete, current list of selectable options in the system. NEVER invent, guess, or add options that are not listed here. When the user asks "what are the options/dropdowns/pilihannya", answer from this list.
+{$parameterContext}
+CONTEXT;
+        }
+
         return <<<CONTEXT
 SYSTEM CONTEXT & LIVE STORE DATA:
 - Current Date & Time: {$today}
@@ -383,7 +435,7 @@ CONTEXT;
      * @param  string|null  $model  Per-session model override (falls back to the
      *                              superadmin-configured model when empty).
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null, ?string $summary = null): array
     {
         if (!$this->isConfigured()) {
             return [
@@ -392,16 +444,62 @@ CONTEXT;
             ];
         }
 
-        $userRole = $user ? $user->role : 'user';
-        $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
-        $storeContext = $this->generateStoreContext($user);
+        $settings = GeneralSetting::first();
         $queryText = $query !== null ? trim($query) : $this->lastUserText($messages);
         $neurons = $this->resolveNeurons($queryText);
         $trainingNotesStr = $this->generateTrainingNotesContext($queryText);
+
+        // Live-data tools (item 2), Google Search grounding (item 4) and context
+        // caching (item 11) are opt-in flags on the settings row, each degrading
+        // gracefully back to the plain prompt when disabled or unsupported by the
+        // selected model (image-capable Nano Banana models skip tools/grounding).
+        $useModel = !empty($model) ? $model : $this->model;
+        $isImageModel = $this->isImageModel($useModel);
+        $toolsEnabled = !$isImageModel && (bool)($settings?->ai_tools_enabled ?? true);
+        $groundingEnabled = !$isImageModel && (bool)($settings?->ai_grounding_enabled ?? true);
+        $cachingEnabled = (bool)($settings?->ai_context_caching_enabled ?? true);
+
+        $toolService = app(\App\Services\AiToolService::class);
+        $tools = [];
+        if ($toolsEnabled) {
+            $tools = $toolService->declarations();
+        }
+        if ($groundingEnabled) {
+            $tools[] = ['googleSearch' => new \stdClass()];
+        }
+
+        // Confidence floor (item 13): when the embedding index WAS used and the
+        // best semantic match falls below the configured threshold, the model is
+        // told to admit uncertainty for live store facts rather than confidently
+        // hallucinate prices/stock/customer numbers.
+        $retrieval = $this->lastRetrieval();
+        $minScore = ($settings?->ai_retrieval_min_score !== null && $settings->ai_retrieval_min_score !== '')
+            ? (float)$settings->ai_retrieval_min_score
+            : 0.30;
+        $lowConfidence = $retrieval['best_score'] !== null
+            && (float)$retrieval['best_score'] < $minScore
+            && $retrieval['notes_count'] > 0;
+
+        $userRole = $user ? $user->role : 'user';
+        $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
+        $storeContext = $this->generateStoreContext($user, $toolsEnabled);
         $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : "";
         $sessionRulesPrompt = !empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n" . $sessionRules . "\n" : "";
 
-        $systemPrompt = <<<PROMPT
+        // Progressive summary of the conversation's older turns (item 7); folded
+        // into the prompt below so long chats never exhaust the context window.
+        $summaryBlock = ($summary !== null && trim((string)$summary) !== '')
+            ? "\nPROGRESSIVE CONVERSATION SUMMARY (memories of the earlier part of this chat, recorded when the context grew too long to keep verbatim — treat as reliable while answering):\n{$summary}\n"
+            : '';
+        $lowConfBlock = $lowConfidence
+            ? "\nTRUST & CONFIDENCE NOTE: semantic memory retrieval scored LOW for this query (your knowledge nodes matched only weakly). If the question concerns specific live store data (prices, stock, customer info, sales figures), say honestly that you are not fully certain and offer to verify — never invent numbers you cannot back.\n"
+            : '';
+
+        // The stable preamble (cached, item 11) is everything that does NOT vary
+        // per query; live store context, session rules, summary, neurons and the
+        // ingest notice are always appended AFTER it so the cache prefix can be
+        // matched byte-for-byte across turns.
+        $prefix = <<<PROMPT
 You are "Daily Phone Intelligence", a high-precision AI Operations, Audit & Growth Marketing Assistant for Daily Phone gadget retail stores.
 You possess advanced operational audit and growth marketing skills:
 1. Operational Auditing & Anomaly Detection: You can audit and analyze inventory health, identify dead/aging stock (>45 days), evaluate voided/cancelled invoices for suspicious patterns, and review inter-store transfer delays.
@@ -626,9 +724,9 @@ Part 2: A single structured code block starting with ```action_proposal and endi
 ```
 CRITICAL: Only emit ```action_proposal when the user role is 'superadmin'. For non-superadmin users, politely inform them that executing data mutations requires Superadmin privileges. Never emit fake actions.
 
-{$storeContext}
-{$customInst}
-{$sessionRulesPrompt}
+PROMPT;
+
+        $tailStatic = <<<PROMPT
 
 READING LINKS & ARTICLES (otomatis oleh sistem):
 - Saat pengguna berbagi sebuah tautan (artikel, Wikipedia, berita, blog, dokumen PDF) dan memintamu membacanya / mempelajarinya / meringkasnya / mencatatnya ("baca ini ...", "pelajari https://...", "ringkas link ini", "simpan ke node ..."), BACKEND SECARA OTOMATIS mengambil isi halaman tersebut dan menyimpannya sebagai node neuron memory BARU dalam request yang sama — SEBELUM kamu menjawab.
@@ -672,9 +770,19 @@ USAGE FEEDBACK / CITATION (PENTING):
 - Baris penutup ini hanya sinyal telemetri — sistem otomatis menghapusnya dari teks yang tampil ke pengguna dan memakainya untuk mengukur memori mana yang benar-benar berguna.
 
 GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, setiap baris = satu node):
-{$trainingNotesStr}
-{$ingestNotice}
 PROMPT;
+
+        $suffix = $storeContext
+            . $customInst
+            . $sessionRulesPrompt
+            . $summaryBlock
+            . $lowConfBlock
+            . $tailStatic
+            . "\n"
+            . $trainingNotesStr
+            . $ingestNotice;
+
+        $systemPrompt = $prefix . $suffix;
 
         // Build contents for Gemini API
         $contents = [];
@@ -699,7 +807,7 @@ PROMPT;
             ];
         }
 
-        // Gemini REST payload (Token-optimized)
+        // Gemini REST payload (token-optimized)
         $payload = [
             'system_instruction' => [
                 'parts' => [
@@ -712,105 +820,198 @@ PROMPT;
                 'maxOutputTokens' => 16384,
             ]
         ];
-
-        // Use exactly the configured model — no model fallback chain. Multiple API
-        // keys act as failover: if a key hits its rate/exhaustion limit, the
-        // same request retries the SAME model with the next configured key.
-        $useModel = !empty($model) ? $model : $this->model;
-        $isImageModel = $this->isImageModel($useModel);
         if ($isImageModel) {
             // Image-capable models may answer with inline images alongside text.
             $payload['generationConfig']['responseModalities'] = ['TEXT', 'IMAGE'];
         }
+        if ($tools !== []) {
+            $payload['tools'] = $tools;
+        }
+
+        // Reuse the Gemini cachedContents resource for this (model, prefix,
+        // tools) triple so the static system preamble is charged at the reduced
+        // cache rate across every turn of the conversation (item 11).
+        if ($cachingEnabled && $tools !== []) {
+            $cacheKey = sha1(implode('|', [$useModel, $prefix, json_encode($tools)]));
+            $cacheName = app(\App\Services\AiContextCacheService::class)
+                ->resolve($useModel, $cacheKey, $prefix, $tools);
+            if ($cacheName !== null) {
+                $payload['cachedContent'] = $cacheName;
+            }
+        }
+
+        $this->usageTotals = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
+
+        // The function-calling loop (item 2 + item 5): each turn may end with
+        // function calls. Read-only tools are executed and their results fed
+        // back; submit_action_proposal is captured as structured JSON and turned
+        // into a ```action_proposal card instead of being executed. The loop
+        // stops as soon as the model answers in plain text without calls.
+        $conversation = $contents;
+        $proposalArgs = null;
+        $toolCallsLog = [];
+        $grounding = null;
+        $replyText = '';
+        $rawText = '';
+        $images = [];
         $lastErrorMsg = '';
+        $maxTurns = 6;
+
+        for ($turn = 0; $turn < $maxTurns; $turn++) {
+            $payload['contents'] = $conversation;
+
+            $turnResult = $this->runTurn($payload, $useModel, $onChunk, $isImageModel);
+            if (!$turnResult['success']) {
+                $lastErrorMsg = $turnResult['error'];
+                break;
+            }
+
+            // Aggregate token usage + search-grounding metadata across turns.
+            $this->accumulateUsage($turnResult['usage'] ?? null);
+            if (!empty($turnResult['grounding'])) {
+                $grounding = $this->compactGrounding($turnResult['grounding']);
+            }
+
+            $textChunk = (string)($turnResult['text'] ?? '');
+            $replyText .= $textChunk;
+            $rawText .= $textChunk;
+            foreach (($turnResult['images'] ?? []) as $img) {
+                $images[] = $img;
+                $md = "\n\n[![Generated image]({$img['url']})]({$img['url']})";
+                $replyText .= $md;
+                $rawText .= $md;
+            }
+
+            $calls = array_values($turnResult['calls'] ?? []);
+            if ($calls === []) {
+                break;
+            }
+
+            $modelParts = [];
+            $replyParts = [];
+            foreach ($calls as $call) {
+                $name = (string)($call['name'] ?? '');
+                $args = is_array($call['args'] ?? null) ? $call['args'] : [];
+
+                $modelParts[] = [
+                    'functionCall' => ['name' => $name, 'args' => (object)$args],
+                ];
+
+                if ($name === 'submit_action_proposal') {
+                    if ($proposalArgs === null) {
+                        $proposalArgs = $args;
+                    }
+                    $replyParts[] = [
+                        'functionResponse' => [
+                            'name' => $name,
+                            'response' => ['payload' => ['accepted' => true, 'message' => 'Proposal shown to the user for review. Do not repeat it as text or as another call.']],
+                        ],
+                    ];
+                    continue;
+                }
+
+                $toolCallsLog[] = $name;
+                $replyParts[] = $toolService->call($name, $args, $user)['parts'][0];
+            }
+
+            $conversation[] = ['role' => 'model', 'parts' => $modelParts];
+            $conversation[] = ['role' => 'user', 'parts' => $replyParts];
+        }
+
+        if ($lastErrorMsg !== '') {
+            return [
+                'success' => false,
+                'reply' => $this->assistantErrorMessage($lastErrorMsg, $isImageModel),
+                'neurons' => $neurons,
+            ];
+        }
+
+        // Structured action proposals (item 5): the model's submit_action_proposal
+        // call becomes the exact ```action_proposal block the card renders — no
+        // more fragile regex repair when JSON gets mangled mid-stream.
+        if ($proposalArgs !== null && !str_contains($replyText, '```action_proposal')) {
+            $proposalBlock = $this->encodeProposal($proposalArgs);
+            if ($proposalBlock !== '') {
+                $blockFence = "\n\n```action_proposal\n{$proposalBlock}\n```";
+                if ($onChunk !== null) {
+                    $onChunk($blockFence);
+                }
+                $replyText .= $blockFence;
+                $rawText .= $blockFence;
+            }
+        }
+
+        return [
+            'success' => true,
+            'reply' => trim($this->stripMemoBlocks($replyText)),
+            'raw_reply' => trim($rawText),
+            'neurons' => $neurons,
+            'images' => $images,
+            'usage' => $this->usageTotals,
+            'tools_called' => $toolCallsLog,
+            'grounding' => $grounding,
+            'retrieval' => $retrieval,
+            'low_confidence' => $lowConfidence,
+        ];
+    }
+
+    /**
+     * One Gemini round-trip behind |chat()|. Handles both token streaming and
+     * plain blocking calls, including multi-key failover, and returns the turn's
+     * visible text, any function calls, token usage and grounding metadata.
+     *
+     * @return array{success: bool, text?: string, calls?: array, usage?: ?array, grounding?: ?array, images?: array, error?: string}
+     */
+    protected function runTurn(array $payload, string $useModel, ?callable $onChunk, bool $isImageModel): array
+    {
         $apiKeys = array_values($this->apiKeys);
         $totalKeys = count($apiKeys);
+        $lastErrorMsg = '';
 
         foreach ($apiKeys as $i => $apiKey) {
             try {
-                $endpoint = $onChunk !== null ? 'streamGenerateContent?alt=json' : 'generateContent';
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:{$endpoint}&key={$apiKey}";
-
                 if ($onChunk === null) {
                     // Blocking call: wait for the full completion (used by non-chat
                     // callers or when the client did not ask for streaming).
+                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
                     $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
+
                     if ($response->successful()) {
-                        $parts = $response->json('candidates.0.content.parts', []);
-                        $runId = date('Ymd_His') . '_' . uniqid();
-                        $text = '';
-                        $imageMd = '';
-                        $n = 0;
-                        foreach ((array) $parts as $part) {
-                            if (!empty($part['text'])) {
-                                $text .= $part['text'];
-                            }
-                            if (!empty($part['inlineData'])) {
-                                $meta = $this->persistInlineImage($part['inlineData'], $runId, $n++);
-                                if ($meta) {
-                                    $imageMd .= "\n\n[![Generated image]({$meta['url']})]({$meta['url']})";
-                                }
-                            }
-                        }
-                        $raw = trim($text . $imageMd);
-                        return [
-                            'success' => true,
-                            'reply' => $this->stripMemoBlocks($raw),
-                            'raw_reply' => trim($text),
-                            'neurons' => $neurons,
-                        ];
+                        return $this->parseBlockingResponse($response, $isImageModel);
                     }
                     $lastErrorMsg = $response->json('error.message') ?? $response->body();
                 } else {
                     // Token streaming: relay each visible delta to $onChunk while
                     // the rest of the route continues to think, so the UI renders
                     // words ~1s after the user sends the message.
+                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:streamGenerateContent?alt=json&key={$apiKey}";
                     $response = Http::withOptions(['stream' => true])
                         ->timeout(300)
                         ->connectTimeout(15)
                         ->post($url, $payload);
 
                     if (!$response->successful()) {
-                        // Streaming responses do not buffer the body, so read the
-                        // raw bytes from the PSR stream to surface the real error.
-                        try {
-                            $psr = $response->toPsrResponse();
-                            $psr->getBody()->rewind();
-                            $rawBody = (string) $psr->getBody();
-                        } catch (\Throwable $e) {
-                            $rawBody = '';
-                        }
-                        $lastErrorMsg = $response->json('error.message');
-                        if ($lastErrorMsg === null) {
-                            $lastErrorMsg = $rawBody !== ''
-                                ? mb_substr($rawBody, 0, 500)
-                                : ('HTTP ' . $response->status());
-                        }
-                        Log::warning("Gemini stream key #" . ($i + 1) . "/{$totalKeys} failed ({$response->status()}): {$lastErrorMsg}");
-                        $this->logKeyRotation($i, $totalKeys);
+                        $lastErrorMsg = $this->streamErrorBody($response, $i, $totalKeys, $useModel);
                         continue;
                     }
 
                     $meta = [];
                     $raw = null;
                     $images = [];
-                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw, $images);
-                    if ($text !== '') {
-                        return [
-                            'success' => true,
-                            'reply' => trim($text),
-                            'raw_reply' => trim((string)$raw),
-                            'neurons' => $neurons,
-                            'images' => $images,
-                        ];
-                    }
-                    $lastErrorMsg = 'The model returned an empty stream.';
-                    if (($meta['finishReason'] ?? '') !== '') {
-                        $lastErrorMsg .= " Reason: {$meta['finishReason']}";
-                    }
-                    if (($meta['blockReason'] ?? '') !== '') {
-                        $lastErrorMsg .= " (content blocked by safety filter: {$meta['blockReason']})";
-                    }
+                    $calls = [];
+                    $usage = null;
+                    $grounding = null;
+                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding);
+
+                    return [
+                        'success' => true,
+                        'text' => $text,
+                        'calls' => $calls,
+                        'usage' => $usage,
+                        'grounding' => $grounding,
+                        'images' => $images,
+                        'meta' => $meta,
+                    ];
                 }
 
                 Log::warning("Gemini model {$useModel} key #" . ($i + 1) . "/{$totalKeys} failed: {$lastErrorMsg}");
@@ -822,10 +1023,145 @@ PROMPT;
             $this->logKeyRotation($i, $totalKeys);
         }
 
+        return ['success' => false, 'error' => $lastErrorMsg];
+    }
+
+    /**
+     * Parse a blocking generateContent response into text, images, function
+     * calls, usage and grounding metadata.
+     */
+    protected function parseBlockingResponse($response, bool $isImageModel): array
+    {
+        $parts = $response->json('candidates.0.content.parts', []);
+        $runId = date('Ymd_His') . '_' . uniqid();
+        $text = '';
+        $imageMd = '';
+        $images = [];
+        $calls = [];
+        $n = 0;
+
+        foreach ((array) $parts as $part) {
+            if (!empty($part['text'])) {
+                $text .= $part['text'];
+            }
+            if (!empty($part['functionCall']) && is_array($part['functionCall'])) {
+                $calls[] = [
+                    'name' => (string)($part['functionCall']['name'] ?? ''),
+                    'args' => (array)($part['functionCall']['args'] ?? []),
+                ];
+            }
+            if (!empty($part['inlineData'])) {
+                $meta = $this->persistInlineImage($part['inlineData'], $runId, $n++);
+                if ($meta) {
+                    $images[] = $meta;
+                    $imageMd .= "\n\n[![Generated image]({$meta['url']})]({$meta['url']})";
+                }
+            }
+        }
+
         return [
-            'success' => false,
-            'reply' => $this->assistantErrorMessage($lastErrorMsg, $isImageModel),
+            'success' => true,
+            'text' => $text . $imageMd,
+            'calls' => $calls,
+            'usage' => $response->json('usageMetadata'),
+            'grounding' => $response->json('groundingMetadata'),
+            'images' => $images,
         ];
+    }
+
+    /**
+     * Surface the real error body of a failed streaming request (responses are
+     * not buffered, so the raw PSR stream must be read to explain the failure).
+     */
+    protected function streamErrorBody($response, int $index, int $totalKeys, string $useModel): string
+    {
+        try {
+            $psr = $response->toPsrResponse();
+            $psr->getBody()->rewind();
+            $rawBody = (string) $psr->getBody();
+        } catch (\Throwable $e) {
+            $rawBody = '';
+        }
+
+        $lastErrorMsg = $response->json('error.message');
+        if ($lastErrorMsg === null) {
+            $lastErrorMsg = $rawBody !== ''
+                ? mb_substr($rawBody, 0, 500)
+                : ('HTTP ' . $response->status());
+        }
+
+        Log::warning("Gemini stream key #" . ($index + 1) . "/{$totalKeys} failed ({$response->status()}) on {$useModel}: {$lastErrorMsg}");
+        $this->logKeyRotation($index, $totalKeys);
+
+        return $lastErrorMsg;
+    }
+
+    /**
+     * Fold a Gemini usageMetadata block into the request-wide token totals.
+     */
+    protected function accumulateUsage(?array $usage): void
+    {
+        if (!is_array($usage)) {
+            return;
+        }
+
+        $this->usageTotals['prompt_tokens'] += (int)($usage['promptTokenCount'] ?? $usage['prompt_tokens'] ?? 0);
+        $this->usageTotals['completion_tokens'] += (int)($usage['candidatesTokenCount'] ?? $usage['candidates_tokens'] ?? $usage['completion_tokens'] ?? 0);
+        $this->usageTotals['total_tokens'] += (int)($usage['totalTokenCount'] ?? $usage['total_tokens'] ?? 0);
+    }
+
+    /**
+     * Reduce groundingMetadata to a compact, log-friendly list of cited sources
+     * (web search results) so per-chat observability can record citations.
+     */
+    protected function compactGrounding(array $meta): array
+    {
+        $sources = [];
+        foreach (($meta['groundingChunks'] ?? []) as $chunk) {
+            $web = is_array($chunk) ? ($chunk['web'] ?? []) : [];
+            $title = isset($web['title']) ? (string)$web['title'] : '';
+            $uri = isset($web['uri']) ? (string)$web['uri'] : '';
+            if ($title === '' && $uri === '') {
+                continue;
+            }
+            $sources[] = ['title' => $title, 'url' => $uri];
+        }
+
+        return ['sources' => array_slice($sources, 0, 6)];
+    }
+
+    /**
+     * Serialize a submit_action_proposal payload as the ```action_proposal
+     * block, keeping the exact shape the front-end proposal card expects.
+     */
+    protected function encodeProposal(array $args): string
+    {
+        $out = [];
+        foreach (['action', 'title', 'summary', 'target'] as $key) {
+            if (isset($args[$key]) && $args[$key] !== '') {
+                $out[$key] = is_scalar($args[$key]) ? $args[$key] : (string)$args[$key];
+            }
+        }
+        if (isset($args['changes']) && is_array($args['changes'])) {
+            $out['changes'] = array_values(array_filter(
+                $args['changes'],
+                fn ($c) => is_array($c) && isset($c['field'])
+            ));
+        }
+        $out['payload'] = (is_array($args['payload'] ?? null) && $args['payload'] !== [])
+            ? $args['payload']
+            : new \stdClass();
+
+        return json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?: '';
+    }
+
+    /**
+     * The Gemini API keys to use when creating a cachedContents resource. The
+     * cache row only needs one working key (failover list, like chat).
+     */
+    public function apiKeyListForCaching(): array
+    {
+        return array_values($this->apiKeys);
     }
 
     /**
@@ -896,13 +1232,78 @@ PROMPT;
     }
 
     /**
+     * Compress the oldest part of a conversation into a rolling summary for
+     * token-budget trimming (item 7). The prior summary (if any) is kept as the
+     * seed and only the new turn(s) are folded in, so long chats degrade to a
+     * reliable memory instead of hitting the context window mid-conversation.
+     *
+     * @param  array<int, array{role: string, content: string}>  $messages
+     */
+    public function summarizeConversation(array $messages, ?string $priorSummary, ?callable $onDone = null): ?string
+    {
+        if (!$this->isConfigured()) {
+            return null;
+        }
+
+        $turns = [];
+        foreach ($messages as $m) {
+            $role = ($m['role'] ?? 'user') === 'user' ? 'User' : 'Assistant';
+            $content = trim((string)($m['content'] ?? ''));
+            if ($content === '') {
+                continue;
+            }
+            $turns[] = "{$role}: " . mb_strimwidth($content, 0, 900, '…');
+        }
+        if ($turns === []) {
+            return $priorSummary;
+        }
+
+        $system = <<<SYSTEM
+You maintain a rolling memory summary of a support conversation for the Daily Phone
+store assistant. Keep facts that will matter later: pending asks, agreed prices,
+customer details, store issues, decisions, and anything the user explicitly asked
+to remember. Drop pleasantries and resolved minutiae. Write in the conversation's
+language (Indonesian or English). Be compact — bullet points, under 250 words.
+The summary is shown to the model in place of the full transcript, so be faithful:
+never invent facts that were not present.
+
+Prior summary (keep everything still relevant):
+SYSTEM;
+
+        $user = ($priorSummary !== null && trim($priorSummary) !== '' ? trim($priorSummary) . "\n\n" : '')
+            . "New turns to fold in:\n" . implode("\n", $turns)
+            . "\n\nProduce the updated summary now.";
+
+        try {
+            $summary = $this->generate($system, $user, 1200, 0.3);
+            if ($summary === null) {
+                return null;
+            }
+            if ($onDone !== null) {
+                $onDone($summary);
+            }
+
+            return trim($summary);
+        } catch (\Throwable $e) {
+            Log::warning('Conversation summarization failed: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
      * Consume a :streamGenerateContent?alt=json response and relay each visible
      * text delta to the callback. ```ai_memo blocks are dropped live so the
      * client never flashes the temporary memory JSON, but the FULL raw text
      * (memos included) is still appended to $raw so the caller can persist the
      * memos afterwards.
+     *
+     * The streaming protocol also delivers function calls, token usage and
+     * search-grounding metadata — those are collected through the by-reference
+     * accumulators so the function-calling loop and observability logging work
+     * on streamed turns exactly like they do on blocking ones.
      */
-    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null): string
+    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null, ?array &$calls = null, ?array &$usage = null, ?array &$grounding = null): string
     {
         $body = $response->toPsrResponse()->getBody();
 
@@ -913,16 +1314,26 @@ PROMPT;
         if ($images === null) {
             $images = [];
         }
+        if ($calls === null) {
+            $calls = [];
+        }
         $runId = date('Ymd_His') . '_' . uniqid();
         $imgIndex = 0;
 
-        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$imgIndex, $runId): void {
+        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$calls, &$usage, &$grounding, &$imgIndex, $runId): void {
             if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
             if (($meta['blockReason'] ?? '') === '' && !empty($json['promptFeedback']['blockReason'])) {
                 $meta['blockReason'] = $json['promptFeedback']['blockReason'];
             }
+            if (!is_array($usage) && !empty($json['usageMetadata'])) {
+                $usage = $json['usageMetadata'];
+            }
+            if (!is_array($grounding) && !empty($json['groundingMetadata'])) {
+                $grounding = $json['groundingMetadata'];
+            }
+            $delta = '';
             foreach (($json['candidates'][0]['content']['parts'] ?? []) as $part) {
                 if (!empty($part['inlineData']) && is_array($part['inlineData'])) {
                     $m = $this->persistInlineImage($part['inlineData'], $runId, $imgIndex++);
@@ -930,8 +1341,16 @@ PROMPT;
                         $images[] = $m;
                     }
                 }
+                if (!empty($part['functionCall']) && is_array($part['functionCall'])) {
+                    $calls[] = [
+                        'name' => (string)($part['functionCall']['name'] ?? ''),
+                        'args' => (array)($part['functionCall']['args'] ?? []),
+                    ];
+                }
+                if (!empty($part['text']) && $delta === '') {
+                    $delta = $part['text'];
+                }
             }
-            $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
             if ($delta === '') {
                 return;
             }
@@ -1196,8 +1615,14 @@ PROMPT;
 
     /**
      * Choose which training notes reach the model: rules are always loaded
-     * (they are directives), knowledge notes are ranked by token relevance to
-     * the current query so the prompt stays tight and the access list honest.
+     * (they are directives), knowledge notes are ranked by semantic similarity
+     * to the current query via the embedding index so the prompt stays tight
+     * and matches meaning, not just surface tokens ("iphone kena air garansi?"
+     * finds a "water damage" node it shares no literal words with).
+     *
+     * When the embedding index is cold (no vectors yet, or the embedding API
+     * unreachable) the scoring gracefully degrades to the tf-idf token pool so
+     * nothing breaks before the backfill job has run.
      */
     protected function selectTrainingNotes(?string $query): \Illuminate\Support\Collection
     {
@@ -1206,55 +1631,108 @@ PROMPT;
             return $this->notesCache;
         }
 
+        $settings = GeneralSetting::first();
+        $topK = (int)($settings?->ai_retrieval_top_k ?? 12);
+        if ($topK < 3) {
+            $topK = 12;
+        }
+
         $rules = \App\Models\AiTrainingNote::where('is_active', true)
             ->where('kind', 'rule')
             ->orderBy('updated_at', 'desc')
             ->get();
 
-        $graph = app(\App\Services\AiMemoryGraphService::class);
-        $tokens = $graph->tokenize(trim((string)$query));
+        $embedder = app(\App\Services\AiEmbeddingService::class);
+        $search = $embedder->search($key, $topK, null);
 
-        if ($tokens === []) {
-            $notes = $rules->merge(
-                \App\Models\AiTrainingNote::where('is_active', true)
-                    ->where('kind', '!=', 'rule')
-                    ->orderBy('updated_at', 'desc')
-                    ->take(10)
-                    ->get()
-                    ->values()
-            );
+        $scored = $search['notes'] ?? collect();
+        $best = $search['best_score'] ?? null;
+
+        if ($scored->isNotEmpty()) {
+            $selected = $scored->values();
+            $method = 'embedding';
         } else {
-            // Bounded knowledge pool: only notes sharing a real token with the
-            // query are materialized (LIKE pre-filter), so the ranking below
-            // never walks the whole memory table as it grows.
-            $knowledge = $graph->candidateNotes($key);
-
-            $scored = $knowledge->map(function ($n) use ($tokens) {
-                return ['note' => $n, 'score' => $this->scoreAgainst($n, $tokens)];
-            });
-
-            $matched = $scored->filter(fn ($s) => $s['score'] > 0)
-                ->sortByDesc('score')
-                ->take(12)
-                ->pluck('note')
-                ->values();
-
-            $selected = $matched->isNotEmpty()
-                ? $matched
-                : \App\Models\AiTrainingNote::where('is_active', true)
-                    ->where('kind', '!=', 'rule')
-                    ->orderBy('updated_at', 'desc')
-                    ->take(6)
-                    ->get()
-                    ->values();
-
-            $notes = $rules->merge($selected);
+            // Cold index: fall back to the literal token pool so the assistant
+            // is still useful before backfill, in roughly the pre-embedding way.
+            $selected = $this->tokenFallbackNotes($key);
+            $method = 'token';
         }
+
+        // Remember the confidence signal for the abstention floor + telemetry.
+        $this->retrievalState = [
+            'query' => $key,
+            'best_score' => is_numeric($best) ? (float)$best : null,
+            'method' => $method,
+            'top_k' => $topK,
+            'notes_count' => $selected->count(),
+        ];
+
+        $notes = $rules->merge($selected);
 
         $this->notesCacheKey = $key;
         $this->notesCache = $notes;
 
         return $notes;
+    }
+
+    /**
+     * Retrieval telemetry for the latest query: best cosine similarity, how the
+     * pool was built, and how many knowledge notes were selected.
+     *
+     * @return array{query: string, best_score: ?float, method: string, top_k: int, notes_count: int}
+     */
+    public function lastRetrieval(): array
+    {
+        return $this->retrievalState ?? [
+            'query' => '',
+            'best_score' => null,
+            'method' => 'none',
+            'top_k' => 0,
+            'notes_count' => 0,
+        ];
+    }
+
+    /**
+     * Legacy literal-token candidate selection, used only as the warm-up
+     * fallback before the embedding index has been backfilled.
+     */
+    protected function tokenFallbackNotes(?string $query): \Illuminate\Support\Collection
+    {
+        $key = trim((string)$query);
+        $graph = app(\App\Services\AiMemoryGraphService::class);
+        $tokens = $graph->tokenize($key);
+
+        if ($tokens === []) {
+            return \App\Models\AiTrainingNote::where('is_active', true)
+                ->where('kind', '!=', 'rule')
+                ->orderBy('updated_at', 'desc')
+                ->take(10)
+                ->get()
+                ->values();
+        }
+
+        $knowledge = $graph->candidateNotes($key);
+
+        $scored = $knowledge->map(function ($n) use ($tokens) {
+            return ['note' => $n, 'score' => $this->scoreAgainst($n, $tokens)];
+        });
+
+        $matched = $scored->filter(fn ($s) => $s['score'] > 0)
+            ->sortByDesc('score')
+            ->take(12)
+            ->pluck('note')
+            ->values();
+
+        if ($matched->isNotEmpty()) {
+            return $matched;
+        }
+
+        return \App\Models\AiTrainingNote::where('is_active', true)
+            ->where('kind', '!=', 'rule')
+            ->orderBy('updated_at', 'desc')
+            ->take(6)
+            ->get()
+            ->values();
     }
 
     protected function scoreAgainst($note, array $tokens): int

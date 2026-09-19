@@ -89,6 +89,13 @@ class GeneralSettingsController extends Controller
                 'ai_api_keys.*' => 'nullable|string',
                 'ai_model' => 'nullable|string',
                 'ai_system_instruction' => 'nullable|string',
+                'ai_embedding_model' => 'nullable|string',
+                'ai_tools_enabled' => 'nullable|boolean',
+                'ai_grounding_enabled' => 'nullable|boolean',
+                'ai_context_caching_enabled' => 'nullable|boolean',
+                'ai_retrieval_top_k' => 'nullable|integer|min:3|max:80',
+                'ai_retrieval_min_score' => 'nullable|numeric|min:0|max:1',
+                'ai_context_token_budget' => 'nullable|integer|min:1000|max:1000000',
             ]);
 
             $data = $request->only([
@@ -96,7 +103,20 @@ class GeneralSettingsController extends Controller
                 'ai_provider',
                 'ai_model',
                 'ai_system_instruction',
+                'ai_embedding_model',
+                'ai_retrieval_top_k',
+                'ai_retrieval_min_score',
+                'ai_context_token_budget',
             ]);
+
+            // Toggles: unchecked checkboxes arrive absent, so default each to its
+            // blessed default rather than silently flipping to false.
+            $data['ai_tools_enabled'] = $request->has('ai_tools_enabled')
+                ? $request->boolean('ai_tools_enabled') : true;
+            $data['ai_grounding_enabled'] = $request->has('ai_grounding_enabled')
+                ? $request->boolean('ai_grounding_enabled') : true;
+            $data['ai_context_caching_enabled'] = $request->has('ai_context_caching_enabled')
+                ? $request->boolean('ai_context_caching_enabled') : true;
 
             if ($request->filled('ai_api_key')) {
                 $data['ai_api_key'] = $request->input('ai_api_key');
