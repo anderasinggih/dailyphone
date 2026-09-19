@@ -277,6 +277,38 @@ class AiAssistantController extends Controller
                     }
                 }
 
+                // If the user shares a URL (article / Wikipedia / news / PDF link)
+                // and asks to read, study, summarize or memorize it, the backend
+                // fetches the page and saves its content as real neuron nodes in
+                // this same request. The grounded excerpt is handed to Gemini so
+                // it can honestly summarize the article instead of guessing.
+                $urlMatches = [];
+                preg_match_all('#https?://\S+#iu', $userText, $urlMatches);
+                if (!empty($urlMatches[0])) {
+                    $readUrl = preg_match('/(bel[ae]jar|study|learn|pahami|memahami|pelajari|ingat|simpan|bac[ae]|ringkas|rangkum|summar|analisis|pinter|materi|jadikan\s*(?:node|memory))/i', $userText);
+                    if ($readUrl) {
+                        $urlToLearn = preg_replace('/[),.;:!?\'"*+>\]\}】）》]+$/u', '', $urlMatches[0][0]);
+                        $ingestedUrl = app(\App\Services\AiFileIngestService::class)->ingestUrl($urlToLearn, $user);
+                        if ($ingestedUrl['success'] && $ingestedUrl['notes_count'] > 0) {
+                            $excerpt = (string) ($ingestedUrl['excerpt'] ?? '');
+                            $ingestNotice .= "\nSISTEM INGEST (FAKTUAL): " . $ingestedUrl['message']
+                                . "\nJudul artikel: " . ($ingestedUrl['title'] ?? '')
+                                . "\nURL: " . ($ingestedUrl['url'] ?? $urlToLearn)
+                                . "\nCUPLIKAN ISI ARTIKEL (sudah menjadi node neuron memory):\n" . $excerpt
+                                . "\nGunakan cuplikan ini untuk menjawab / meringkas artikel secara jujur berdasarkan fakta dari tautan.\n";
+                            $emit([
+                                'type' => 'learned',
+                                'notes_count' => $ingestedUrl['notes_count'],
+                                'url' => $ingestedUrl['url'] ?? $urlToLearn,
+                                'title' => $ingestedUrl['title'] ?? '',
+                                'message' => $ingestedUrl['message'],
+                            ]);
+                        } else {
+                            $ingestNotice .= "\nSISTEM INGEST: gagal mengambil isi tautan (" . $ingestedUrl['message'] . "). Jangan mengklaim artikel tersimpan.\n";
+                        }
+                    }
+                }
+
                 $network = $this->geminiService->resolveNeuronNetwork($userText);
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);

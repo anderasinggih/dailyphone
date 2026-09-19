@@ -30,6 +30,12 @@ class AiFileIngestService
     /** Upper bound on how many repo files become nodes in one ingestion. */
     public const MAX_REPO_NOTES = 120;
 
+    /** Max characters of webpage text worth keeping after extraction. */
+    public const URL_TEXT_MAX = 300000;
+
+    /** Max characters of a webpage excerpt handed to Gemini for grounding. */
+    public const URL_EXCERPT_MAX = 8000;
+
     /** Skip these directories when walking a repository. */
     protected const IGNORED_DIRS = [
         '.git', 'node_modules', 'vendor', 'dist', 'build', 'out', 'target',
@@ -398,6 +404,244 @@ class AiFileIngestService
                 'file' => $relPath,
             ]);
         }
+    }
+
+    /**
+     * Fetch a public article / webpage / Wikipedia page, extract its readable
+     * text and persist the content as new training-memory neurons (kind:
+     * knowledge, tagged with the source URL). Supports HTML pages, plain text
+     * and direct PDF links. Returns a grounded excerpt so Gemini can honestly
+     * summarize what was just indexed.
+     *
+     * @return array{success: bool, message: string, url: string, title: string, notes_count: int, excerpt: string}
+     */
+    public function ingestUrl(string $url, User $user): array
+    {
+        $url = trim($url);
+        if (!filter_var($url, FILTER_VALIDATE_URL) || !preg_match('#^https?://#i', $url)) {
+            return $this->urlFail('URL tidak valid. Berikan tautan yang lengkap mulai dari https:// atau http://.');
+        }
+
+        $tempPdf = null;
+
+        try {
+            $response = Http::timeout(45)
+                ->connectTimeout(15)
+                ->withHeaders([
+                    'User-Agent' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+                    'Accept-Language' => 'en-US,en;q=0.9,id;q=0.8',
+                ])
+                ->accept('text/html,application/xhtml+xml,text/plain,application/pdf,*/*')
+                ->get($url);
+
+            if ($response->failed()) {
+                return $this->urlFail("Gagal mengakses {$url}. Pastikan tautannya publik dan bisa dibuka (status HTTP {$response->status()}).");
+            }
+
+            // Follow redirects so the final URL is stored as the real source.
+            $finalUrl = trim((string) ($response->effectiveUri() ?: $url));
+            if ($finalUrl === '') {
+                $finalUrl = $url;
+            }
+
+            $contentType = strtolower((string) $response->header('Content-Type'));
+            $body = $response->body();
+            if (mb_strlen($body) > 5 * 1024 * 1024) {
+                return $this->urlFail('Halaman terlalu besar untuk dipelajari.');
+            }
+
+            $title = '';
+            $text = '';
+
+            if (str_contains($contentType, 'pdf') || str_ends_with(strtolower($finalUrl), '.pdf')) {
+                $tempPdf = tempnam(sys_get_temp_dir(), 'dp_url_');
+                if ($tempPdf === false) {
+                    return $this->urlFail('Tidak dapat membuat file sementara untuk dokumen PDF.');
+                }
+                @file_put_contents($tempPdf, $body);
+                $text = $this->extractPdf($tempPdf);
+            } elseif (str_contains($contentType, 'text/plain')) {
+                $text = $this->cleanText($body);
+            } else {
+                [$title, $text] = $this->htmlToText($body);
+            }
+
+            $text = trim($text);
+            if ($title === '') {
+                $title = $this->urlTitleFromUrl($finalUrl);
+            }
+            if (mb_strlen($text) < 60) {
+                return $this->urlFail('Tidak ada konten teks yang bisa dibaca dari halaman tersebut.');
+            }
+
+            $saved = $this->persistUrlNodes($title, $text, $finalUrl, $user);
+            $excerpt = $this->truncate($text, self::URL_EXCERPT_MAX);
+
+            $message = $saved > 0
+                ? "🧠 Berhasil mempelajari {$saved} node dari artikel \"{$title}\" dan menyimpannya sebagai neuron memory."
+                : "Artikel \"{$title}\" sudah pernah dipelajari sebelumnya — tidak ada node baru yang dibuat (isinya sudah tersimpan di neuron network).";
+
+            return [
+                'success' => $saved > 0,
+                'message' => $message,
+                'url' => $finalUrl,
+                'title' => $title,
+                'notes_count' => $saved,
+                'excerpt' => $excerpt,
+            ];
+        } catch (\Throwable $e) {
+            Log::error('URL ingestion failed: ' . $e->getMessage(), [
+                'url' => $url,
+                'user_id' => $user->id,
+            ]);
+            return $this->urlFail('Terjadi kesalahan saat mempelajari artikel: ' . $e->getMessage());
+        } finally {
+            if ($tempPdf !== null && is_file($tempPdf)) {
+                @unlink($tempPdf);
+            }
+        }
+    }
+
+    protected function urlFail(string $message): array
+    {
+        return [
+            'success' => false,
+            'message' => $message,
+            'url' => '',
+            'title' => '',
+            'notes_count' => 0,
+            'excerpt' => '',
+        ];
+    }
+
+    /**
+     * Chunk a webpage's extracted text into knowledge nodes tagged with the
+     * source URL and meaningful keywords derived from the page title + host.
+     */
+    protected function persistUrlNodes(string $title, string $text, string $url, User $user): int
+    {
+        $related = $this->urlRelatedKeywords($title, $url);
+        $saved = 0;
+
+        foreach ($this->chunkText($text, 8000) as $i => $chunk) {
+            $chunkNo = $i + 1;
+            $nodeTitle = $chunkNo === 1
+                ? Str::limit($title, 200)
+                : Str::limit($title, 170) . ' (bagian ' . $chunkNo . ')';
+
+            if ($this->persistUrlNode($nodeTitle, $chunk, $related, $url, $title, $user)) {
+                $saved++;
+            }
+        }
+
+        return $saved;
+    }
+
+    protected function urlRelatedKeywords(string $title, string $url): array
+    {
+        $stop = ['the', 'and', 'for', 'with', 'from', 'this', 'that', 'what', 'who', 'how', 'why', 'are', 'was', 'you', 'your', 'ini', 'dan', 'yang', 'untuk'];
+        $words = preg_split('/\s+/', strtolower((string) preg_replace('/[^A-Za-z0-9\s]+/u', ' ', $title))) ?: [];
+        $words = array_values(array_filter(array_map('trim', $words), fn ($w) => mb_strlen($w) >= 3 && !in_array($w, $stop, true)));
+
+        $host = str_ireplace(['www.', 'http://', 'https://'], '', (string) parse_url($url, PHP_URL_HOST));
+        $host = str_replace(['.', '-'], [' ', ' '], strtolower($host));
+
+        $related = array_values(array_unique(array_filter(array_merge(
+            $words,
+            [$host, 'artikel', 'web']
+        ), fn ($v) => $v !== null && trim((string) $v) !== '')));
+
+        return array_slice($related, 0, 8);
+    }
+
+    protected function persistUrlNode(string $title, string $content, array $related, string $url, string $sourceLabel, User $user): bool
+    {
+        $content = mb_substr(trim($content), 0, self::NOTE_CONTENT_MAX);
+        if (mb_strlen($content) < 60) {
+            return false;
+        }
+
+        $hash = md5($content);
+        if (AiTrainingNote::where('content_hash', $hash)->exists()
+            || app(AiMemoryGraphService::class)->isDuplicateContent($content)) {
+            return false;
+        }
+
+        try {
+            AiTrainingNote::create([
+                'user_id' => $user->id,
+                'author_name' => 'Web Learn',
+                'author_role' => 'system',
+                'content' => $content,
+                'title' => $title,
+                'related_keywords' => $related === [] ? null : $related,
+                'content_hash' => $hash,
+                'kind' => 'knowledge',
+                'is_active' => true,
+                'source_url' => $url,
+                'source_label' => $sourceLabel,
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning('Failed to persist URL training node: ' . $e->getMessage(), [
+                'url' => $url,
+                'title' => $title,
+            ]);
+            return false;
+        }
+    }
+
+    protected function urlTitleFromUrl(string $url): string
+    {
+        $host = str_ireplace(['www.', 'http://', 'https://'], '', (string) parse_url($url, PHP_URL_HOST));
+        $host = $host !== '' ? $host : 'Web Article';
+
+        $path = trim((string) parse_url($url, PHP_URL_PATH), '/');
+        $parts = array_values(array_filter(explode('/', $path), fn ($p) => trim($p) !== ''));
+        $label = implode(' › ', array_map(
+            fn ($p) => ucwords(str_replace(['_', '-'], ' ', urldecode($p))),
+            $parts
+        ));
+
+        return $label !== '' ? "{$host} — {$label}" : $host;
+    }
+
+    /**
+     * Dependency-free HTML → text converter: drops scripts/styles/head/svg,
+     * converts block-level elements to line breaks, then collapses whitespace
+     * so the article body reads cleanly for chunking.
+     *
+     * @return array{0: string, 1: string} [page title, visible text]
+     */
+    protected function htmlToText(string $html): array
+    {
+        $title = '';
+        if (preg_match('/<title[^>]*>(.*?)<\/title>/is', $html, $m)) {
+            $title = trim(html_entity_decode(strip_tags($m[1]), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        }
+
+        $html = preg_replace('#<(script|style|noscript|svg|head|iframe|template)\b[^>]*>.*?</\1>#is', ' ', $html) ?? $html;
+        $html = preg_replace('/<!--.*?-->/s', ' ', $html) ?? $html;
+        $html = preg_replace('/\b(?:class|id|style|data-[a-z-]+|role|aria-[a-z-]+|width|height|target|rel|href|src|alt|title|loading|tabindex|contenteditable)\s*=\s*"[^"]*"|\b[a-z-]+\s*=\s*\'[^\']*\'/i', ' ', $html) ?? $html;
+
+        $html = preg_replace('#<(?:/?(?:p|div|h[1-6]|li|tr|td|th|section|article|header|footer|aside|nav|blockquote|pre|br|table|thead|tbody|tfoot|caption|figure|figcaption|summary|details|ul|ol|form|hr))[^>]*>#i', "\n", $html) ?? $html;
+
+        $text = strip_tags($html);
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = $this->cleanText($text);
+        $text = (string) preg_replace('/[ \t]+/', ' ', $text);
+        $text = (string) preg_replace('/ *\n */', "\n", $text);
+        $text = (string) preg_replace('/\n{3,}/', "\n\n", $text);
+
+        $lines = array_map(fn ($l) => trim($l), explode("\n", $text));
+        $lines = array_filter($lines, fn ($l) => mb_strlen($l) >= 3);
+        $text = implode("\n", $lines);
+
+        if (mb_strlen($text) > self::URL_TEXT_MAX) {
+            $text = mb_substr($text, 0, self::URL_TEXT_MAX);
+        }
+
+        return [$title, trim($text)];
     }
 
     /**
