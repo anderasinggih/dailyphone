@@ -892,103 +892,77 @@ export default function Assistant({
                             })}
 
                             {isLoading && (
-                                <div className="max-w-3xl mx-auto animate-in fade-in-50 duration-200">
-                                    {/* Antigravity / Gemini Style Interactive Thinking Card with Full Milestones */}
-                                    <div className="rounded-2xl border border-primary/20 bg-primary/5 dark:bg-primary/8 text-xs shadow-sm overflow-hidden transition-all">
-                                        {/* Header Bar */}
+                                <div className="max-w-3xl mx-auto py-2 animate-in fade-in-50 duration-200">
+                                    {/* Gemini & Apple HIG Minimalist Sleek Thinking Indicator (Containerless) */}
+                                    <div className="flex flex-col gap-1.5 text-xs select-none">
+                                        {/* Main inline status line */}
                                         <div 
                                             onClick={() => setIsThinkingExpanded(!isThinkingExpanded)}
-                                            className="flex items-center justify-between gap-2 px-4 py-2.5 cursor-pointer hover:bg-primary/10 transition border-b border-primary/15 select-none"
+                                            className="inline-flex items-center gap-2 cursor-pointer group py-1 text-muted-foreground hover:text-foreground transition-colors w-fit"
                                         >
-                                            <div className="flex items-center gap-2.5">
-                                                <div className="relative flex items-center justify-center">
-                                                    <Brain className="h-4 w-4 text-primary animate-pulse" />
-                                                    <span className="absolute -top-1 -right-1 flex h-2 w-2">
-                                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-semibold text-primary tracking-tight">Thinking Process</span>
-                                                    <span className="text-[10px] font-mono text-muted-foreground bg-background/70 dark:bg-background/50 px-1.5 py-0.5 rounded-md border border-border/40">
-                                                        {thinkingSeconds}s
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-[11px] text-muted-foreground hidden sm:inline font-mono">
-                                                    Step {currentStepIdx + 1} of {thinkingStepsList.length || 5}
-                                                </span>
-                                                <button
-                                                    type="button"
-                                                    className="p-1 rounded-md text-primary/70 hover:text-primary hover:bg-primary/10 transition"
-                                                >
-                                                    {isThinkingExpanded ? (
-                                                        <ChevronUp className="h-3.5 w-3.5" />
-                                                    ) : (
-                                                        <ChevronDown className="h-3.5 w-3.5" />
-                                                    )}
-                                                </button>
-                                            </div>
-                                        </div>
-
-                                        {/* Milestone Body */}
-                                        <div className="p-4 space-y-3">
-                                            {/* Current Live Active Highlight */}
-                                            <div className="flex items-center gap-2.5 text-foreground font-medium bg-background/60 dark:bg-background/40 p-2 rounded-xl border border-primary/15 shadow-2xs">
-                                                <div className="relative flex h-2 w-2">
+                                            <div className="relative flex items-center justify-center">
+                                                <Sparkles className="h-4 w-4 text-primary animate-pulse" />
+                                                <span className="absolute -top-0.5 -right-0.5 flex h-1.5 w-1.5">
                                                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
-                                                </div>
-                                                <span className="font-mono text-[11px] text-foreground tracking-tight">
-                                                    {thinkingStep}
+                                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
                                                 </span>
                                             </div>
 
-                                            {/* Expanded Detailed Milestones (like Antigravity / ChatGPT reasoning) */}
-                                            {isThinkingExpanded && thinkingStepsList.length > 0 && (
-                                                <div className="pt-1 space-y-1.5 border-t border-primary/10">
-                                                    <div className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1">
-                                                        Execution Milestones
-                                                    </div>
-                                                    {thinkingStepsList.map((step, idx) => {
-                                                        const isDone = idx < currentStepIdx;
-                                                        const isCurrent = idx === currentStepIdx;
-                                                        const isUpcoming = idx > currentStepIdx;
+                                            <span className="font-medium text-foreground tracking-tight flex items-center gap-1.5">
+                                                Thinking
+                                                <span className="text-[11px] font-mono text-muted-foreground">({thinkingSeconds}s)</span>
+                                            </span>
 
-                                                        return (
-                                                            <div 
-                                                                key={idx}
-                                                                className={`flex items-start gap-2.5 text-[11px] font-mono py-1 px-1.5 rounded-lg transition ${
-                                                                    isCurrent
-                                                                        ? 'text-primary font-semibold bg-primary/10'
-                                                                        : isDone
-                                                                        ? 'text-muted-foreground line-through opacity-70'
-                                                                        : 'text-muted-foreground/60 opacity-50'
-                                                                }`}
-                                                            >
-                                                                <div className="mt-0.5 shrink-0">
-                                                                    {isDone ? (
-                                                                        <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                                                                    ) : isCurrent ? (
-                                                                        <Loader2 className="h-3 w-3 text-primary animate-spin" />
-                                                                    ) : (
-                                                                        <CircleDashed className="h-3 w-3 text-muted-foreground/40" />
-                                                                    )}
-                                                                </div>
-                                                                <span className="leading-snug">{step}</span>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
+                                            <span className="text-muted-foreground/50 text-[11px]">•</span>
 
-                                            {/* Subtle Skeleton Progress */}
-                                            <div className="space-y-1 pt-1 opacity-60">
-                                                <div className="h-1 bg-primary/20 rounded-full animate-pulse w-full" />
-                                            </div>
+                                            <span className="font-mono text-[11px] text-muted-foreground group-hover:text-primary transition-colors truncate max-w-[280px] sm:max-w-md">
+                                                {thinkingStep}
+                                            </span>
+
+                                            <span className="p-0.5 rounded text-muted-foreground/60 group-hover:text-foreground transition">
+                                                {isThinkingExpanded ? (
+                                                    <ChevronUp className="h-3 w-3" />
+                                                ) : (
+                                                    <ChevronDown className="h-3 w-3" />
+                                                )}
+                                            </span>
                                         </div>
+
+                                        {/* Collapsible Clean Steps / Milestones (No border/box containers) */}
+                                        {isThinkingExpanded && thinkingStepsList.length > 0 && (
+                                            <div className="pl-6 pt-1 pb-2 space-y-1 border-l-2 border-primary/20 ml-2 animate-in fade-in slide-in-from-top-1 duration-150">
+                                                {thinkingStepsList.map((step, idx) => {
+                                                    const isDone = idx < currentStepIdx;
+                                                    const isCurrent = idx === currentStepIdx;
+
+                                                    return (
+                                                        <div 
+                                                            key={idx}
+                                                            className={`flex items-center gap-2 text-[11px] font-mono transition-colors ${
+                                                                isCurrent
+                                                                    ? 'text-primary font-medium'
+                                                                    : isDone
+                                                                    ? 'text-muted-foreground/60'
+                                                                    : 'text-muted-foreground/40'
+                                                            }`}
+                                                        >
+                                                            <span className="shrink-0">
+                                                                {isDone ? (
+                                                                    <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                                                                ) : isCurrent ? (
+                                                                    <Loader2 className="h-3 w-3 text-primary animate-spin" />
+                                                                ) : (
+                                                                    <CircleDashed className="h-3 w-3 text-muted-foreground/30" />
+                                                                )}
+                                                            </span>
+                                                            <span className={isDone ? 'line-through opacity-70' : ''}>
+                                                                {step}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}

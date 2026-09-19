@@ -202,6 +202,8 @@ export default function AiActionProposalCard({
                 return <Trash2 className="h-4 w-4 text-destructive" />;
             case 'delete_all_stocks':
                 return <Trash2 className="h-4 w-4 text-destructive" />;
+            case 'empty_trash':
+                return <Trash2 className="h-4 w-4 text-destructive animate-pulse" />;
             case 'create_money_note':
                 return <Wallet className="h-4 w-4 text-emerald-500" />;
             case 'run_python_script':
@@ -225,6 +227,8 @@ export default function AiActionProposalCard({
                 return 'Hapus Unit (Delete Stock)';
             case 'delete_all_stocks':
                 return 'Hapus Semua Unit (Clear Active Inventory)';
+            case 'empty_trash':
+                return 'HAPUS PERMANEN (Kosongkan Trash)';
             case 'create_money_note':
                 return 'Catat Buku Kas (Money Note)';
             case 'run_python_script':
@@ -248,6 +252,13 @@ export default function AiActionProposalCard({
 
     const handleAccept = async () => {
         if (!isSuperadmin) return;
+
+        if (proposal.action === 'empty_trash') {
+            const confirmed = window.confirm(
+                '⚠️ PERINGATAN KERAS: Aksi ini akan MENGHAPUS PERMANEN seluruh unit di keranjang sampah!\n\nData yang dihapus permanen TIDAK DAPAT dipulihkan atau di-Undo.\n\nApakah Anda yakin ingin melanjutkan?'
+            );
+            if (!confirmed) return;
+        }
 
         setStatus('executing');
         onStatusChange?.('executing');
@@ -339,6 +350,16 @@ export default function AiActionProposalCard({
 
             {/* Body */}
             <div className="p-3.5 space-y-3">
+                {proposal.action === 'empty_trash' && (
+                    <div className="p-2.5 rounded-xl bg-destructive/10 border border-destructive/25 text-destructive text-[11px] font-medium flex items-start gap-2">
+                        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                        <div>
+                            <strong className="font-bold">PERINGATAN HAPUS PERMANEN:</strong>
+                            <p className="mt-0.5 text-destructive/90">Aksi ini akan menghapus seluruh unit di keranjang sampah secara permanen dari basis data. Data tidak dapat dipulihkan kembali (No Undo).</p>
+                        </div>
+                    </div>
+                )}
+
                 {proposal.summary && (
                     <p className="text-muted-foreground leading-relaxed font-normal">
                         {proposal.summary}

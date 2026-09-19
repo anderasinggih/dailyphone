@@ -85,23 +85,36 @@ export default function Timeline({ activities }: TimelineProps) {
         });
     };
 
-    const toggleSave = (logId: number) => {
+    const toggleSave = async (logId: number) => {
         setSavingId(logId);
-        // Optimistic update
+        // Instant optimistic update
         setLocalActivities(prev =>
             prev.map(item =>
                 item.id === logId ? { ...item, is_saved: !item.is_saved } : item
             )
         );
 
-        router.post(route('timeline.toggle-save', logId), {}, {
-            preserveScroll: true,
-            onFinish: () => setSavingId(null),
-            onError: () => {
-                // Revert on error
-                setLocalActivities(activities.data);
+        try {
+            const csrfToken = (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '';
+            const res = await fetch(route('timeline.toggle-save', logId), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+            });
+
+            if (!res.ok) {
+                throw new Error('Failed to toggle save');
             }
-        });
+        } catch (error) {
+            // Revert on error
+            setLocalActivities(activities.data);
+        } finally {
+            setSavingId(null);
+        }
     };
 
     const formatCurrency = (val: any) => {

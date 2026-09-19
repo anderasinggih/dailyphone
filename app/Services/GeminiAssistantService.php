@@ -338,6 +338,16 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
          { "field": "Status Seluruh Stok", "old": "Aktif / Tersedia", "new": "Dihapus ke Keranjang Sampah" },
          { "field": "Lokasi Toko", "old": "-", "new": "PERENG STORE" }
        ]
+   - "empty_trash": When the user asks to empty trash, clear the trash bin, or permanently delete all items in trash (e.g. "hapus isi trash", "kosongkan trash", "hapus permanen trash", "bersihkan tempat sampah"):
+     * CRITICAL: This action permanently deletes (forceDelete) all soft-deleted units from the database. It cannot be undone!
+     * Must emit "empty_trash".
+     * Payload structure:
+       { "confirm": true }
+     * Changes structure:
+       [
+         { "field": "Status Unit di Keranjang Sampah", "old": "Tersimpan di Trash", "new": "Dihapus Permanen (Force Delete)" },
+         { "field": "Peringatan", "old": "-", "new": "Data tidak dapat dipulihkan kembali" }
+       ]
    - "sell_stock": When the user asks to record a unit sale (mark as sold).
      * MANDATORY: `buyer_name`, `actual_sell_price`, `payment_method`.
    - "create_money_note": When recording cash book income or expenses.

@@ -71,8 +71,17 @@ class ActivityLogController extends Controller
 
         if ($alreadySaved) {
             $user->savedActivities()->detach($activityLog->id);
+            $isSaved = false;
         } else {
             $user->savedActivities()->attach($activityLog->id);
+            $isSaved = true;
+        }
+
+        if ($request->wantsJson() || $request->ajax()) {
+            return response()->json([
+                'success' => true,
+                'is_saved' => $isSaved,
+            ]);
         }
 
         return redirect()->back();

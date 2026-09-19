@@ -47,6 +47,9 @@ class AiActionService
                 case 'delete_all_stocks':
                     return $this->executeDeleteAllStocks($payload, $user);
 
+                case 'empty_trash':
+                    return $this->executeEmptyTrash($payload, $user);
+
                 case 'create_money_note':
                     return $this->executeCreateMoneyNote($payload, $user);
 
@@ -491,6 +494,55 @@ class AiActionService
                 'type' => 'bulk_stocks_deleted',
                 'stock_ids' => $deletedIds,
             ],
+        ];
+    }
+
+    /**
+     * Permanently delete (force delete) units from the trash bin.
+     * Irreversible action - permanently frees up IMEI and Serial Numbers.
+     */
+    protected function executeEmptyTrash(array $payload, User $user): array
+    {
+        $storeId = $payload['store_id'] ?? null;
+        $stockId = $payload['stock_id'] ?? null;
+        $serialNumber = $payload['serial_number'] ?? null;
+        $imei = $payload['imei_1'] ?? $payload['imei'] ?? null;
+
+        $trashQuery = Stock::onlyTrashed();
+
+        if ($stockId) {
+            $trashQuery->where('id', $stockId);
+        } elseif ($serialNumber) {
+            $trashQuery->where(function ($q) use ($serialNumber) {
+                $q->where('serial_number', $serialNumber)->orWhere('imei_1', $serialNumber);
+            });
+        } elseif ($imei) {
+            $trashQuery->where('imei_1', $imei);
+        } elseif ($storeId) {
+            $trashQuery->where('store_id', $storeId);
+        }
+
+        $trashedUnits = $trashQuery->get();
+        $count = $trashedUnits->count();
+
+        if ($count === 0) {
+            return [
+                'success' => false,
+                'message' => 'Tidak ada unit di keranjang sampah (trash) yang cocok untuk dihapus permanen.',
+            ];
+        }
+
+        DB::transaction(function () use ($trashedUnits) {
+            foreach ($trashedUnits as $stock) {
+                $oldValues = $stock->toArray();
+                ActivityLog::log('ai_force_delete_stock', Stock::class, $stock->id, null, $oldValues);
+                $stock->forceDelete();
+            }
+        });
+
+        return [
+            'success' => true,
+            'message' => "Berhasil menghapus permanen (force delete) {$count} unit dari keranjang sampah. Seluruh data IMEI dan Serial Number telah dibersihkan dan dicatat di Activity Log.",
         ];
     }
 
