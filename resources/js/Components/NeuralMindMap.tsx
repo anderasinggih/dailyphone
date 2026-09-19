@@ -547,46 +547,42 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
     return (
         <div className="relative rounded-2xl border border-border/60 bg-background overflow-hidden select-none apple-card">
-            {/* Top-left: unified glass panel — stats + search */}
-            <div className="absolute top-3 left-3 z-10 w-56 sm:w-64">
-                <div className="rounded-2xl bg-background/85 dark:bg-card/85 backdrop-blur-xl border border-border/50 shadow-sm overflow-hidden">
-                    <div className="flex items-center gap-2 px-3 py-2">
-                        <Network className="h-3.5 w-3.5 text-primary shrink-0" />
-                        <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">
-                            {nodes.length} nodes
+            {/* Top-left: compact stats pill + standalone search pill */}
+            <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-2 w-64 sm:w-80">
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-background/85 dark:bg-card/85 backdrop-blur-xl border border-border/50 shadow-sm">
+                    <Network className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">
+                        {nodes.length} nodes
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">•</span>
+                    <span className="text-[11px] font-semibold text-muted-foreground truncate">
+                        {links.length} synapses
+                    </span>
+                </div>
+                <div className="flex items-center gap-2 pl-3.5 pr-1.5 h-9 w-full rounded-full bg-background/85 dark:bg-card/85 backdrop-blur-xl border border-border/50 shadow-sm focus-within:border-primary/50 transition">
+                    <Search className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <input
+                        value={searchQuery}
+                        onChange={e => setSearchQuery(e.target.value)}
+                        placeholder="Find a memory..."
+                        spellCheck={false}
+                        autoComplete="off"
+                        className="w-full min-w-0 h-full bg-transparent appearance-none text-xs text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+                    />
+                    {searching && matches.size > 0 && (
+                        <span className="shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/10 text-primary text-[9px] font-bold flex items-center justify-center">
+                            {matches.size}
                         </span>
-                        <span className="text-[10px] text-muted-foreground">•</span>
-                        <span className="text-[11px] font-semibold text-muted-foreground truncate">
-                            {links.length} synapses
-                        </span>
-                    </div>
-                    <div className="px-2 pb-2">
-                        <div className="flex items-center gap-1.5 px-2.5 h-8 rounded-full bg-black/[0.06] dark:bg-white/[0.08] border border-transparent focus-within:border-primary/40 transition">
-                            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                            <input
-                                value={searchQuery}
-                                onChange={e => setSearchQuery(e.target.value)}
-                                placeholder="Find a memory..."
-                                spellCheck={false}
-                                autoComplete="off"
-                                className="w-full min-w-0 h-full bg-transparent appearance-none text-[11px] text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
-                            />
-                            {searching && matches.size > 0 && (
-                                <span className="shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/10 text-primary text-[9px] font-bold flex items-center justify-center">
-                                    {matches.size}
-                                </span>
-                            )}
-                            {searchQuery && (
-                                <button
-                                    onClick={() => setSearchQuery('')}
-                                    className="shrink-0 p-0.5 rounded-full text-muted-foreground hover:text-foreground transition"
-                                    title="Clear search"
-                                >
-                                    <X className="h-3 w-3" />
-                                </button>
-                            )}
-                        </div>
-                    </div>
+                    )}
+                    {searchQuery && (
+                        <button
+                            onClick={() => setSearchQuery('')}
+                            className="shrink-0 p-1 rounded-full text-muted-foreground hover:text-foreground transition"
+                            title="Clear search"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -730,8 +726,6 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                             {nodes.map(node => {
                                 const p = positions[node.id];
                                 const w = nodeWidth(nodeById[node.id]);
-                                const x = p.x - w / 2;
-                                const y = p.y - NODE_H / 2;
                                 const isSelected = selectedId === node.id;
                                 const isMatch = matches.size > 0 && matches.has(node.id);
                                 const dimmed = matches.size > 0 && !matches.has(node.id);
@@ -747,10 +741,10 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                             style={{ pointerEvents: 'none' }}
                                         >
                                             <div
-                                                className={`flex items-center gap-1.5 h-full w-full px-3 rounded-full border-[1.5px] transition ${
+                                                className={`flex items-center gap-1.5 h-full w-full px-3 rounded-full border-[1.5px] shadow-sm transition ${
                                                     isRule
-                                                        ? 'bg-primary/15 border-primary/45 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_6px_18px_-6px_rgba(0,122,255,0.4)] hover:border-primary/70'
-                                                        : 'bg-white dark:bg-[#1B1C1E] border-black/[0.08] dark:border-white/[0.14] shadow-[0_1px_2px_rgba(0,0,0,0.10),0_6px_16px_-4px_rgba(0,0,0,0.22)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.55)] hover:border-primary/40'
+                                                        ? 'bg-primary/15 border-primary/45'
+                                                        : 'bg-white dark:bg-[#1B1C1E] border-black/[0.08] dark:border-white/[0.14]'
                                                 } ${!node.is_active ? 'opacity-55' : ''} ${
                                                     isSelected ? 'ring-2 ring-primary' : ''
                                                 } ${isMatch ? 'ring-2 ring-primary/60' : ''} ${
@@ -771,10 +765,10 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                             </div>
                                         </foreignObject>
 
-                                        {/* Invisible hit area for drag + click */}
+                                        {/* Hit area for drag + click — relative to the translated group so it always matches the node */}
                                         <rect
-                                            x={x}
-                                            y={y}
+                                            x={-w / 2}
+                                            y={-NODE_H / 2}
                                             width={w}
                                             height={NODE_H}
                                             rx={22}
