@@ -71,10 +71,9 @@ class GeminiAssistantService
             ];
         }
 
-        // Try requested model first, then fallback to high-availability active models
+        // Try requested model first, then fall back to other available models
         $candidateModels = array_unique(array_filter([
             $requestedModel,
-            'gemini-3.6-flash',
             'gemini-3.5-flash-lite',
             'gemini-3.5-flash',
             'gemini-flash-latest',
@@ -603,17 +602,15 @@ PROMPT;
         // Some Gemini models accept PDF inline_data and others reject it with
         // "Request contains an invalid argument" — so when the user attached a
         // PDF we put a PDF-capable model first, otherwise we honour the
-        // configured model. The list is capped so a busy request never spirals
-        // into long serial retries that kill the stream (and resemble "no
-        // response from the server" for the user).
+        // configured model and nothing else. The list is capped so a busy
+        // request never spirals into long serial retries that kill the stream
+        // (and resemble "no response from the server" for the user).
         $hasPdf = $includeAttachments->contains(fn ($a) => (string)($a->kind ?? '') === 'pdf');
         $pdfModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
 
         $candidateModels = array_values(array_unique(array_filter(array_merge(
             $hasPdf ? $pdfModels : [],
-            [$this->model],
-            ['gemini-3.6-flash'],
-            $hasPdf ? [] : $pdfModels
+            [$this->model]
         ))));
         $candidateModels = array_slice($candidateModels, 0, 4);
 
