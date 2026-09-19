@@ -36,7 +36,9 @@ export function getParamBadgeClass(colorKey?: string | null) {
 }
 
 export default function Parameters({ parameters = [] }: ParametersProps) {
-    const safeParameters = Array.isArray(parameters) ? parameters : [];
+    const safeParameters = Array.isArray(parameters) 
+        ? parameters 
+        : (parameters && typeof parameters === 'object' ? Object.values(parameters as Record<string, Parameter>) : []);
     const [newParameterValue, setNewParameterValue] = useState<{ [paramId: number]: string }>({});
     const [newParameterColor, setNewParameterColor] = useState<{ [paramId: number]: string }>({});
 
@@ -309,7 +311,7 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                                 </div>
                             );
                         })}
-                    </div>
+                        </div>
                     )}
 
                 </div>

@@ -785,10 +785,12 @@ export default function ReadyStock({ stocks, stores, transfers, storesFilter, pa
                                         <span className="text-muted-foreground text-[10px]">Warranty</span>
                                         <span className="text-right text-foreground">{selectedStockDetail.warranty_duration_days} Days</span>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
-                                        <span className="text-muted-foreground text-[10px]">Supplier</span>
-                                        <span className="text-right text-foreground">{selectedStockDetail.supplier || '-'}</span>
-                                    </div>
+                                    {authUser.role === 'superadmin' && (
+                                        <div className="grid grid-cols-2 gap-2 border-b border-border/50 pb-2">
+                                            <span className="text-muted-foreground text-[10px]">Supplier</span>
+                                            <span className="text-right text-foreground">{selectedStockDetail.supplier || '-'}</span>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {authUser.role !== 'viewer' && (
