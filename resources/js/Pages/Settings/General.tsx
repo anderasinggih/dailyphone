@@ -37,7 +37,6 @@ interface GeneralSetting {
     ai_embedding_model?: string;
     ai_tools_enabled?: boolean;
     ai_grounding_enabled?: boolean;
-    ai_context_caching_enabled?: boolean;
     ai_retrieval_top_k?: number;
     ai_retrieval_min_score?: number;
     ai_context_token_budget?: number;
@@ -178,7 +177,6 @@ export default function General({ settings, schedules, employees, stores }: Gene
         ai_embedding_model: settings.ai_embedding_model || 'text-embedding-004',
         ai_tools_enabled: settings.ai_tools_enabled ?? true,
         ai_grounding_enabled: settings.ai_grounding_enabled ?? true,
-        ai_context_caching_enabled: settings.ai_context_caching_enabled ?? true,
         ai_retrieval_top_k: settings.ai_retrieval_top_k ?? 12,
         ai_retrieval_min_score: settings.ai_retrieval_min_score ?? 0.3,
         ai_context_token_budget: settings.ai_context_token_budget ?? 10000,
@@ -993,25 +991,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                             </label>
                                         </div>
                                         <p className="text2 text-muted-foreground">
-                                            Grounds general knowledge answers in live web search so the AI does not make up facts.
-                                        </p>
-                                    </div>
-
-                                    <div className="space-y-3">
-                                        <div className="flex items-center justify-between">
-                                            <span className="text1 font-semibold text-foreground block">Context Caching</span>
-                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={aiForm.data.ai_context_caching_enabled}
-                                                    onChange={e => aiForm.setData('ai_context_caching_enabled', e.target.checked)}
-                                                    className="sr-only peer"
-                                                />
-                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
-                                            </label>
-                                        </div>
-                                        <p className="text2 text-muted-foreground">
-                                            Reuses the static system prompt + tool declarations via Gemini cachedContents — cuts cost and latency on long conversations.
+                                            Grounds general knowledge answers in live web search so the AI does not make up facts. Gemini cannot combine Google Search with function calling in one request, so when Live Data Tools above are on, search grounding is automatically skipped and store answers stay powered by the tools.
                                         </p>
                                     </div>
 

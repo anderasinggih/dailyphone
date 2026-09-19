@@ -449,21 +449,27 @@ CONTEXT;
         $neurons = $this->resolveNeurons($queryText);
         $trainingNotesStr = $this->generateTrainingNotesContext($queryText);
 
-        // Live-data tools (item 2), Google Search grounding (item 4) and context
-        // caching (item 11) are opt-in flags on the settings row, each degrading
-        // gracefully back to the plain prompt when disabled or unsupported by the
-        // selected model (image-capable Nano Banana models skip tools/grounding).
+        // Live-data tools (item 2) and Google Search grounding (item 4) are
+        // opt-in flags on the settings row, each degrading gracefully back to
+        // the plain prompt when disabled or unsupported by the selected model
+        // (image-capable Nano Banana models skip tools/grounding).
+        //
+        // Gemini refuses to mix `googleSearch` with `functionDeclarations` in a
+        // single request without the Preview-only tool_combo flag, so the two
+        // are mutually exclusive here: function calling wins (it is what keeps
+        // store answers honest), and grounding only applies when tools are off.
         $useModel = !empty($model) ? $model : $this->model;
         $isImageModel = $this->isImageModel($useModel);
         $toolsEnabled = !$isImageModel && (bool)($settings?->ai_tools_enabled ?? true);
-        $groundingEnabled = !$isImageModel && (bool)($settings?->ai_grounding_enabled ?? true);
-        $cachingEnabled = (bool)($settings?->ai_context_caching_enabled ?? true);
 
         $toolService = app(\App\Services\AiToolService::class);
         $tools = [];
         if ($toolsEnabled) {
             $tools = $toolService->declarations();
         }
+        $groundingEnabled = !$isImageModel
+            && (bool)($settings?->ai_grounding_enabled ?? true)
+            && $tools === [];
         if ($groundingEnabled) {
             $tools[] = ['googleSearch' => new \stdClass()];
         }
@@ -828,17 +834,11 @@ PROMPT;
             $payload['tools'] = $tools;
         }
 
-        // Reuse the Gemini cachedContents resource for this (model, prefix,
-        // tools) triple so the static system preamble is charged at the reduced
-        // cache rate across every turn of the conversation (item 11).
-        if ($cachingEnabled && $tools !== []) {
-            $cacheKey = sha1(implode('|', [$useModel, $prefix, json_encode($tools)]));
-            $cacheName = app(\App\Services\AiContextCacheService::class)
-                ->resolve($useModel, $cacheKey, $prefix, $tools);
-            if ($cacheName !== null) {
-                $payload['cachedContent'] = $cacheName;
-            }
-        }
+        // The static system preamble is long and stays identical across turns
+        // of a session, so modern Gemini models (2.5+) already cache it
+        // implicitly — automatically and free. Explicit cachedContents were
+        // dropped because sending `cachedContent` together with
+        // `system_instruction`/`tools` returns HTTP 400 INVALID_ARGUMENT.
 
         $this->usageTotals = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
 
@@ -1153,15 +1153,6 @@ PROMPT;
             : new \stdClass();
 
         return json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?: '';
-    }
-
-    /**
-     * The Gemini API keys to use when creating a cachedContents resource. The
-     * cache row only needs one working key (failover list, like chat).
-     */
-    public function apiKeyListForCaching(): array
-    {
-        return array_values($this->apiKeys);
     }
 
     /**
