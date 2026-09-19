@@ -120,8 +120,8 @@ class GeminiAssistantService
         }
 
         // Stores
-        $stores = Store::select('id', 'name', 'location')->get();
-        $storeListStr = $stores->map(fn($s) => "Store ID {$s->id}: {$s->name} ({$s->location})")->implode("\n");
+        $stores = Store::select('id', 'name', 'address')->get();
+        $storeListStr = $stores->map(fn($s) => "Store ID {$s->id}: {$s->name} ({$s->address})")->implode("\n");
 
         // Available Stocks Summary
         $stockQuery = Stock::with(['store', 'brand', 'color', 'memory', 'license'])
