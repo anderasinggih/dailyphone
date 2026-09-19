@@ -102,7 +102,7 @@ function forceLayout(
     const rng = mulberry32((seed + ids.length * 104729) >>> 0);
     const pos: Record<number, Point> = {};
     const disp: Record<number, Point> = {};
-    const radius = 120 + ids.length * 2.2;
+    const radius = 170 + ids.length * 2.6;
 
     ids.forEach(id => {
         const angle = rng() * Math.PI * 2;
@@ -111,8 +111,8 @@ function forceLayout(
         disp[id] = { x: 0, y: 0 };
     });
 
-    const k = 44 + Math.sqrt(ids.length) * 2.2;
-    const iterations = Math.max(14, Math.min(70, Math.round(76 - ids.length * 0.12)));
+    const k = 64 + Math.sqrt(ids.length) * 3;
+    const iterations = Math.max(16, Math.min(80, Math.round(84 - ids.length * 0.1)));
     let temp = 16;
 
     for (let iter = 0; iter < iterations; iter++) {
@@ -170,8 +170,8 @@ function forceLayout(
         cx /= ids.length;
         cy /= ids.length;
         ids.forEach(id => {
-            disp[id].x += (cx - pos[id].x) * 0.06;
-            disp[id].y += (cy - pos[id].y) * 0.06;
+            disp[id].x += (cx - pos[id].x) * 0.05;
+            disp[id].y += (cy - pos[id].y) * 0.05;
         });
 
         // Integrate, clamped by the cooling temperature, then reset forces.
@@ -199,7 +199,7 @@ function forceLayout(
     });
     const w = Math.max(maxX - minX, 1);
     const h = Math.max(maxY - minY, 1);
-    const target = 120 + Math.sqrt(ids.length) * 15;
+    const target = 150 + Math.sqrt(ids.length) * 18;
     const scale = target / Math.max(w / 2, h / 2, 1);
     const midX = (minX + maxX) / 2;
     const midY = (minY + maxY) / 2;
@@ -258,7 +258,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     });
 
     // Cozy gaps so the lobes stay close enough to read as ONE brain.
-    const COMP_GAP = 56;
+    const COMP_GAP = 64;
 
     // Unique undirected edges shared by every lobe's force pass.
     const edgeSet = new Set<string>();
@@ -276,15 +276,23 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
 
     // One organic "brain lobe": the component is force-relaxed into a tangled,
     // balanced blob by forceLayout(), which already rescales it into a bounded
-    // circle. A final seeded wobble here (busy hubs breathe a little more) makes
-    // each island look grown — organic, never geometric.
+    // circle. Each lobe then gets its own seeded lean (rotation) plus a per-node
+    // wobble (busy hubs breathe a little more) so the islands look scattered and
+    // grown — every rearrange a different, chaotic-but-structured pose.
     const layoutComponent = (ids: number[]) => {
         const local = forceLayout(ids, edges, seed);
 
+        const angle = (hash1(seed * 31.7 + ids.length * 1.3) - 0.5) * 2.6;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+
         ids.forEach(id => {
-            const spread = 9 + Math.min(9, (adj[id]?.length || 0) * 1.4);
-            local[id].x += (hash1(id + seed * 7919) - 0.5) * spread;
-            local[id].y += (hash1(id + seed * 9173) - 0.5) * spread;
+            const p = local[id];
+            const spread = 16 + Math.min(22, (adj[id]?.length || 0) * 2.4);
+            local[id] = {
+                x: p.x * cos - p.y * sin + (hash1(id + seed * 7919) - 0.5) * spread,
+                y: p.x * sin + p.y * cos + (hash1(id + seed * 9173) - 0.5) * spread,
+            };
         });
 
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -332,7 +340,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     });
 
     // Belt-and-suspenders pass in case jitter ever squeezes two nodes together.
-    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 40);
+    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 60);
 
     // Center the structure without rescaling. Rescaling coordinates to "fit the
     // viewport" would shrink the gaps between node centers while the NODE boxes
