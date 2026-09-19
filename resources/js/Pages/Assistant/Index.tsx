@@ -51,7 +51,6 @@ interface NeuronLink {
 async function consumeNdjson(
     res: Response,
     handlers: {
-        onPhase?: (label: string) => void;
         onNeurons?: (nodes: AccessedNeuron[], edges: NeuronLink[]) => void;
     }
 ): Promise<any> {
@@ -71,8 +70,7 @@ async function consumeNdjson(
             return;
         }
         if (!evt || typeof evt !== 'object') return;
-        if (evt.type === 'phase' && handlers.onPhase) handlers.onPhase(String(evt.label || 'Thinking...'));
-        else if (evt.type === 'neurons' && handlers.onNeurons) {
+        if (evt.type === 'neurons' && handlers.onNeurons) {
             handlers.onNeurons(
                 Array.isArray(evt.nodes) ? evt.nodes : [],
                 Array.isArray(evt.edges) ? evt.edges : []
@@ -170,7 +168,6 @@ export default function Assistant({
     const [inputQuery, setInputQuery] = useState('');
     const [replyingTo, setReplyingTo] = useState<Message | null>(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [livePhases, setLivePhases] = useState<string[]>([]);
     const [accessedNetwork, setAccessedNetwork] = useState<{ nodes: AccessedNeuron[]; edges: NeuronLink[] }>({ nodes: [], edges: [] });
     const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // sidebar closed by default
@@ -260,10 +257,9 @@ export default function Assistant({
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages, isLoading, livePhases, accessedNetwork.nodes]);
+    }, [messages, isLoading, accessedNetwork.nodes]);
 
-    // Elapsed timer while the assistant is thinking. The real progress (live
-    // phases + accessed neurons) streams from the backend via NDJSON.
+    // Elapsed timer while the assistant is thinking.
     useEffect(() => {
         if (!isLoading) {
             setThinkingSeconds(0);
@@ -432,7 +428,7 @@ export default function Assistant({
         setInputQuery('');
         setReplyingTo(null);
         setIsLoading(true);
-        setLivePhases([]);
+        setAccessedNetwork({ nodes: [], edges: [] });
         setAccessedNetwork({ nodes: [], edges: [] });
 
         const applyReply = (data: any) => {
@@ -497,9 +493,8 @@ export default function Assistant({
             }
 
             if (contentType.includes('ndjson')) {
-                // Live stream: phases + accessed neurons show while thinking.
+                // Live stream: accessed neurons show while thinking.
                 const last = await consumeNdjson(response, {
-                    onPhase: label => setLivePhases(prev => [...prev, label]),
                     onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
                 });
                 if (!last || last.type === 'error') {
@@ -943,34 +938,6 @@ export default function Assistant({
                                         <span className="font-semibold text-foreground">Thinking...</span>
                                         <span className="text-[11px] text-muted-foreground/60 font-mono">({thinkingSeconds}s)</span>
                                     </div>
-
-                                    {/* Live milestones streamed from the backend */}
-                                    {livePhases.length > 0 && (
-                                        <div className="pl-5 space-y-1 font-mono text-[11px]">
-                                            {livePhases.map((phase, idx) => {
-                                                const isDone = idx < livePhases.length - 1;
-                                                const isCurrent = idx === livePhases.length - 1;
-
-                                                return (
-                                                    <div
-                                                        key={idx}
-                                                        className={`flex items-center gap-2 transition-all ${
-                                                            isDone
-                                                                ? 'text-muted-foreground/40 line-through'
-                                                                : isCurrent
-                                                                ? 'text-foreground font-medium'
-                                                                : 'text-muted-foreground/30'
-                                                        }`}
-                                                    >
-                                                        <span className="text-[10px]">
-                                                            {isDone ? '✓' : isCurrent ? '›' : '•'}
-                                                        </span>
-                                                        <span>{phase}</span>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
 
                                     {/* Neurons the AI is tapping into — shown live while thinking */}
                                     {accessedNetwork.nodes.length > 0 && (
