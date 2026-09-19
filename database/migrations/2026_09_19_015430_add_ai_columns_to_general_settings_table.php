@@ -15,7 +15,7 @@ return new class extends Migration
             $table->boolean('ai_enabled')->default(true)->after('notification_emails');
             $table->string('ai_provider')->default('gemini')->after('ai_enabled');
             $table->text('ai_api_key')->nullable()->after('ai_provider');
-            $table->string('ai_model')->default('gemini-2.0-flash')->after('ai_api_key');
+            $table->string('ai_model')->default('gemini-3.6-flash')->after('ai_api_key');
             $table->text('ai_system_instruction')->nullable()->after('ai_model');
         });
     }

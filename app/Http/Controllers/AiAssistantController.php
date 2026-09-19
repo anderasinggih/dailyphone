@@ -476,7 +476,7 @@ class AiAssistantController extends Controller
         }
 
         $testKey = $request->input('api_key');
-        $testModel = $request->input('model', 'gemini-2.0-flash');
+        $testModel = $request->input('model', 'gemini-3.6-flash');
 
         $res = $this->geminiService->testConnection($testKey, $testModel);
 

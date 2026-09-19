@@ -652,7 +652,8 @@ PROMPT;
                         continue;
                     }
 
-                    $text = $this->streamGeminiContent($response, $onChunk);
+                    $meta = [];
+                    $text = $this->streamGeminiContent($response, $onChunk, $meta);
                     if ($text !== '') {
                         return [
                             'success' => true,
@@ -661,6 +662,12 @@ PROMPT;
                         ];
                     }
                     $lastErrorMsg = 'The model returned an empty stream.';
+                    if (($meta['finishReason'] ?? '') !== '') {
+                        $lastErrorMsg .= " Reason: {$meta['finishReason']}";
+                    }
+                    if (($meta['blockReason'] ?? '') !== '') {
+                        $lastErrorMsg .= " (content blocked by safety filter: {$meta['blockReason']})";
+                    }
                 }
 
                 Log::warning("Gemini model {$modelToTry} failed: {$lastErrorMsg}");
@@ -680,7 +687,7 @@ PROMPT;
      * text delta to the callback. ```ai_memo blocks are dropped live so the
      * client never flashes the temporary memory JSON. Returns the full text.
      */
-    protected function streamGeminiContent($response, callable $onChunk): string
+    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null): string
     {
         $body = $response->toPsrResponse()->getBody();
 
@@ -706,6 +713,12 @@ PROMPT;
                     continue;
                 }
                 $json = json_decode($line, true);
+                if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
+                    $meta['finishReason'] = $json['candidates'][0]['finishReason'];
+                }
+                if (($meta['blockReason'] ?? '') === '' && !empty($json['promptFeedback']['blockReason'])) {
+                    $meta['blockReason'] = $json['promptFeedback']['blockReason'];
+                }
                 $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
                 if ($delta === '') {
                     continue;
@@ -718,6 +731,12 @@ PROMPT;
         $tail = trim($buffer);
         if ($tail !== '') {
             $json = json_decode($tail, true);
+            if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
+                $meta['finishReason'] = $json['candidates'][0]['finishReason'];
+            }
+            if (($meta['blockReason'] ?? '') === '' && !empty($json['promptFeedback']['blockReason'])) {
+                $meta['blockReason'] = $json['promptFeedback']['blockReason'];
+            }
             $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
             if ($delta !== '') {
                 $pending .= $delta;

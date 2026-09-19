@@ -775,7 +775,8 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                             onChange={e => aiForm.setData('ai_model', e.target.value)}
                                             className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                         >
-                                            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Recommended)</option>
+                                            <option value="gemini-3.6-flash">Gemini 3.6 Flash (Recommended)</option>
+                                            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
                                             <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Fast)</option>
                                             <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                             <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
