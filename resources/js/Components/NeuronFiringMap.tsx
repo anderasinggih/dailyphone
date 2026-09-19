@@ -57,129 +57,38 @@ function smootherstep(t: number): number {
     return x * x * x * (x * (x * 6 - 15) + 10);
 }
 
-// Split the nodes into weakly-connected components using the real synapses, so
-// the brain is laid out as one cohesive core plus (rare) idle satellites —
-// never a meaningless scatter of unrelated dots pretending to be connected.
-function connectedComponents(
-    nodeIds: number[],
-    edges: NeuronFiringEdge[]
-): number[][] {
-    const adj: Record<number, Set<number>> = {};
-    nodeIds.forEach(id => (adj[id] = new Set()));
-    edges.forEach(e => {
-        if (adj[e.source]) adj[e.source].add(e.target);
-        if (adj[e.target]) adj[e.target].add(e.source);
-    });
-
-    const seen = new Set<number>();
-    const comps: number[][] = [];
-    for (const id of nodeIds) {
-        if (seen.has(id)) continue;
-        const stack = [id];
-        seen.add(id);
-        const comp: number[] = [];
-        while (stack.length) {
-            const cur = stack.pop()!;
-            comp.push(cur);
-            for (const nb of adj[cur]) {
-                if (!seen.has(nb)) {
-                    seen.add(nb);
-                    stack.push(nb);
-                }
-            }
-        }
-        comps.push(comp);
-    }
-    return comps;
-}
-
-// A tiny galaxy per component (hub at the center, neighbors on depth rings),
-// then every galaxy is packed on a golden spiral — main core at the heart,
-// satellites pushed to the rim so they visually read as "offline".
+// Golden-angle ring layout for the connected core (the classic, legible web),
+// while nodes that carry no synapse in the drawn slice are pushed to a clear
+// outer ring — present but unmistakably detached from the live brain.
 function computePositions(nodes: NeuronFiringNode[], edges: NeuronFiringEdge[]): Record<number, Point> {
     const positions: Record<number, Point> = {};
     const ids = nodes.map(n => n.id);
-    const degree: Record<number, number> = {};
-    ids.forEach(id => (degree[id] = edges.filter(e => e.source === id || e.target === id).length));
 
-    const comps = connectedComponents(ids, edges).sort((a, b) => b.length - a.length);
-
-    const placeComponent = (comp: number[]): Record<number, Point> => {
-        const adj: Record<number, Set<number>> = {};
-        comp.forEach(id => (adj[id] = new Set()));
-        comp.forEach(id => {
-            edges.forEach(e => {
-                if (e.source === id && adj[e.target]) adj[id].add(e.target);
-                if (e.target === id && adj[e.source]) adj[id].add(e.source);
-            });
-        });
-
-        let hub = comp[0]!;
-        comp.forEach(id => {
-            if (degree[id] > (degree[hub] ?? 0)) hub = id;
-        });
-
-        const depth: Record<number, number> = { [hub]: 0 };
-        const queue = [hub];
-        while (queue.length) {
-            const cur = queue.shift()!;
-            for (const nb of adj[cur]) {
-                if (depth[nb] === undefined) {
-                    depth[nb] = (depth[cur] ?? 0) + 1;
-                    queue.push(nb);
-                }
-            }
-        }
-
-        const byDepth: Record<number, number[]> = {};
-        comp.forEach(id => (byDepth[depth[id] ?? 0] ||= []).push(id));
-
-        const points: Record<number, Point> = { [hub]: { x: 0, y: 0 } };
-        Object.keys(byDepth).forEach(ds => {
-            const d = +ds;
-            const ring = byDepth[d]!;
-            ring.forEach((id, i) => {
-                if (id === hub) return;
-                const angle = d * 1.33 + (i * 2 * Math.PI) / ring.length;
-                const r = 5.2 * d + 1;
-                const jx = (hashSeed(id, 3) - 0.5) * 2.4;
-                const jy = (hashSeed(id, 5) - 0.5) * 2.4;
-                points[id] = { x: Math.cos(angle) * r + jx, y: Math.sin(angle) * r + jy };
-            });
-        });
-        return points;
-    };
-
-    // Pack: pivot core at the origin, the rest fanning out along a golden spiral.
-    comps.forEach((comp, ci) => {
-        const points = placeComponent(comp);
-        let cx = 0;
-        let cy = 0;
-        if (ci > 0) {
-            const isSingle = comp.length === 1;
-            // Keep lone satellites at the rim, clearly detached from the core.
-            cx = Math.cos(ci * GOLDEN) * (isSingle ? 40 : 17 + 5.6 * ci);
-            cy = Math.sin(ci * GOLDEN) * (isSingle ? 40 : 17 + 5.6 * ci);
-        }
-        comp.forEach(id => {
-            const p = points[id];
-            positions[id] = p ? { x: p.x + cx, y: p.y + cy } : { x: cx, y: cy };
-        });
+    const cabled = new Set<number>();
+    edges.forEach(e => {
+        cabled.add(e.source);
+        cabled.add(e.target);
     });
 
-    // Normalize so every node sits comfortably inside the viewBox (-52..52).
-    const xs = Object.values(positions).map(p => p.x);
-    const ys = Object.values(positions).map(p => p.y);
-    const minX = Math.min(...xs, -40);
-    const maxX = Math.max(...xs, 40);
-    const minY = Math.min(...ys, -40);
-    const maxY = Math.max(...ys, 40);
-    const scale = Math.min(88 / (maxX - minX), 88 / (maxY - minY));
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    ids.forEach(id => {
-        const p = positions[id];
-        positions[id] = { x: (p.x - cx) * scale, y: (p.y - cy) * scale };
+    const core = ids.filter(id => cabled.has(id));
+    const satellites = ids.filter(id => !cabled.has(id));
+
+    const radius = nodes.length > 6 ? 26 : 20;
+    core.forEach((id, i) => {
+        const spread = (hashSeed(id, 3) - 0.5) * 7;
+        const angle = i * GOLDEN;
+        positions[id] = {
+            x: Math.cos(angle) * (radius + spread),
+            y: Math.sin(angle) * (radius + spread),
+        };
+    });
+
+    satellites.forEach((id, j) => {
+        const angle = j * GOLDEN + 0.85;
+        positions[id] = {
+            x: Math.cos(angle) * 43,
+            y: Math.sin(angle) * 43,
+        };
     });
 
     return positions;
@@ -291,7 +200,8 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
     }, [shownEdges]);
 
     const positions = useMemo(() => computePositions(shownNodes, shownEdges), [shownNodes, shownEdges]);
-    const order = useMemo(() => activationOrder(shownNodes, shownEdges), [shownNodes, shownEdges]);
+    const coreNodes = useMemo(() => shownNodes.filter(n => coreIds.has(n.id)), [shownNodes, coreIds]);
+    const order = useMemo(() => activationOrder(coreNodes, shownEdges), [coreNodes, shownEdges]);
     const orderKey = order.join(',');
 
     const traces = useMemo(() => {
