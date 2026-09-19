@@ -11,6 +11,13 @@ class AiTrainingNoteLink extends Model
         'note_id',
         'linked_note_id',
         'label',
+        'relation',
+        'weight',
+        'reason',
+    ];
+
+    protected $casts = [
+        'weight' => 'float',
     ];
 
     public function note(): BelongsTo

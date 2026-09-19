@@ -97,7 +97,8 @@ class AiActionService
         }
 
         $hash = md5($content);
-        if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists()) {
+        if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists()
+            || app(\App\Services\AiMemoryGraphService::class)->isDuplicateContent($content)) {
             return;
         }
 

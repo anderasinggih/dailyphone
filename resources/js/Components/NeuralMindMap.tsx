@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { useMemo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react';
 import {
     ZoomIn,
     ZoomOut,
@@ -28,7 +28,19 @@ interface MindMapLink {
     source: number;
     target: number;
     label: string | null;
+    relation?: string | null;
+    weight?: number | null;
+    reason?: string | null;
 }
+
+const RELATION_LABEL: Record<string, string> = {
+    same_topic: 'Same topic',
+    rule_applies: 'Rule applies',
+    persistent_hint: 'Keyword link',
+    closely_related: 'Closely related',
+    related: 'Related',
+    fresh_memory: 'Fresh memory',
+};
 
 interface NeuralMindMapProps {
     nodes: MindMapNode[];
@@ -46,24 +58,21 @@ interface View {
     k: number;
 }
 
-const STORAGE_KEY = 'dp-ai-neural-map-v2';
-const MIN_ZOOM = 0.18;
-const MAX_ZOOM = 3.2;
-const ELASTIC = 0.5;
+const STORAGE_KEY = 'dp-ai-neural-map-v3';
+const MIN_ZOOM = 0.16;
+const MAX_ZOOM = 3.4;
 const NODE_H = 44;
 const GRID_SIZE = 40;
-
-const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
 
 function hash1(seed: number): number {
     const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
     return x - Math.floor(x);
 }
 
+// Compact neuron-shaped nodes — never stretch too long.
 function nodeWidth(n: MindMapNode | undefined): number {
     const len = n?.title?.length || 0;
-    const hub = n ? Math.min(n.degree || 0, 6) * 9 : 0;
-    return Math.min(248, Math.max(118, len * 7.6 + 58 + hub));
+    return Math.min(152, Math.max(104, len * 6.6 + 48));
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -134,16 +143,16 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<numbe
 
         const pos: Record<number, Point> = {};
         const base = 92;
-        const spacing = 122;
+        const spacing = 116;
 
         Object.keys(byDepth).forEach(ds => {
             const d = +ds;
             const ring = byDepth[ds];
             const avgW = ring.reduce((s, id) => s + nodeWidth(nodeById.get(id)), 0) / ring.length;
-            const ringR = Math.max(base + d * spacing, (ring.length * Math.max(avgW, 150) * 1.18) / (2 * Math.PI));
+            const ringR = Math.max(base + d * spacing, (ring.length * Math.max(avgW, 130) * 1.18) / (2 * Math.PI));
             ring.forEach((id, i) => {
-                const jx = (hash1(id) - 0.5) * 30;
-                const jy = (hash1(id + 3) - 0.5) * 30;
+                const jx = (hash1(id) - 0.5) * 26;
+                const jy = (hash1(id + 3) - 0.5) * 26;
                 const ang = d * 1.618 + (i * 2 * Math.PI) / ring.length;
                 pos[id] = { x: Math.cos(ang) * ringR + jx, y: Math.sin(ang) * ringR + jy };
             });
@@ -155,7 +164,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<numbe
             const p = pos[id];
             offsets.push(p);
             const w = nodeWidth(nodeById.get(id));
-            radius = Math.max(radius, Math.hypot(p.x, p.y) + w / 2 + 44);
+            radius = Math.max(radius, Math.hypot(p.x, p.y) + w / 2 + 40);
         });
         return { ids, offsets, radius: Math.max(radius, 120) };
     };
@@ -185,7 +194,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[]): Record<numbe
                 let ok = true;
                 for (const p of placed) {
                     const d = Math.hypot(Math.cos(angle) * r - p.x, Math.sin(angle) * r - p.y);
-                    if (d < p.r + comp.radius + 130) {
+                    if (d < p.r + comp.radius + 120) {
                         ok = false;
                         break;
                     }
@@ -255,8 +264,6 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const [layoutSeed, setLayoutSeed] = useState(0);
     const [savedPos, setSavedPos] = useState<Record<number, Point> | null>(() => loadSavedPositions());
 
-    const animRef = useRef<{ raf: number } | null>(null);
-
     const [drag, setDrag] = useState<{
         kind: 'pan' | 'node';
         nodeId?: number;
@@ -322,53 +329,23 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
     const nodeTitle = (id: number) => nodeById[id]?.title || `#${id}`;
 
-    // ── Animated / elastic zoom ────────────────────────────────
-    const animateZoom = useCallback((target: View, dur: number) => {
-        if (animRef.current) cancelAnimationFrame(animRef.current.raf);
-        const from = { ...viewRef.current };
-        const start = performance.now();
-        let raf = 0;
-        const tick = (now: number) => {
-            const t = Math.min(1, (now - start) / dur);
-            const e = easeOutCubic(t);
-            const next: View = {
-                k: from.k + (target.k - from.k) * e,
-                x: from.x + (target.x - from.x) * e,
-                y: from.y + (target.y - from.y) * e,
-            };
-            setView(next);
-            viewRef.current = next;
-            if (t < 1) raf = requestAnimationFrame(tick);
-            else animRef.current = null;
-        };
-        animRef.current = { raf };
-        raf = requestAnimationFrame(tick);
-    }, []);
+    // ── Zoom (instant & predictable, no animation races) ──────
+    const clampZoom = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
 
-    // Rubber-band zoom: overshoot past the limits slightly, then spring back.
-    const flexZoomPoint = useCallback(
-        (cx: number, cy: number, factor: number) => {
-            const prev = viewRef.current;
-            const tk = prev.k * factor;
-            const lo = MIN_ZOOM - ELASTIC;
-            const hi = MAX_ZOOM + ELASTIC;
-            const bK = Math.min(hi, Math.max(lo, tk));
-            const ratio = bK / prev.k;
-            const target: View = { k: bK, x: cx - (cx - prev.x) * ratio, y: cy - (cy - prev.y) * ratio };
-            animateZoom(target, 250);
-            if (tk > MAX_ZOOM || tk < MIN_ZOOM) {
-                const cK = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, tk));
-                const cr = cK / prev.k;
-                window.setTimeout(() => {
-                    animateZoom({ k: cK, x: cx - (cx - prev.x) * cr, y: cy - (cy - prev.y) * cr }, 200);
-                }, 300);
-            }
-        },
-        [animateZoom]
-    );
+    const zoomAt = (cx: number, cy: number, factor: number) => {
+        setView(prev => {
+            const k = clampZoom(prev.k * factor);
+            const ratio = k / prev.k;
+            return {
+                k,
+                x: cx - (cx - prev.x) * ratio,
+                y: cy - (cy - prev.y) * ratio,
+            };
+        });
+    };
 
     const zoomBy = (factor: number) => {
-        flexZoomPoint(containerSize.w / 2, containerSize.h / 2, factor);
+        zoomAt(containerSize.w / 2, containerSize.h / 2, factor);
     };
 
     const computeFit = useCallback(() => {
@@ -393,8 +370,8 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const fitToView = useCallback(() => {
         const fit = computeFit();
         if (!fit) return;
-        animateZoom(fit, 320);
-    }, [computeFit, animateZoom]);
+        setView(fit);
+    }, [computeFit]);
 
     // Initial "fit to world" once we know the size.
     const fittedRef = useRef(false);
@@ -421,10 +398,12 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
         const p = positions[id];
         if (!p) return;
         setSelectedId(id);
-        animateZoom({ k: 1.1, x: containerSize.w / 2 - p.x * 1.1, y: containerSize.h / 2 - p.y * 1.1 }, 300);
+        setView({
+            k: clampZoom(1.25),
+            x: containerSize.w / 2 - p.x * 1.25,
+            y: containerSize.h / 2 - p.y * 1.25,
+        });
     };
-
-    const clampZoom = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
 
     const toLocal = (clientX: number, clientY: number) => {
         const rect = containerRef.current?.getBoundingClientRect();
@@ -445,15 +424,14 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     }, [searchQuery, nodes]);
 
     const handleWheel = (e: React.WheelEvent) => {
-        e.preventDefault();
         const local = toLocal(e.clientX, e.clientY);
-        flexZoomPoint(local.x, local.y, e.deltaY < 0 ? 1.14 : 1 / 1.14);
+        zoomAt(local.x, local.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
     };
 
     const handleDoubleClick = (e: React.MouseEvent) => {
         const local = toLocal(e.clientX, e.clientY);
         if (viewRef.current.k < 1.25) {
-            flexZoomPoint(local.x, local.y, 1.9);
+            zoomAt(local.x, local.y, 1.8);
         } else {
             fitToView();
         }
@@ -461,10 +439,6 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
     const handlePointerDown = (e: React.PointerEvent, nodeId?: number) => {
         if (e.button !== 0 && e.pointerType === 'mouse') return;
-        if (animRef.current) {
-            cancelAnimationFrame(animRef.current.raf);
-            animRef.current = null;
-        }
         const local = toLocal(e.clientX, e.clientY);
         if (nodeId !== undefined) {
             const origin = positions[nodeId];
@@ -535,51 +509,55 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
 
     return (
         <div className="relative rounded-2xl border border-border/60 bg-background overflow-hidden select-none apple-card">
-            {/* Top-left: stats + search */}
-            <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm">
-                    <Network className="h-3.5 w-3.5 text-primary" />
-                    <span className="text-[11px] font-semibold text-foreground">
-                        {nodes.length} nodes
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">•</span>
-                    <span className="text-[11px] font-semibold text-muted-foreground">
-                        {links.length} synapses
-                    </span>
-                </div>
-                <div className="flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full bg-background/90 dark:bg-card/90 backdrop-blur-xl border border-border/60 shadow-sm w-64 focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10 transition">
-                    <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <input
-                        value={searchQuery}
-                        onChange={e => setSearchQuery(e.target.value)}
-                        placeholder="Find a memory..."
-                        spellCheck={false}
-                        autoComplete="off"
-                        className="w-full h-5 bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground/80 focus:outline-none"
-                    />
-                    {searching && matches.size > 0 && (
-                        <span className="shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/10 text-primary text-[9px] font-bold flex items-center justify-center">
-                            {matches.size}
+            {/* Top-left: unified glass panel — stats + search */}
+            <div className="absolute top-3 left-3 z-10 w-56 sm:w-64">
+                <div className="rounded-2xl bg-background/85 dark:bg-card/85 backdrop-blur-xl border border-border/50 shadow-sm overflow-hidden">
+                    <div className="flex items-center gap-2 px-3 py-2">
+                        <Network className="h-3.5 w-3.5 text-primary shrink-0" />
+                        <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">
+                            {nodes.length} nodes
                         </span>
-                    )}
-                    {searchQuery && (
-                        <button
-                            onClick={() => setSearchQuery('')}
-                            className="p-1 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition shrink-0"
-                            title="Clear search"
-                        >
-                            <X className="h-3 w-3" />
-                        </button>
-                    )}
+                        <span className="text-[10px] text-muted-foreground">•</span>
+                        <span className="text-[11px] font-semibold text-muted-foreground truncate">
+                            {links.length} synapses
+                        </span>
+                    </div>
+                    <div className="px-2 pb-2">
+                        <div className="flex items-center gap-1.5 px-2.5 h-8 rounded-full bg-black/[0.06] dark:bg-white/[0.08] border border-transparent focus-within:border-primary/40 transition">
+                            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <input
+                                value={searchQuery}
+                                onChange={e => setSearchQuery(e.target.value)}
+                                placeholder="Find a memory..."
+                                spellCheck={false}
+                                autoComplete="off"
+                                className="w-full min-w-0 h-full bg-transparent appearance-none text-[11px] text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+                            />
+                            {searching && matches.size > 0 && (
+                                <span className="shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/10 text-primary text-[9px] font-bold flex items-center justify-center">
+                                    {matches.size}
+                                </span>
+                            )}
+                            {searchQuery && (
+                                <button
+                                    onClick={() => setSearchQuery('')}
+                                    className="shrink-0 p-0.5 rounded-full text-muted-foreground hover:text-foreground transition"
+                                    title="Clear search"
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            )}
+                        </div>
+                    </div>
                 </div>
             </div>
 
             {/* Controls */}
             <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5">
-                <button onClick={() => zoomBy(1.18)} title="Zoom in" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
+                <button onClick={() => zoomBy(1.25)} title="Zoom in" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
                     <ZoomIn className="h-4 w-4" />
                 </button>
-                <button onClick={() => zoomBy(1 / 1.18)} title="Zoom out" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
+                <button onClick={() => zoomBy(1 / 1.25)} title="Zoom out" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
                     <ZoomOut className="h-4 w-4" />
                 </button>
                 <button onClick={fitToView} title="Fit to view" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
@@ -634,13 +612,13 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                     >
                         <defs>
                             <pattern id="dp-grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse">
-                                <circle cx="1.6" cy="1.6" r="1.3" fill="var(--border)" opacity="0.6" />
+                                <circle cx="1.6" cy="1.6" r="1.2" fill="var(--border)" opacity="0.55" />
                             </pattern>
                         </defs>
 
                         <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
                             {/* Cosmic dot grid — expands with the universe */}
-                            <rect x={-400000} y={-400000} width={800000} height={800000} fill="url(#dp-grid)" />
+                            <rect x={-100000} y={-100000} width={200000} height={200000} fill="url(#dp-grid)" />
 
                             {/* Edges */}
                             {links.map(link => {
@@ -709,7 +687,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                 );
                             })}
 
-                            {/* Nodes */}
+                            {/* Nodes — compact neuron capsules */}
                             {nodes.map(node => {
                                 const p = positions[node.id];
                                 const w = nodeWidth(nodeById[node.id]);
@@ -719,17 +697,9 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                 const isMatch = matches.size > 0 && matches.has(node.id);
                                 const dimmed = matches.size > 0 && !matches.has(node.id);
                                 const isRule = node.kind === 'rule';
-                                const isHub = node.degree >= 2;
-                                const glowR = Math.max(w / 2 + 14, 46);
 
                                 return (
                                     <g key={node.id} transform={`translate(${p.x},${p.y})`}>
-                                        {(isSelected || isHub) && (
-                                            <circle
-                                                r={glowR}
-                                                fill={isSelected ? 'rgba(0,122,255,0.12)' : 'rgba(0,122,255,0.05)'}
-                                            />
-                                        )}
                                         <foreignObject
                                             x={-w / 2}
                                             y={-NODE_H / 2}
@@ -738,9 +708,9 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                             style={{ pointerEvents: 'none' }}
                                         >
                                             <div
-                                                className={`group flex items-center gap-1.5 h-full w-full px-2.5 rounded-xl border-[1.5px] transition ${
+                                                className={`flex items-center gap-1.5 h-full w-full px-3 rounded-full border-[1.5px] transition ${
                                                     isRule
-                                                        ? 'bg-primary/15 border-primary/45 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_6px_18px_-6px_rgba(0,122,255,0.45)] hover:border-primary/70'
+                                                        ? 'bg-primary/15 border-primary/45 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_6px_18px_-6px_rgba(0,122,255,0.4)] hover:border-primary/70'
                                                         : 'bg-white dark:bg-[#1B1C1E] border-black/[0.08] dark:border-white/[0.14] shadow-[0_1px_2px_rgba(0,0,0,0.10),0_6px_16px_-4px_rgba(0,0,0,0.22)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.55)] hover:border-primary/40'
                                                 } ${!node.is_active ? 'opacity-55' : ''} ${
                                                     isSelected ? 'ring-2 ring-primary' : ''
@@ -749,20 +719,13 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                                 }`}
                                             >
                                                 <span
-                                                    className={`shrink-0 h-2 w-2 rounded-full transition ${
-                                                        isRule
-                                                            ? 'bg-primary shadow-[0_0_0_3px_rgba(0,122,255,0.18)]'
-                                                            : 'bg-muted-foreground/60 group-hover:bg-primary'
-                                                    }`}
-                                                />
-                                                <span
-                                                    className="text-[11px] font-semibold text-foreground leading-tight truncate"
+                                                    className="text-[10.5px] font-semibold text-foreground leading-tight truncate"
                                                     title={node.title}
                                                 >
                                                     {node.title}
                                                 </span>
                                                 {node.degree > 0 && (
-                                                    <span className="ml-auto shrink-0 pl-1 text-[9px] font-mono text-muted-foreground bg-black/[0.05] dark:bg-white/[0.08] rounded-md px-1 py-0.5">
+                                                    <span className="ml-auto shrink-0 pl-1 text-[9px] font-mono text-muted-foreground bg-black/[0.05] dark:bg-white/[0.08] rounded-full px-1.5 py-0.5">
                                                         {node.degree}
                                                     </span>
                                                 )}
@@ -775,7 +738,7 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                             y={y}
                                             width={w}
                                             height={NODE_H}
-                                            rx={10}
+                                            rx={22}
                                             fill="transparent"
                                             style={{ cursor: 'pointer', touchAction: 'none' }}
                                             onPointerDown={e => {

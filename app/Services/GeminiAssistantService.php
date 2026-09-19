@@ -598,25 +598,49 @@ PROMPT;
     /**
      * Load the persistent AI training memory (rules first, then recent notes)
      * to include in every chat system prompt so the AI "remembers" across
-     * sessions, stores, and users.
+     * sessions, stores, and users. Each memory also lists its typed synapses,
+     * so the AI can navigate the neuron map along meaningful paths.
      */
     public function generateTrainingNotesContext(): string
     {
         $notes = \App\Models\AiTrainingNote::where('is_active', true)
             ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
             ->orderBy('updated_at', 'desc')
-            ->limit(50)
+            ->limit(64)
             ->get();
 
         if ($notes->isEmpty()) {
-            return "- (kosong - belum ada catatan pelatihan)";
+            return "- (empty - no training memories yet)";
         }
 
-        return $notes->map(function ($n) {
-            $tag = $n->kind === 'rule' ? '[RULE]' : '[CATATAN]';
-            $content = mb_strimwidth((string)$n->content, 0, 240, '…');
+        $linkRows = \App\Models\AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'relation', 'label', 'weight']);
+
+        $synapses = [];
+        foreach ($linkRows as $l) {
+            $rel = $l->relation ?: ($l->label ?: 'related');
+            $synapses[$l->note_id][] = [
+                'id' => (int)$l->linked_note_id,
+                'rel' => (string)$rel,
+                'w' => $l->weight !== null ? (float)$l->weight : 0.0,
+            ];
+        }
+
+        return $notes->map(function ($n) use ($synapses) {
+            $tag = $n->kind === 'rule' ? '[RULE]' : '[NOTE]';
+            $content = mb_strimwidth((string)$n->content, 0, 170, '…');
             $author = $n->author_name ?? 'System';
-            return "- {$tag} {$content} (oleh: {$author})";
+            $line = "- {$tag} node #{$n->id}: {$content} (oleh: {$author})";
+
+            $links = $synapses[$n->id] ?? [];
+            usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
+            $links = array_slice($links, 0, 4);
+
+            if ($links !== []) {
+                $parts = array_map(fn($l) => "#{$l['id']}:{$l['rel']}", $links);
+                $line .= " ⟶ terhubung: " . implode(', ', $parts);
+            }
+
+            return $line;
         })->implode("\n");
     }
 

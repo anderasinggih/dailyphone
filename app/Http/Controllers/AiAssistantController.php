@@ -523,8 +523,8 @@ class AiAssistantController extends Controller
             $related = array_slice($related, 0, 8);
 
             $hash = md5($content);
-            $exists = \App\Models\AiTrainingNote::where('content_hash', $hash)->exists();
-            if ($exists) {
+            $graph = app(\App\Services\AiMemoryGraphService::class);
+            if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists() || $graph->isDuplicateContent($content)) {
                 continue;
             }
 

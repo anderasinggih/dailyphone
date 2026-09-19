@@ -51,16 +51,16 @@ class AiTrainingNoteController extends Controller
 
         $content = trim($request->input('content'));
         $kind = $request->input('kind');
-        $hash = md5($content);
+        $graph = app(AiMemoryGraphService::class);
 
-        if (!AiTrainingNote::where('content_hash', $hash)->exists()) {
+        if (!$graph->isDuplicateContent($content)) {
             AiTrainingNote::create([
                 'user_id' => $request->user()->id,
                 'author_name' => $request->user()->name,
                 'author_role' => $request->user()->role,
                 'content' => $content,
-                'title' => app(AiMemoryGraphService::class)->titleFromContent($content),
-                'content_hash' => $hash,
+                'title' => $graph->titleFromContent($content),
+                'content_hash' => md5($content),
                 'kind' => $kind,
                 'is_active' => true,
             ]);
