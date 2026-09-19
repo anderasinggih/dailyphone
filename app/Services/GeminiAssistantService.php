@@ -303,8 +303,11 @@ CONTEXT;
 
     /**
      * Send chat conversation to Gemini.
+     *
+     * @param  array  $messages  Recent session messages ([{role, content}]).
+     * @param  mixed  $attachments  Collection of AiChatAttachment to include.
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null): array
     {
         if (!$this->isConfigured()) {
             return [
@@ -465,15 +468,22 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
      * MANDATORY: `buyer_name`, `actual_sell_price`, `payment_method`.
 - "create_money_note": When recording cash book income or expenses.
       * MANDATORY: `type` ("expense"|"income"), `amount`, `category`, `description`.
-   - "add_parameter": When the user asks to ADD/CREATE master data parameters or their option values (e.g. add a new parameter field such as Brand, Warna, Kapasitas Memori, Tipe Lisensi, Supplier/Kondisi, or add new option values to an existing parameter).
-      * ADD-ONLY ACTION: You CANNOT delete, remove, or destroy any parameter or option — if asked to do so, politely state you cannot and suggest the Superadmin do it from Settings > Product & Unit Parameters.
-      * Payload structure:
-        {
-          "name": "Supplier",
-          "category": "global" | "iphone" | "android",
-          "values": ["Distributor Utama Jakarta", "Supplier Partner"] or [{"value": "Warna Gold", "color": "amber"}]
-        }
-      * If the parameter name already exists, the engine will NOT create a duplicate — it will only add the new option values that do not exist yet.
+- "add_parameter": When the user asks to ADD/CREATE master data parameters or their option values (e.g. add a new parameter field such as Brand, Warna, Kapasitas Memori, Tipe Lisensi, Supplier/Kondisi, or add new option values to an existing parameter).
+       * ADD-ONLY ACTION: You CANNOT delete, remove, or destroy any parameter or option — if asked to do so, politely state you cannot and suggest the Superadmin do it from Settings > Product & Unit Parameters.
+       * Payload structure:
+         {
+           "name": "Supplier",
+           "category": "global" | "iphone" | "android",
+           "values": ["Distributor Utama Jakarta", "Supplier Partner"] or [{"value": "Warna Gold", "color": "amber"}]
+         }
+       * If the parameter name already exists, the engine will NOT create a duplicate — it will only add the new option values that do not exist yet.
+   - "learn_repo": When the user asks the AI to learn / study / memorize a GitHub repository (e.g. "belajari repo ini", "pelajari https://github.com/owner/repo", "download skill dari repo github"), you MUST emit this action so the backend can download the repo and save its files as new AI memory neurons.
+       * MANDATORY payload:
+         {
+           "repo": "https://github.com/owner/repo"  (full GitHub URL, or "owner/repo")
+         }
+       * This action does NOT modify business data — it only grows the AI's training memory network with the repo's text files as knowledge nodes.
+       * "title": e.g. "Learn GitHub repo owner/repo". "changes": a summary row like { "field": "AI Memory", "old": "-", "new": "Pelajari repo owner/repo" }.
 
 3. STRUCTURED ACTION PROPOSAL FORMAT:
 When all criteria are met, formulate your response in two parts:
@@ -481,7 +491,7 @@ Part 1: A brief, polite explanation in friendly Markdown of the changes.
 Part 2: A single structured code block starting with ```action_proposal and ending with ``` containing valid JSON:
 ```action_proposal
 {
-  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "empty_trash" | "sell_stock" | "update_stock" | "create_money_note" | "add_parameter",
+  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "empty_trash" | "sell_stock" | "update_stock" | "create_money_note" | "add_parameter" | "learn_repo",
   "title": "Short title of action",
   "summary": "1 sentence explanation of the action",
   "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",
@@ -510,6 +520,8 @@ Part 2: A single structured code block starting with ```action_proposal and endi
     // "type": "expense"|"income", "amount": 250000, "category": "Operasional", "description": "Beli galon air"
     // For add_parameter:
     // "name": "Supplier", "category": "global", "values": ["Distributor Utama Jakarta", { "value": "Warna Gold", "color": "amber" }]
+    // For learn_repo:
+    // "repo": "https://github.com/owner/repo"
     // For empty_trash:
     // "confirm": true
   }
@@ -541,14 +553,24 @@ PROMPT;
 
         // Build contents for Gemini API
         $contents = [];
+        $includeAttachments = $attachments instanceof \Illuminate\Support\Collection
+            ? $attachments->values()
+            : collect($attachments ?? [])->values();
+        $lastIndex = count($messages) - 1;
 
-        foreach ($messages as $msg) {
+        foreach ($messages as $i => $msg) {
             $role = ($msg['role'] === 'user') ? 'user' : 'model';
+            $parts = [
+                ['text' => $msg['content']],
+            ];
+
+            if ($i === $lastIndex && $includeAttachments->isNotEmpty()) {
+                $parts = $this->attachParts($parts, $includeAttachments);
+            }
+
             $contents[] = [
                 'role' => $role,
-                'parts' => [
-                    ['text' => $msg['content']]
-                ]
+                'parts' => $parts,
             ];
         }
 
@@ -604,6 +626,52 @@ PROMPT;
             'success' => false,
             'reply' => "I encountered an error communicating with Gemini: {$lastErrorMsg}"
         ];
+    }
+
+    /**
+     * Expand the last user-message parts with uploaded attachments: images & PDFs
+     * become Gemini inline_data (base64) parts so the model can see them, while
+     * the text of every other file is folded into a labelled attachment block.
+     */
+    protected function attachParts(array $parts, \Illuminate\Support\Collection $attachments): array
+    {
+        $inline = 0;
+        $maxInline = 3;
+        $body = "\n\n📎 FILE ATTACHMENTS (uploaded by user — read carefully):\n";
+
+        foreach ($attachments as $att) {
+            $name = $att->original_name ?? 'attachment';
+            $isVisual = in_array($att->kind ?? '', ['image', 'pdf'], true);
+
+            if ($isVisual && $inline < $maxInline) {
+                $fullPath = storage_path('app/private/' . $att->storage_path);
+                if (is_file($fullPath) && filesize($fullPath) > 0) {
+                    $mime = $att->mime_type ?: 'image/jpeg';
+                    if (str_starts_with($mime, 'image/') || $mime === 'application/pdf') {
+                        $bytes = file_get_contents($fullPath);
+                        if ($bytes !== false && strlen($bytes) <= 10 * 1024 * 1024) {
+                            $parts[] = [
+                                'inline_data' => [
+                                    'mime_type' => $mime,
+                                    'data' => base64_encode($bytes),
+                                ],
+                            ];
+                            $inline++;
+                            $body .= "\n— {$name} (dilampirkan sebagai {$mime})\n";
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            $text = trim((string)($att->extracted_text ?? ''));
+            $body .= "\n--- FILE: {$name} (" . ($att->mime_type ?: 'unknown') . ' / ' . number_format((int)$att->size_bytes) . " bytes) ---\n";
+            $body .= $text === '' ? '(tidak ada teks yang bisa diekstrak dari file ini)' . "\n" : mb_substr($text, 0, 40000) . "\n";
+        }
+
+        $parts[0]['text'] .= mb_substr($body, 0, 200000);
+
+        return $parts;
     }
 
     /**

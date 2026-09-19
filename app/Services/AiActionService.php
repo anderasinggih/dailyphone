@@ -61,6 +61,9 @@ class AiActionService
                 case 'run_python_script':
                     return $this->executeRunPythonScript($payload, $user);
 
+                case 'learn_repo':
+                    return $this->executeLearnRepo($payload, $user);
+
                 default:
                     return [
                         'success' => false,
@@ -937,6 +940,26 @@ class AiActionService
             'success' => true,
             'message' => "Successfully recorded {$typeName} Rp {$formattedAmount} for '{$category}' ({$description}).",
             'data' => $note,
+        ];
+    }
+
+    /**
+     * Download a public GitHub repository and persist its text files as new
+     * training-memory neurons (kind: knowledge, tagged with the repo as source).
+     */
+    protected function executeLearnRepo(array $payload, User $user): array
+    {
+        $repo = trim((string)($payload['repo'] ?? $payload['repo_url'] ?? $payload['repository'] ?? ''));
+
+        $result = app(\App\Services\AiFileIngestService::class)->ingestRepository($repo, $user);
+
+        return [
+            'success' => $result['success'],
+            'message' => $result['message'],
+            'data' => [
+                'repo' => $result['repo'],
+                'notes_count' => $result['notes_count'],
+            ],
         ];
     }
 

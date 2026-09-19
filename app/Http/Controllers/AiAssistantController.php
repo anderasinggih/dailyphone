@@ -81,6 +81,52 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Upload a file (image, spreadsheet, archive, document, ...) so the AI can
+     * read it. Text is extracted server-side and remembered on the attachment;
+     * images/PDFs are re-attached as inline data when the user sends a message.
+     */
+    public function upload(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|max:20480',
+        ]);
+
+        $user = $request->user();
+        $file = $request->file('file');
+        $originalName = $file->getClientOriginalName();
+        $mime = $file->getMimeType();
+        $ingest = app(\App\Services\AiFileIngestService::class);
+
+        $kind = $ingest->classify($originalName, $mime);
+        $storagePath = $file->store('ai-uploads', 'local');
+        $fullPath = storage_path('app/private/' . $storagePath);
+
+        $text = $ingest->extractText($fullPath, $mime, $originalName);
+
+        $attachment = \App\Models\AiChatAttachment::create([
+            'user_id' => $user->id,
+            'original_name' => $originalName,
+            'mime_type' => $mime,
+            'size_bytes' => $file->getSize(),
+            'kind' => $kind,
+            'storage_path' => $storagePath,
+            'extracted_text' => $text === '' ? null : $text,
+            'content_hash' => md5_file($fullPath) ?: null,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'attachment' => [
+                'id' => $attachment->id,
+                'original_name' => $originalName,
+                'kind' => $kind,
+                'size_bytes' => $attachment->size_bytes,
+                'text_chars' => mb_strlen($text),
+            ],
+        ]);
+    }
+
+    /**
      * Create a new chat session.
      */
     public function createSession(Request $request): JsonResponse
@@ -104,8 +150,10 @@ class AiAssistantController extends Controller
     public function chat(Request $request): JsonResponse|StreamedResponse
     {
         $request->validate([
-            'message' => 'required|string',
+            'message' => 'required_without:attachments|string',
             'session_id' => 'nullable|exists:ai_sessions,id',
+            'attachments' => 'nullable|array',
+            'attachments.*' => 'integer',
         ]);
 
         if (!$this->geminiService->isEnabled()) {
@@ -116,8 +164,17 @@ class AiAssistantController extends Controller
         }
 
         $user = $request->user();
-        $userText = trim($request->input('message'));
+        $userText = trim($request->input('message') ?? '');
         $sessionId = $request->input('session_id');
+        $attachmentIds = array_values(array_filter(array_map('intval', (array)$request->input('attachments', []))));
+
+        $attachments = \App\Models\AiChatAttachment::where('user_id', $user->id)
+            ->whereIn('id', $attachmentIds)
+            ->get();
+
+        if ($userText === '' && $attachments->isNotEmpty()) {
+            $userText = '📎 ' . $attachments->pluck('original_name')->join(', ');
+        }
 
         // If no session provided, find or create one
         if (!$sessionId) {
@@ -137,12 +194,23 @@ class AiAssistantController extends Controller
         }
 
         // 1. Save user message in this session
-        \App\Models\AiChat::create([
+        $userChat = \App\Models\AiChat::create([
             'user_id' => $user->id,
             'session_id' => $sessionId,
             'role' => 'user',
             'content' => $userText,
         ]);
+
+        // Link any uploaded attachments to this message so they stay with the
+        // session history and can be reused / cleaned up later.
+        if ($attachments->isNotEmpty()) {
+            \App\Models\AiChatAttachment::whereKey($attachments->pluck('id'))
+                ->update([
+                    'user_id' => $user->id,
+                    'session_id' => $sessionId,
+                    'ai_chat_id' => $userChat->id,
+                ]);
+        }
 
         // 2. Fetch recent conversation memory for THIS SESSION ONLY (last 10 messages)
         $recentChats = \App\Models\AiChat::where('session_id', $sessionId)
@@ -165,7 +233,7 @@ class AiAssistantController extends Controller
             session_write_close();
         }
 
-        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel) {
+        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments) {
             $emit = function (array $payload): void {
                 echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
                 if (ob_get_level() > 0) {
@@ -180,7 +248,7 @@ class AiAssistantController extends Controller
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
                 // 3. Send to Gemini with full session memory & custom session rules/training
-                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText);
+                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments);
 
                 // 4. Save AI reply to database in this session
                 if (!empty($result['reply'])) {

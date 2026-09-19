@@ -19,6 +19,8 @@ class AiTrainingNote extends Model
         'content_hash',
         'kind',
         'is_active',
+        'source_url',
+        'source_label',
     ];
 
     protected $casts = [

@@ -27,7 +27,11 @@ import {
     X,
     Pencil,
     Sliders,
-    Network
+    Network,
+    Image as ImageIcon,
+    FileText,
+    FileArchive,
+    FileSpreadsheet
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
@@ -101,6 +105,14 @@ interface Message {
     content: string;
     action_status?: 'pending' | 'executing' | 'executed' | 'rejected' | null;
     timestamp: string;
+    attachments?: { name: string; kind: string }[];
+}
+
+interface UploadedAttachment {
+    id: number;
+    original_name: string;
+    kind: string;
+    size_bytes: number;
 }
 
 interface Session {
@@ -180,6 +192,9 @@ export default function Assistant({
     const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
     const [currentRules, setCurrentRules] = useState<string>('');
     const [isSavingRules, setIsSavingRules] = useState(false);
+    const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
+    const [isUploading, setIsUploading] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Reuse a single AudioContext so completion chimes do not leak one context per
 // message (browsers cap concurrent AudioContexts).
@@ -415,8 +430,9 @@ function playCompletionChime(soundEnabled: boolean): void {
     };
 
     const handleSendMessage = async (textToSend?: string) => {
+        const uploaded = attachments;
         const rawQuery = (textToSend || inputQuery).trim();
-        if (!rawQuery || isLoading) return;
+        if ((!rawQuery && uploaded.length === 0) || isLoading || isUploading) return;
 
         let query = rawQuery;
 
@@ -430,14 +446,16 @@ function playCompletionChime(soundEnabled: boolean): void {
         const userMsg: Message = {
             id: tempId,
             role: 'user',
-            content: rawQuery,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            content: rawQuery || '📎 ' + uploaded.map(a => a.original_name).join(', '),
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            attachments: uploaded.map(a => ({ name: a.original_name, kind: a.kind })),
         };
 
         setMessages(prev => [...prev, userMsg]);
         setInputQuery('');
         setReplyingTo(null);
         setIsLoading(true);
+        setAttachments([]);
         setAccessedNetwork({ nodes: [], edges: [] });
 
         const applyReply = (data: any) => {
@@ -483,6 +501,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                 body: JSON.stringify({
                     message: query,
                     session_id: currentSessionId,
+                    attachments: uploaded.map(a => a.id),
                 })
             });
 
@@ -535,6 +554,48 @@ function playCompletionChime(soundEnabled: boolean): void {
             e.preventDefault();
             handleSendMessage();
         }
+    };
+
+    const csrfToken = (): string =>
+        (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '';
+
+    const handlePickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files || []);
+        e.target.value = '';
+        if (files.length === 0) return;
+
+        setIsUploading(true);
+        Promise.all(files.map(async (file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch(route('assistant.upload'), {
+                method: 'POST',
+                headers: { 'X-CSRF-TOKEN': csrfToken() },
+                body: formData,
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => null);
+                throw new Error(body?.message || `Upload failed (${res.status})`);
+            }
+            const data = await res.json();
+            return data.attachment as UploadedAttachment;
+        })).then((uploaded) => {
+            setAttachments(prev => [...prev, ...uploaded]);
+        }).catch((err) => {
+            alert('Gagal mengunggah file: ' + err.message);
+        }).finally(() => {
+            setIsUploading(false);
+        });
+    };
+
+    const removeAttachment = (id: number) => {
+        setAttachments(prev => prev.filter(a => a.id !== id));
+    };
+
+    const formatBytes = (bytes: number): string => {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     };
 
     const copyMessage = async (id: string, text: string) => {
@@ -845,6 +906,26 @@ function playCompletionChime(soundEnabled: boolean): void {
                                     return (
                                         <div key={m.id} className="flex flex-col items-end max-w-3xl mx-auto space-y-1">
                                             <div className="max-w-[85%] sm:max-w-[75%] rounded-3xl bg-primary text-primary-foreground px-4 py-2.5 shadow-2xs">
+                                                {m.attachments && m.attachments.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                                                        {m.attachments.map((att, ai) => {
+                                                            const Ic = att.kind === 'image' ? ImageIcon
+                                                                : att.kind === 'archive' ? FileArchive
+                                                                : att.kind === 'spreadsheet' ? FileSpreadsheet
+                                                                : FileText;
+                                                            return (
+                                                                <span
+                                                                    key={ai}
+                                                                    className="inline-flex items-center gap-1 rounded-full bg-primary-foreground/20 px-2 py-0.5 text-[10.5px] font-medium"
+                                                                    title={att.name}
+                                                                >
+                                                                    <Ic className="h-3 w-3 shrink-0" />
+                                                                    <span className="max-w-[120px] truncate">{att.name}</span>
+                                                                </span>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
                                                 <div className="whitespace-pre-wrap select-text text-[13px] leading-relaxed break-words">
                                                     {m.content}
                                                 </div>
@@ -1010,13 +1091,72 @@ function playCompletionChime(soundEnabled: boolean): void {
                                     </div>
                                 )}
 
+                                {/* Uploaded file chips — shown above the composer */}
+                                {(attachments.length > 0 || isUploading) && (
+                                    <div className="flex flex-wrap items-center gap-1.5 px-4">
+                                        {attachments.map((att) => {
+                                            const Ic = att.kind === 'image' ? ImageIcon
+                                                : att.kind === 'archive' ? FileArchive
+                                                : att.kind === 'spreadsheet' ? FileSpreadsheet
+                                                : FileText;
+                                            return (
+                                                <span
+                                                    key={att.id}
+                                                    className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 dark:bg-card/90 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm"
+                                                >
+                                                    <Ic className="h-3 w-3 text-primary shrink-0" />
+                                                    <span className="max-w-[140px] sm:max-w-[220px] truncate">{att.original_name}</span>
+                                                    <span className="text-[9.5px] text-muted-foreground/70">{formatBytes(att.size_bytes)}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeAttachment(att.id)}
+                                                        className="p-0.5 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition"
+                                                        title="Remove file"
+                                                    >
+                                                        <X className="h-3 w-3" />
+                                                    </button>
+                                                </span>
+                                            );
+                                        })}
+                                        {isUploading && (
+                                            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
+                                                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                                                Uploading…
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
+
                                 <form
                                     onSubmit={(e: FormEvent) => {
                                         e.preventDefault();
                                         handleSendMessage();
                                     }}
-                                    className="flex items-center gap-2 p-1.5 pl-4 pr-1.5 rounded-full bg-background/85 dark:bg-card/80 backdrop-blur-2xl border border-border/60 shadow-xl shadow-black/5 dark:shadow-black/25 transition-all focus-within:border-primary/70 focus-within:ring-2 focus-within:ring-primary/15"
+                                    className="flex items-center gap-1.5 p-1.5 pl-3 pr-1.5 rounded-full bg-background/85 dark:bg-card/80 backdrop-blur-2xl border border-border/60 shadow-xl shadow-black/5 dark:shadow-black/25 transition-all focus-within:border-primary/70 focus-within:ring-2 focus-within:ring-primary/15"
                                 >
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        multiple
+                                        onChange={handlePickFiles}
+                                        className="hidden"
+                                        aria-label="Upload files"
+                                    />
+
+                                    <button
+                                        type="button"
+                                        onClick={() => fileInputRef.current?.click()}
+                                        disabled={isLoading || isUploading || !aiConfig.is_configured}
+                                        className="h-7 w-7 rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-40 transition flex items-center justify-center shrink-0"
+                                        title="Upload file (image, Excel, CSV, ZIP, ...)"
+                                    >
+                                        {isUploading ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <Plus className="h-4 w-4" />
+                                        )}
+                                    </button>
+
                                     <div className="flex-1 flex items-center min-w-0">
                                         <textarea
                                             ref={inputRef}
@@ -1024,7 +1164,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                                             value={inputQuery}
                                             onChange={e => setInputQuery(e.target.value)}
                                             onKeyDown={handleKeyDown}
-                                            placeholder="Ask anything or propose actions... (Enter to send)"
+                                            placeholder={attachments.length > 0 ? 'Add a question about the file...' : "Ask anything or propose actions... (Enter to send)"}
                                             disabled={isLoading || !aiConfig.is_configured}
                                             className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground border-none outline-none focus:outline-none focus:ring-0 p-0 resize-none max-h-24 min-h-[24px] leading-5"
                                         />
@@ -1032,7 +1172,7 @@ function playCompletionChime(soundEnabled: boolean): void {
 
                                     <button
                                         type="submit"
-                                        disabled={isLoading || !inputQuery.trim() || !aiConfig.is_configured}
+                                        disabled={isLoading || isUploading || (!inputQuery.trim() && attachments.length === 0) || !aiConfig.is_configured}
                                         className="h-8 w-8 rounded-full bg-primary text-primary-foreground hover:opacity-90 active:scale-90 transition flex items-center justify-center disabled:opacity-30 shrink-0 shadow-xs"
                                         title="Send"
                                     >

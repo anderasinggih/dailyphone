@@ -112,6 +112,8 @@ Route::prefix('application/dp')->group(function () {
         Route::patch('/assistant/session/{id}', [\App\Http\Controllers\AiAssistantController::class, 'updateSession'])->name('assistant.session.update');
         Route::delete('/assistant/session/{id}', [\App\Http\Controllers\AiAssistantController::class, 'deleteSession'])->name('assistant.session.destroy');
         Route::post('/assistant/chat', [\App\Http\Controllers\AiAssistantController::class, 'chat'])->name('assistant.chat');
+
+        Route::post('/assistant/upload', [\App\Http\Controllers\AiAssistantController::class, 'upload'])->name('assistant.upload');
         Route::post('/assistant/checkout-summary', [\App\Http\Controllers\AiAssistantController::class, 'checkoutSummary'])->name('assistant.checkout-summary');
         Route::post('/assistant/execute', [\App\Http\Controllers\AiAssistantController::class, 'executeAction'])->name('assistant.execute');
         Route::post('/assistant/undo', [\App\Http\Controllers\AiAssistantController::class, 'undoAction'])->name('assistant.undo');
