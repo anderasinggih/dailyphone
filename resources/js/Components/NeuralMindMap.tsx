@@ -147,21 +147,25 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
         });
 
         const pos: Record<number, Point> = {};
-        const base = 92;
-        const spacing = 116;
+        const base = 112;
+        const spacing = 156;
+        const ringGap = 40;
 
         Object.keys(byDepth).forEach(ds => {
             const d = +ds;
             const ring = byDepth[ds];
-            const avgW = ring.reduce((s, id) => s + nodeWidth(nodeById.get(id)), 0) / ring.length;
-            const ringR = Math.max(base + d * spacing, (ring.length * Math.max(avgW, 130) * 1.18) / (2 * Math.PI));
+            const totalW = ring.reduce((s, id) => s + nodeWidth(nodeById.get(id)) + ringGap, 0);
+            const ringR = Math.max(base + d * spacing, (totalW / (2 * Math.PI)) * 1.1);
             ring.forEach((id, i) => {
-                const jx = (jitter(id) - 0.5) * 26;
-                const jy = (jitter(id + 3) - 0.5) * 26;
+                const jx = (jitter(id) - 0.5) * 14;
+                const jy = (jitter(id + 3) - 0.5) * 14;
                 const ang = d * 1.618 + ringSpin + (i * 2 * Math.PI) / ring.length;
                 pos[id] = { x: Math.cos(ang) * ringR + jx, y: Math.sin(ang) * ringR + jy };
             });
         });
+
+        // The hub always sits dead-center — the rings radiate outward from it.
+        pos[hub] = { x: 0, y: 0 };
 
         let radius = 0;
         const offsets: Point[] = [];
@@ -192,14 +196,14 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
             cy = 0;
         } else {
             const angle = i * golden;
-            let r = comp.radius + 120;
-            const step = 110;
+            let r = comp.radius + 200;
+            const step = 160;
             let guard = 0;
             while (guard++ < 400) {
                 let ok = true;
                 for (const p of placed) {
                     const d = Math.hypot(Math.cos(angle) * r - p.x, Math.sin(angle) * r - p.y);
-                    if (d < p.r + comp.radius + 120) {
+                    if (d < p.r + comp.radius + 200) {
                         ok = false;
                         break;
                     }
@@ -215,6 +219,9 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
             global[comp.ids[idx]] = { x: p.x + cx, y: p.y + cy };
         });
     });
+
+    // Push overlapping nodes apart so the cosmos is always clean and legible.
+    resolveOverlaps(global, id => nodeWidth(nodeById.get(id)), NODE_H, 34);
 
     // Normalize into a tight world box so the cosmos fills the viewport.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -238,6 +245,45 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     });
 
     return result;
+}
+
+/**
+ * Iteratively separate every pair of overlapping nodes, treating each node as
+ * a circle sized by its wider edge (width or height). Each pass pushes apart
+ * half the required distance; repeated passes converge to a clean layout
+ * without overlaps while keeping the overall galaxy structure intact.
+ */
+function resolveOverlaps(
+    positions: Record<number, Point>,
+    widthOf: (id: number) => number,
+    height: number,
+    gap: number,
+    passes = 80,
+): void {
+    const ids = Object.keys(positions).map(Number);
+    for (let pass = 0; pass < passes; pass++) {
+        for (let i = 0; i < ids.length; i++) {
+            const a = positions[ids[i]];
+            for (let j = i + 1; j < ids.length; j++) {
+                const b = positions[ids[j]];
+                const minD = Math.max(widthOf(ids[i]), height) / 2
+                    + Math.max(widthOf(ids[j]), height) / 2
+                    + gap;
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const d = Math.hypot(dx, dy);
+                if (d < minD && d > 0.0001) {
+                    const push = (minD - d) / 2;
+                    const ux = dx / d;
+                    const uy = dy / d;
+                    a.x -= ux * push;
+                    a.y -= uy * push;
+                    b.x += ux * push;
+                    b.y += uy * push;
+                }
+            }
+        }
+    }
 }
 
 function loadSavedPositions(): Record<number, Point> | null {
@@ -265,7 +311,7 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
     const [selectedId, setSelectedId] = useState<number | null>(null);
     const [hoveredLink, setHoveredLink] = useState<number | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
-    const [showLabels, setShowLabels] = useState(true);
+    const [showLabels, setShowLabels] = useState(false);
     const [layoutSeed, setLayoutSeed] = useState(0);
     const [rearrangeTick, setRearrangeTick] = useState(0);
     const [savedPos, setSavedPos] = useState<Record<number, Point> | null>(() => loadSavedPositions());

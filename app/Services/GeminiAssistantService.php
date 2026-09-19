@@ -1075,6 +1075,11 @@ PROMPT;
      * knowledge notes most relevant to the current query) so the AI "remembers"
      * across sessions, stores, and users. Each memory also lists its typed
      * synapses, so the AI can navigate the neuron map along meaningful paths.
+     *
+     * Every selected node is then EXPANDED along its top-weight synapses: the
+     * readable content of the most related neighbour nodes is appended as a
+     * second block (ranked by context relevance, capped) so the AI can actually
+     * traverse its memory graph along the paths that match the conversation.
      */
     public function generateTrainingNotesContext(?string $query = null): string
     {
@@ -1084,7 +1089,7 @@ PROMPT;
             return "- (empty - no training memories yet)";
         }
 
-        $linkRows = \App\Models\AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'relation', 'label', 'weight']);
+        $linkRows = \App\Models\AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'relation', 'label', 'weight', 'reason']);
 
         $synapses = [];
         foreach ($linkRows as $l) {
@@ -1096,7 +1101,9 @@ PROMPT;
             ];
         }
 
-        return $notes->map(function ($n) use ($synapses) {
+        $selectedIds = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
+
+        $main = $notes->map(function ($n) use ($synapses) {
             $tag = $n->kind === 'rule' ? '[RULE]' : '[NOTE]';
             $content = mb_strimwidth((string)$n->content, 0, 170, '…');
             $author = $n->author_name ?? 'System';
@@ -1112,7 +1119,64 @@ PROMPT;
             }
 
             return $line;
-        })->implode("\n");
+        })->values();
+
+        // ── Path expansion: pull the CONTENT of the most-related neighbours ──
+        $tokens = app(\App\Services\AiMemoryGraphService::class)->tokenize(trim((string)$query));
+        $expansion = [];
+
+        foreach ($synapses as $sourceId => $links) {
+            if (!isset($selectedIds[$sourceId])) {
+                continue;
+            }
+            usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
+            foreach (array_slice($links, 0, 3) as $l) {
+                if (isset($selectedIds[$l['id']]) || $l['id'] <= 0) {
+                    continue;
+                }
+                $expansion[$l['id']] = [
+                    'id' => $l['id'],
+                    'from' => (int)$sourceId,
+                    'rel' => $l['rel'],
+                    'w' => $l['w'],
+                ];
+            }
+        }
+
+        if ($expansion !== []) {
+            $neighbourNodes = \App\Models\AiTrainingNote::whereIn('id', array_keys($expansion))
+                ->where('is_active', true)
+                ->get()
+                ->keyBy('id');
+
+            $paths = collect(array_values($expansion))->map(function ($e) use ($neighbourNodes, $tokens) {
+                $node = $neighbourNodes[$e['id']] ?? null;
+                if (!$node) {
+                    return null;
+                }
+                return [
+                    'id' => $e['id'],
+                    'kind' => $node->kind,
+                    'from' => $e['from'],
+                    'rel' => $e['rel'],
+                    'score' => ($tokens === [] ? $e['w'] : $this->scoreAgainst($node, $tokens)),
+                    'content' => mb_strimwidth((string)$node->content, 0, 130, '…'),
+                ];
+            })->filter()
+                ->sortByDesc('score')
+                ->take(8)
+                ->values();
+
+            $lines = $paths->map(function ($p) {
+                $tag = $p['kind'] === 'rule' ? '[RULE]' : '[NOTE]';
+                $via = mb_strimwidth((string)$p['rel'], 0, 24, '');
+                return "- {$tag} node #{$p['id']}: {$p['content']} (jalur dari node #{$p['from']} via {$via})";
+            })->implode("\n");
+
+            $main[] = "\nNODE TERKAIT DI JALUR RELASI (konten node sebelah yang paling relevan dengan konteks):\n{$lines}";
+        }
+
+        return $main->implode("\n");
     }
 
     /**
