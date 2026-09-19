@@ -156,29 +156,40 @@ class AiAssistantController extends Controller
             ];
         })->toArray();
 
-        // 3. Send to Gemini with full session memory & custom session rules/training
-        $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules);
+        try {
+            // 3. Send to Gemini with full session memory & custom session rules/training
+            $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules);
 
-        // 4. Save AI reply to database in this session
-        if (!empty($result['reply'])) {
-            $aiChat = \App\Models\AiChat::create([
-                'user_id' => $user->id,
-                'session_id' => $sessionId,
-                'role' => 'assistant',
-                'content' => $result['reply'],
+            // 4. Save AI reply to database in this session
+            if (!empty($result['reply'])) {
+                $aiChat = \App\Models\AiChat::create([
+                    'user_id' => $user->id,
+                    'session_id' => $sessionId,
+                    'role' => 'assistant',
+                    'content' => $result['reply'],
+                ]);
+
+                $result['message_id'] = (string)$aiChat->id;
+                $result['timestamp'] = $aiChat->created_at->format('H:i');
+            }
+
+            // Touch session updated_at to keep recent sessions on top
+            $session->touch();
+
+            $result['session_id'] = $sessionId;
+            $result['session_title'] = $session->title;
+
+            return response()->json($result);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('AI Chat Error: ' . $e->getMessage(), [
+                'exception' => $e
             ]);
 
-            $result['message_id'] = (string)$aiChat->id;
-            $result['timestamp'] = $aiChat->created_at->format('H:i');
+            return response()->json([
+                'success' => false,
+                'reply' => 'Maaf, sistem mengalami kendala: ' . $e->getMessage()
+            ], 200);
         }
-
-        // Touch session updated_at to keep recent sessions on top
-        $session->touch();
-
-        $result['session_id'] = $sessionId;
-        $result['session_title'] = $session->title;
-
-        return response()->json($result);
     }
 
     /**

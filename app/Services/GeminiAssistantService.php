@@ -19,21 +19,28 @@ class GeminiAssistantService
 
     public function __construct()
     {
+        $this->reloadSettings();
+    }
+
+    public function reloadSettings(): void
+    {
         $settings = GeneralSetting::first();
         
         $this->apiKey = $settings?->ai_api_key ?: env('GEMINI_API_KEY');
-        $this->model = $settings?->ai_model ?: env('GEMINI_MODEL', 'gemini-2.0-flash');
+        $this->model = $settings?->ai_model ?: env('GEMINI_MODEL', 'gemini-3.5-flash-lite');
         $this->enabled = $settings ? (bool)$settings->ai_enabled : true;
         $this->customInstruction = $settings?->ai_system_instruction;
     }
 
     public function isConfigured(): bool
     {
+        $this->reloadSettings();
         return !empty($this->apiKey);
     }
 
     public function isEnabled(): bool
     {
+        $this->reloadSettings();
         return $this->enabled;
     }
 
