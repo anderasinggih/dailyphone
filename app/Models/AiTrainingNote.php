@@ -44,6 +44,16 @@ class AiTrainingNote extends Model
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Failed to auto-link training note: ' . $e->getMessage());
             }
+
+            // Keep the semantic index warm: embed the fresh node AFTER the
+            // response, so a new memory is searchable by meaning on the very
+            // next query instead of waiting for a backfill (item 1).
+            try {
+                \App\Jobs\EmbedTrainingNoteJob::dispatch((int)$note->id)
+                    ->onConnection('deferred');
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to queue note embedding: ' . $e->getMessage());
+            }
         });
 
         // Removing a node severs every relation that points to it, keeping the

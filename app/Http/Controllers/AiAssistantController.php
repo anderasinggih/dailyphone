@@ -419,11 +419,13 @@ class AiAssistantController extends Controller
                 // Token-budget context trimming (item 7): once a session has run
                 // long enough that a large share of history is outside the
                 // verbatim window, fold the older turns into the rolling
-                // ai_summary so the next request never runs out of room.
+                // ai_summary. Summarization costs a Gemini round-trip, so it is
+                // queued AFTER the reply has streamed — never blocking the user.
                 try {
-                    $this->rollSessionSummary($session, $sessionSummary, $sessionId, $user);
+                    \App\Jobs\SummarizeAiSessionJob::dispatch($sessionId, $sessionSummary)
+                        ->onConnection('deferred');
                 } catch (\Throwable $e) {
-                    \Illuminate\Support\Facades\Log::warning('AI context summarization failed: ' . $e->getMessage());
+                    \Illuminate\Support\Facades\Log::warning('AI context summarization dispatch failed: ' . $e->getMessage());
                 }
 
                 // Touch session updated_at to keep recent sessions on top
@@ -838,57 +840,6 @@ class AiAssistantController extends Controller
         $run->retrieval_confidence = $data['retrieval_confidence'] ?? null;
 
         $run->save();
-    }
-
-    /**
-     * Token-budget context trimming (item 7). Once most of the session's
-     * history sits outside the 10-message verbatim window (and comfortably past
-     * the configured token budget), ask Gemini to fold the older turns into the
-     * rolling ai_summary — the next request keeps only the recent turns plus
-     * this summary instead of the full transcript.
-     */
-    protected function rollSessionSummary($session, ?string $priorSummary, int $sessionId, $user): void
-    {
-        $settings = GeneralSetting::first();
-        $budget = (int)($settings?->ai_context_token_budget ?? 10000);
-        if ($budget < 1000) {
-            $budget = 10000;
-        }
-
-        $history = \App\Models\AiChat::where('session_id', $sessionId)
-            ->where('role', '!=', 'system')
-            ->orderBy('id', 'asc')
-            ->get(['id', 'role', 'content']);
-
-        // The last 10 messages travel verbatim; everything older is the part a
-        // summary would replace. Only start folding once there is a meaningful
-        // surplus — so short chats never pay the summarization round-trip.
-        $older = collect($history)->values();
-        $verbatim = $older->slice(-10);
-        $summarizable = $older->slice(0, $older->count() - $verbatim->count());
-
-        if ($summarizable->isEmpty()) {
-            return;
-        }
-
-        $olderChars = mb_strlen($summarizable->implode('content', ''));
-        if ($olderChars < $budget * 3) {
-            return;
-        }
-
-        $messages = $summarizable->map(function ($c) {
-            return [
-                'role' => ($c->role === 'user') ? 'user' : 'model',
-                'content' => (string)$c->content,
-            ];
-        })->values()->all();
-
-        $summary = $this->geminiService->summarizeConversation($messages, $priorSummary);
-        if ($summary === null || trim($summary) === '') {
-            return;
-        }
-
-        $session->update(['ai_summary' => $summary]);
     }
 
     /**

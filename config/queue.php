@@ -34,6 +34,14 @@ return [
             'driver' => 'sync',
         ],
 
+        // Runs queued jobs AFTER the HTTP response has been sent (Laravel's
+        // `defer()` machinery), so heavy AI work — conversation summarization,
+        // memory embeddings — never blocks a chat reply and needs no worker.
+        'deferred' => [
+            'driver' => 'deferred',
+            'after_commit' => false,
+        ],
+
         'database' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),

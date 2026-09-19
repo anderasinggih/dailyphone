@@ -134,7 +134,6 @@ class AiToolService
                                 ],
                                 'payload' => [
                                     'type' => 'object',
-                                    'additionalProperties' => true,
                                     'description' => 'Full payload the executor needs to apply the action (stock fields, IMEI/serial, prices, buyer info, etc.).',
                                 ],
                             ],

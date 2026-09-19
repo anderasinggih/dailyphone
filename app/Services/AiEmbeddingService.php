@@ -218,7 +218,10 @@ class AiEmbeddingService
     {
         $missing = [];
         foreach ($notes as $note) {
-            if ($note->embedding === null && $note->embedding_model === null) {
+            // A vector is stale when it is absent OR was produced by a different
+            // model (vectors from different models are not comparable, so they
+            // must be regenerated rather than mixed into the index).
+            if ($note->embedding === null || (string)$note->embedding_model !== $this->model) {
                 $missing[$note->id] = $note;
             }
         }
@@ -336,8 +339,16 @@ class AiEmbeddingService
         $scored = [];
         $best = null;
         foreach ($pool as $note) {
+            // Only vectors produced by the current model may be compared. Mixing
+            // vectors across models (or embedding dimensions) yields a cosine
+            // that silently truncates to the shorter vector and ranks garbage,
+            // so cross-model nodes are skipped until the warm-up re-embeds them.
+            if ((string)$note->embedding_model !== $this->model) {
+                continue;
+            }
+
             $vector = $this->decodeVector((string)($note->embedding ?? ''));
-            if ($vector === null) {
+            if ($vector === null || count($vector) !== count($qVector)) {
                 continue;
             }
             $score = $this->cosine($qVector, $vector);
@@ -392,10 +403,16 @@ class AiEmbeddingService
 
     public function cosine(array $a, array $b): float
     {
+        // Vectors of different length describe different spaces; comparing them
+        // (by silently truncating to the shorter one) is meaningless, so refuse.
+        if (count($a) !== count($b) || $a === []) {
+            return 0.0;
+        }
+
         $dot = 0.0;
         $nA = 0.0;
         $nB = 0.0;
-        $count = min(count($a), count($b));
+        $count = count($a);
 
         for ($i = 0; $i < $count; $i++) {
             $dot += $a[$i] * $b[$i];
