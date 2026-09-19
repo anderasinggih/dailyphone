@@ -354,6 +354,14 @@ class AiMemoryGraphService
 
     protected function containsTokenOrText(AiTrainingNote $note, string $hint): bool
     {
+        $hint = strtolower(trim($hint));
+
+        // Only meaningful keywords count as link hints — tiny tokens or bare
+        // numbers would otherwise tie wholly unrelated memories together.
+        if (strlen($hint) < 4 || preg_match('/^\d+$/', $hint)) {
+            return false;
+        }
+
         $title = (string)$note->title;
         $content = (string)$note->content;
         $related = (array)($note->related_keywords ?? []);

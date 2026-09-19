@@ -21,6 +21,9 @@ class AiFileIngestService
     /** Max characters kept when extracting text from an uploaded attachment. */
     public const ATTACHMENT_TEXT_MAX = 50000;
 
+    /** Max characters kept when extracting an uploaded document (books, essays). */
+    public const DOCUMENT_TEXT_MAX = 300000;
+
     /** Max characters kept per file when decoding a repository. */
     public const REPO_FILE_TEXT_MAX = 20000;
 
@@ -41,6 +44,25 @@ class AiFileIngestService
         '.git', 'node_modules', 'vendor', 'dist', 'build', 'out', 'target',
         '.venv', 'venv', '__pycache__', '.idea', '.vscode', 'coverage',
         'storage', '.cache', 'bower_components', '.next', '.nuxt',
+    ];
+
+    /** Generic file/format words that should never become keyword-link hints. */
+    protected const GENERIC_KEYWORD_NOISE = [
+        'text', 'txt', 'data', 'file', 'files', 'document', 'content', 'chapter',
+        'book', 'page', 'pages', 'index', 'contents', 'table', 'list', 'cover',
+        'system', 'settings', 'config', 'configurasi', 'configure', 'configuring',
+        'example', 'sample', 'template', 'function', 'method', 'code', 'markdown',
+        'readme', 'read', 'guide', 'manual', 'note', 'notes', 'menu', 'section',
+    ];
+
+    /** RTF header/decoration groups that carry no visible book text. */
+    protected const RTF_IGNORED_GROUPS = [
+        'fonttbl', 'colortbl', 'stylesheet', 'info', 'generator', 'revtbl',
+        'listtable', 'listoverridetable', 'rsidtbl', 'colorschememapping',
+        'atnid', 'datastore', 'password', 'bkmkstart', 'bkmkend', 'datafield',
+        'pict', 'nonshppict', 'header', 'headerl', 'headerr', 'footer',
+        'footerl', 'footerr', 'fldinst', 'xmldata', 'dntblnsbdb',
+        'expandedcolortbl', 'object', 'objectprt', 'photoshop', 'annotation',
     ];
 
     /** File extensions that are safe to read as plain text. */
@@ -132,12 +154,11 @@ class AiFileIngestService
                 case in_array($ext, self::BINARY_EXTENSIONS, true):
                     return '';
 
+                case $ext === 'rtf' || in_array($mime, ['text/rtf', 'application/rtf'], true):
+                    return $this->readTextFile($path, $max);
+
                 case $this->isReadableExt($ext) || str_starts_with($mime, 'text/') || in_array($mime, ['application/json', 'application/xml', 'application/javascript', 'application/x-sh', 'application/x-yaml'], true):
-                    $raw = @file_get_contents($path);
-                    if ($raw === false) {
-                        return '';
-                    }
-                    return $this->truncate($this->cleanText($raw), $max);
+                    return $this->readTextFile($path, $max);
 
                 default:
                     // Unknown extension: sniff the first bytes; if it looks like
@@ -146,8 +167,7 @@ class AiFileIngestService
                     $sniffed = $info ? @finfo_file($info, $path) : '';
                     @finfo_close($info);
                     if ($sniffed !== false && str_starts_with((string)$sniffed, 'text/')) {
-                        $raw = @file_get_contents($path);
-                        return $raw === false ? '' : $this->truncate($this->cleanText($raw), $max);
+                        return $this->readTextFile($path, $max);
                     }
                     return '';
             }
@@ -661,12 +681,14 @@ class AiFileIngestService
             $scanned++;
 
             $text = trim((string)($att->extracted_text ?? ''));
-            if ($text === '') {
+            if ($text === '' || str_ends_with($text, '[truncated]')) {
                 // PDFs/images may have yielded no text on upload; retry the
-                // extraction from storage now that we have a concrete request.
+                // extraction from storage now that we have a concrete request,
+                // and re-pull any text that the upload cap cut short so long
+                // books are not silently trimmed.
                 $fullPath = storage_path('app/private/' . $att->storage_path);
                 if ($att->storage_path && is_file($fullPath)) {
-                    $text = trim($this->extractText($fullPath, $att->mime_type, $att->original_name, self::NOTE_CONTENT_MAX * 8));
+                    $text = trim($this->extractText($fullPath, $att->mime_type, $att->original_name, self::DOCUMENT_TEXT_MAX));
                 }
             }
 
@@ -674,22 +696,28 @@ class AiFileIngestService
                 continue;
             }
 
-            $name = (string)($att->original_name ?? 'dokumen');
+            $name = (string)($att->original_name ?? 'document');
             $base = pathinfo($name, PATHINFO_FILENAME);
-            $slug = strtolower((string)preg_replace('/[^A-Za-z0-9]+/', ' ', $base));
-            $related = array_values(array_unique(array_filter([
-                Str::limit($slug, 24),
-                (string)($att->kind ?? ''),
-                strtolower((string)pathinfo($name, PATHINFO_EXTENSION)),
-            ], fn ($v) => $v !== null && trim((string)$v) !== '')));
+            $slug = strtolower((string) preg_replace('/[^A-Za-z0-9]+/u', ' ', $base));
+            // Meaningful keywords only — never the mime kind or file extension,
+            // otherwise every text upload would "keyword-link" to unrelated
+            // memories that merely mention the words "text" / "txt".
+            $related = [];
+            foreach (preg_split('/[\s,;.!?]+/', trim((string) $slug)) ?: [] as $word) {
+                $word = strtolower(trim($word));
+                if (mb_strlen($word) >= 4 && !in_array($word, self::GENERIC_KEYWORD_NOISE, true)) {
+                    $related[] = $word;
+                }
+            }
+            $related = array_slice(array_values(array_unique($related)), 0, 8);
 
             foreach ($this->chunkText($text, 9000) as $i => $chunk) {
                 $chunkNo = $i + 1;
                 $title = $chunkNo === 1
                     ? Str::limit($base, 200)
-                    : Str::limit($base, 170) . ' (bagian ' . $chunkNo . ')';
+                    : Str::limit($base, 170) . ' (part ' . $chunkNo . ')';
 
-                if ($this->persistDocumentNode($title, $chunk, $related, $name . ' (bagian ' . $chunkNo . ')', $user)) {
+                if ($this->persistDocumentNode($title, $chunk, $related, $name . ' (part ' . $chunkNo . ')', $user)) {
                     $notesCount++;
                 }
             }
@@ -701,8 +729,8 @@ class AiFileIngestService
             'notes_count' => $notesCount,
             'files_done' => $filesDone,
             'message' => $notesCount > 0
-                ? "Dokumen telah diindeks menjadi {$notesCount} node memori baru."
-                : 'Tidak ada teks baru yang layak disimpan sebagai node memory.',
+                ? "Document indexed into {$notesCount} new AI memory nodes."
+                : 'No new text worth saving as memory nodes was found in the document.',
         ];
     }
 
@@ -1036,6 +1064,127 @@ class AiFileIngestService
     {
         $raw = str_replace("\r\n", "\n", $raw);
         return preg_replace('/[^\x09\x0A\x0D\x20-\x7E\xC2-\xFD][\x80-\xBF]*/', ' ', $raw) ?? $raw;
+    }
+
+    /**
+     * Read a plain-text or RTF file and normalize it to readable prose.
+     * RTF files (often saved with a .txt / .rtf extension) are decoded so the
+     * book or document text is captured instead of raw formatting markup.
+     */
+    protected function readTextFile(string $path, int $max): string
+    {
+        $raw = @file_get_contents($path);
+        if ($raw === false) {
+            return '';
+        }
+        if (str_starts_with(ltrim($raw, "\xEF\xBB\xBF \t\r\n"), '{\rtf')) {
+            return $this->truncate($this->extractRtf($raw), $max);
+        }
+        return $this->truncate($this->cleanText($raw), $max);
+    }
+
+    /**
+     * Remove every balanced RTF group (`{...}`) whose opening keyword is in
+     * $ignored — font tables, color palettes, document info, images etc. A
+     * simple scanner beats regex here because these groups nest arbitrarily.
+     */
+    protected function stripRtfGroups(string $s, array $ignored): string
+    {
+        $ignored = array_flip($ignored);
+        $out = '';
+        $len = strlen($s);
+        $stack = [];
+
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $s[$i];
+
+            if ($ch === '{') {
+                $j = $i + 1;
+                $kw = '';
+                if (isset($s[$j]) && $s[$j] === '\\') {
+                    $j++;
+                    if (isset($s[$j]) && $s[$j] === '*') {
+                        $j++;
+                    }
+                    if (isset($s[$j]) && $s[$j] === '\\') {
+                        $j++;
+                    }
+                    while (isset($s[$j]) && preg_match('/[A-Za-z]/', $s[$j])) {
+                        $kw .= $s[$j];
+                        $j++;
+                    }
+                }
+                $insideIgnored = $stack !== [] ? (bool) end($stack) : false;
+                $stack[] = $insideIgnored
+                    || ($kw !== '' && isset($ignored[strtolower($kw)]));
+                continue;
+            }
+
+            if ($ch === '}') {
+                array_pop($stack);
+                continue;
+            }
+
+            $insideIgnored = $stack !== [] ? (bool) end($stack) : false;
+            if (!$insideIgnored) {
+                $out .= $ch;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Minimal dependency-free RTF → plain-text converter: decodes the raw
+     * control-word scaffolding, keeps the visible prose and line structure.
+     * Good enough for Word/TextEdit exports; binary/hex blobs are skipped.
+     */
+    protected function extractRtf(string $raw): string
+    {
+        // Literal backslash placeholder so real `\` survive the cleanup.
+        $s = str_replace('\\\\', "\x01", $raw);
+
+        // Hex-escaped octets (`\'e9` → é). Interpreted as CP1252 bytes like the
+        // classic ancillary chunk does, then converted to UTF-8.
+        $s = (string) preg_replace_callback("/\\\\'([0-9a-fA-F]{2})/", function ($m) {
+            return chr((int) hexdec($m[1]));
+        }, $s) ?: $s;
+        if (function_exists('mb_convert_encoding')) {
+            $s = mb_convert_encoding($s, 'UTF-8', 'CP1252');
+        }
+
+        // Escaped braces become real braces, then drop the font / color /
+        // stylesheet / metadata header groups (they nest, so a regex won't do)
+        // and finally remove the remaining structural braces.
+        $s = str_replace(['\\{', '\\}'], ['{', '}'], $s);
+        $s = $this->stripRtfGroups($s, self::RTF_IGNORED_GROUPS);
+        $s = str_replace(['{', '}'], '', $s);
+
+        // Non-breaking space / protection marks.
+        $s = str_replace(['\\~', '\\_', '\\-'], ["\xC2\xA0", ' ', ' '], $s);
+
+        // Paragraph / line / cell / page boundaries become line breaks.
+        // The lookahead keeps `\par` from eating the start of control words
+        // like `\pard` / `\partightenfactorN` (macOS RTF exports).
+        $s = (string) preg_replace('/\\\\(?:par|line|row|sect|page|cell)(?![a-z])[-0-9]*[ ]?/', "\n", $s) ?: $s;
+        $s = str_replace('\\tab', "\t", $s);
+        $s = str_replace(['\\emspace', '\\enspace', '\\qmspace'], ' ', $s);
+
+        // Ignorable destination marker and every remaining control word
+        // (`\f0`, `\fs24`, `\cf0`, `\paperw…`, `\b` …).
+        $s = (string) preg_replace('/\\\\(\*|`|[A-Za-z]+[-0-9]*[ ]?)/', '', $s) ?: $s;
+        $s = (string) preg_replace('/\\\\[A-Za-z]?[ ]?/', ' ', $s) ?: $s;
+
+        // Restore literal backslashes, then collapse the scaffolding gaps.
+        $s = str_replace("\x01", '\\', $s);
+        $s = (string) preg_replace('/[ \t]+/', ' ', $s);
+        $s = (string) preg_replace('/ *\n */', "\n", $s);
+        $s = (string) preg_replace('/\n{3,}/', "\n\n", $s);
+
+        $lines = array_map(fn($l) => trim($l), explode("\n", $s));
+        $lines = array_filter($lines, fn($l) => mb_strlen($l) >= 2);
+
+        return trim(implode("\n", $lines));
     }
 
     protected function truncate(string $text, int $max): string

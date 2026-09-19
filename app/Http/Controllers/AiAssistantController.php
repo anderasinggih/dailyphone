@@ -101,7 +101,7 @@ class AiAssistantController extends Controller
         $storagePath = $file->store('ai-uploads', 'local');
         $fullPath = storage_path('app/private/' . $storagePath);
 
-        $text = $ingest->extractText($fullPath, $mime, $originalName);
+        $text = $ingest->extractText($fullPath, $mime, $originalName, \App\Services\AiFileIngestService::DOCUMENT_TEXT_MAX);
 
         $attachment = \App\Models\AiChatAttachment::create([
             'user_id' => $user->id,
