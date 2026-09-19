@@ -55,6 +55,9 @@ class AiActionService
                 case 'create_money_note':
                     return $this->executeCreateMoneyNote($payload, $user);
 
+                case 'add_parameter':
+                    return $this->executeAddParameter($payload, $user);
+
                 case 'run_python_script':
                     return $this->executeRunPythonScript($payload, $user);
 
@@ -830,6 +833,101 @@ class AiActionService
             'success' => true,
             'message' => "Successfully recorded {$typeName} Rp {$formattedAmount} for '{$category}' ({$description}).",
             'data' => $note,
+        ];
+    }
+
+    /**
+     * Add a new master data parameter (and optionally its option values).
+     * ADD-ONLY: deleting or removing parameters is intentionally NOT supported for the AI.
+     */
+    protected function executeAddParameter(array $payload, User $user): array
+    {
+        $name = trim((string)($payload['name'] ?? ''));
+        if ($name === '') {
+            return [
+                'success' => false,
+                'message' => 'Gagal: Nama parameter (name) wajib diisi.',
+            ];
+        }
+
+        $category = strtolower((string)($payload['category'] ?? 'global'));
+        if (!in_array($category, ['iphone', 'android', 'global'], true)) {
+            $category = 'global';
+        }
+
+        // Reuse existing parameter with the same name (case-insensitive) instead of duplicating
+        $parameter = DynamicParameter::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])->first();
+        $created = false;
+
+        if (!$parameter) {
+            $parameter = DynamicParameter::create([
+                'name' => $name,
+                'category' => $category,
+            ]);
+            $created = true;
+            ActivityLog::log('ai_add_parameter', DynamicParameter::class, $parameter->id, $parameter->toArray());
+        }
+
+        // Add option values if provided (values may be strings or ["value" => x, "color" => y])
+        $colors = ['blue', 'emerald', 'amber', 'red', 'purple', 'slate'];
+        $addedValues = [];
+        $values = $payload['values'] ?? $payload['options'] ?? [];
+
+        if (is_array($values)) {
+            foreach ($values as $entry) {
+                if (is_array($entry)) {
+                    $valueName = trim((string)($entry['value'] ?? $entry['name'] ?? ''));
+                    $color = (string)($entry['color'] ?? 'blue');
+                } else {
+                    $valueName = trim((string)$entry);
+                    $color = 'blue';
+                }
+
+                if ($valueName === '') {
+                    continue;
+                }
+                if (!in_array($color, $colors, true)) {
+                    $color = 'blue';
+                }
+
+                $exists = DynamicParameterValue::where('parameter_id', $parameter->id)
+                    ->whereRaw('LOWER(value) = ?', [mb_strtolower($valueName)])
+                    ->exists();
+                if ($exists) {
+                    continue;
+                }
+
+                $value = DynamicParameterValue::create([
+                    'parameter_id' => $parameter->id,
+                    'value' => $valueName,
+                    'color' => $color,
+                    'is_active' => true,
+                ]);
+                $addedValues[] = $valueName;
+                ActivityLog::log('ai_add_parameter_value', DynamicParameterValue::class, $value->id, $value->toArray());
+            }
+        }
+
+        $valueCount = count($addedValues);
+        if ($created) {
+            $message = "Successfully created parameter '{$name}' (category: {$category})";
+        } else {
+            $message = "Parameter '{$name}' already exists — no duplicate was created";
+        }
+        if ($valueCount > 0) {
+            $message .= ' and added ' . $valueCount . ' new option(s): ' . implode(', ', $addedValues);
+        }
+
+        return [
+            'success' => true,
+            'message' => $message . '.',
+            'data' => [
+                'parameter_id' => $parameter->id,
+                'name' => $parameter->name,
+                'category' => $parameter->category,
+                'created' => $created,
+                'added_values' => $addedValues,
+            ],
         ];
     }
 

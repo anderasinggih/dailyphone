@@ -396,6 +396,38 @@ export default function Timeline({ activities }: TimelineProps) {
                         </span>
                     )
                 };
+            case 'ai_add_parameter':
+                return {
+                    title: 'AI: Master Parameter Added',
+                    icon: Layers,
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Created master parameter <strong className="text-foreground font-semibold">{vals.name || '-'}</strong> (category: {vals.category || '-'}).
+                        </span>
+                    )
+                };
+            case 'ai_add_parameter_value':
+                return {
+                    title: 'AI: Parameter Option Added',
+                    icon: Layers,
+                    accentColor: 'text-primary bg-primary/10 border-primary/20',
+                    labelColor: 'text-primary',
+                    isAi: true,
+                    desc: (
+                        <span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold text-[10px] mr-1 border border-primary/20">
+                                <Sparkles className="h-2.5 w-2.5" /> AI Executed
+                            </span>
+                            Added option <strong className="text-foreground font-semibold">{vals.value || '-'}</strong> to parameter #{vals.parameter_id || '-'}.
+                        </span>
+                    )
+                };
             case 'ai_run_python':
                 return {
                     title: 'AI: Python Executed',
@@ -523,6 +555,8 @@ export default function Timeline({ activities }: TimelineProps) {
                                         <option value="ai_update_stock">🤖 AI: Stock Updated</option>
                                         <option value="ai_delete_stock">🤖 AI: Stock Deleted</option>
                                         <option value="ai_create_money_note">🤖 AI: Money Note</option>
+                                        <option value="ai_add_parameter">🤖 AI: Master Parameter Added</option>
+                                        <option value="ai_add_parameter_value">🤖 AI: Parameter Option Added</option>
                                         <option value="ai_run_python">🤖 AI: Python Script</option>
                                         <option value="add_stock">Stock Added</option>
                                         <option value="sale_checkout">Sale Completed</option>

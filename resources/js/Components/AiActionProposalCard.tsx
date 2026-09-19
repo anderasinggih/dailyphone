@@ -241,6 +241,8 @@ export default function AiActionProposalCard({
                 return <Trash2 className="h-4 w-4 text-destructive animate-pulse" />;
             case 'create_money_note':
                 return <Wallet className="h-4 w-4 text-emerald-500" />;
+            case 'add_parameter':
+                return <Layers className="h-4 w-4 text-primary" />;
             case 'run_python_script':
                 return <Terminal className="h-4 w-4 text-purple-500" />;
             default:
@@ -266,6 +268,8 @@ export default function AiActionProposalCard({
                 return 'HAPUS PERMANEN (Kosongkan Trash)';
             case 'create_money_note':
                 return 'Catat Buku Kas (Money Note)';
+            case 'add_parameter':
+                return 'Tambah Master Parameter (Add)';
             case 'run_python_script':
                 return 'Eksekusi Kalkulasi';
             default:
