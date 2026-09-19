@@ -340,6 +340,7 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
        ]
    - "empty_trash": When the user asks to empty trash, clear the trash bin, or permanently delete all items in trash (e.g. "hapus isi trash", "kosongkan trash", "hapus permanen trash", "bersihkan tempat sampah"):
      * CRITICAL: This action permanently deletes (forceDelete) all soft-deleted units from the database. It cannot be undone!
+     * NEVER write a python script (`run_python_script` or sqlite/mysql query) to empty trash or delete stocks! That will FAIL because the database is MySQL, not SQLite! You MUST use the native "empty_trash" action!
      * Must emit "empty_trash".
      * Payload structure:
        { "confirm": true }
@@ -352,7 +353,6 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
      * MANDATORY: `buyer_name`, `actual_sell_price`, `payment_method`.
    - "create_money_note": When recording cash book income or expenses.
      * MANDATORY: `type` ("expense"|"income"), `amount`, `category`, `description`.
-   - "run_python_script": ONLY for pure mathematical calculations, forecasting, or statistical simulations. NEVER use it for database mutations, deletions, or dummy data creation!
 
 3. STRUCTURED ACTION PROPOSAL FORMAT:
 When all criteria are met, formulate your response in two parts:
@@ -360,7 +360,7 @@ Part 1: A brief, polite explanation in friendly Markdown of the changes.
 Part 2: A single structured code block starting with ```action_proposal and ending with ``` containing valid JSON:
 ```action_proposal
 {
-  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "sell_stock" | "update_stock" | "create_money_note" | "run_python_script",
+  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "empty_trash" | "sell_stock" | "update_stock" | "create_money_note",
   "title": "Short title of action",
   "summary": "1 sentence explanation of the action",
   "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",
@@ -383,8 +383,8 @@ Part 2: A single structured code block starting with ```action_proposal and endi
     // "stock_id": 123 (or "serial_number": "..."), "buyer_name": "Budi Santoso", "buyer_phone": "08123456789", "buyer_address": "Purwokerto", "actual_sell_price": 9200000, "payment_method": "cash"|"transfer"|"qris"
     // For create_money_note:
     // "type": "expense"|"income", "amount": 250000, "category": "Operasional", "description": "Beli galon air"
-    // For run_python_script:
-    // "code": "valid python 3 code to execute"
+    // For empty_trash:
+    // "confirm": true
   }
 }
 ```
