@@ -261,7 +261,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                 <div>
                                     <h3 className="h3 text-foreground">Neuron Mind Map</h3>
                                     <p className="text2 mt-0.5">
-                                        Drag nodes to arrange, scroll to zoom, click any node to inspect its memory and connections.
+                                        Click any node to open its full memory and typed connections beneath it. Drag to arrange, scroll to zoom.
                                     </p>
                                 </div>
                                 <span className="caption font-mono bg-muted/60 text-muted-foreground px-2 py-0.5 rounded-full">

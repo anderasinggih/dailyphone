@@ -505,6 +505,44 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
     const selectedNode = selectedId !== null ? nodeById[selectedId] : null;
     const selectedNeighbors = selectedNode ? Array.from(neighbors[selectedNode.id] || []) : [];
 
+    // Relation metadata (label/weight/reason) between the selected node and each neighbour.
+    const linkInfoTo = useMemo(() => {
+        const map: Record<number, MindMapLink> = {};
+        if (selectedId !== null) {
+            links.forEach(l => {
+                if (l.source === selectedId) map[l.target] = l;
+                if (l.target === selectedId) map[l.source] = l;
+            });
+        }
+        return map;
+    }, [links, selectedId]);
+
+    // Screen position of the selected node so the detail card can anchor below it.
+    const selNodeScreen = useMemo(() => {
+        if (!selectedNode) return null;
+        const p = positions[selectedNode.id];
+        if (!p) return null;
+        return { x: p.x * view.k + view.x, y: p.y * view.k + view.y };
+    }, [selectedNode, positions, view]);
+
+    const detailRef = useRef<HTMLDivElement>(null);
+    const [detailHeight, setDetailHeight] = useState(0);
+
+    useLayoutEffect(() => {
+        if (detailRef.current) {
+            setDetailHeight(detailRef.current.offsetHeight);
+        }
+    }, [selectedId, containerSize.w]);
+
+    const cardW = Math.max(240, containerSize.w - 24);
+    const detailWidth = Math.min(430, cardW);
+    const detailLeft = selNodeScreen
+        ? Math.max(12, Math.min(selNodeScreen.x - detailWidth / 2, containerSize.w - detailWidth - 12))
+        : 12;
+    const belowTop = selNodeScreen ? selNodeScreen.y + (NODE_H / 2) * view.k + 14 : 0;
+    const aboveTop = selNodeScreen ? selNodeScreen.y - (NODE_H / 2) * view.k - 14 : 0;
+    const placeAbove = selNodeScreen ? belowTop + detailHeight > containerSize.h - 10 : false;
+
     const searching = searchQuery.trim().length > 0;
 
     return (
@@ -659,7 +697,8 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                                         >
                                             <title>
                                                 {nodeTitle(link.source)} ⇄ {nodeTitle(link.target)}
-                                                {link.label ? ` (${link.label})` : ''}
+                                                {link.label ? ` — ${link.label}` : ''}
+                                                {link.relation ? ` · ${RELATION_LABEL[link.relation] ?? link.relation}` : ''}
                                             </title>
                                         </path>
 
@@ -752,80 +791,105 @@ export default function NeuralMindMap({ nodes, links }: NeuralMindMapProps) {
                         </g>
                     </svg>
                 )}
-            </div>
 
-            {/* Inspector card */}
-            {selectedNode && (
-                <div className="absolute bottom-3 right-3 z-20 w-full max-w-sm rounded-2xl bg-card/95 dark:bg-card/90 backdrop-blur-2xl border border-border/70 shadow-2xl p-4 space-y-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
-                    <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                            <span
-                                className={`inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
-                                    selectedNode.kind === 'rule'
-                                        ? 'bg-primary/10 text-primary border-primary/30'
-                                        : 'bg-muted text-muted-foreground border-border'
-                                }`}
-                            >
-                                {selectedNode.kind === 'rule' ? '[RULE]' : '[NOTE]'}
-                            </span>
-                            <h4 className="text-sm font-semibold text-foreground truncate">
-                                {selectedNode.title}
-                            </h4>
-                        </div>
-                        <button
-                            onClick={() => setSelectedId(null)}
-                            className="p-1 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition shrink-0"
-                            title="Close"
-                        >
-                            <X className="h-4 w-4" />
-                        </button>
-                    </div>
-
-                    <p className="text-xs text-foreground/90 leading-relaxed whitespace-pre-wrap max-h-28 overflow-y-auto border-t border-border/40 pt-2.5">
-                        {selectedNode.content}
-                    </p>
-
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                            <BookOpen className="h-3 w-3" />
-                            {selectedNode.author_name}
-                        </span>
-                        <span className="inline-flex items-center gap-1 capitalize">
-                            {selectedNode.kind === 'rule' && <ShieldCheck className="h-3 w-3 text-primary" />}
-                            {selectedNode.kind === 'rule' ? 'Directive' : 'Knowledge'}
-                        </span>
-                        <span
-                            className={`inline-flex items-center gap-1 ${selectedNode.is_active ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}
-                        >
-                            <Power className="h-3 w-3" />
-                            {selectedNode.is_active ? 'active' : 'paused'}
-                        </span>
-                    </div>
-
-                    {selectedNeighbors.length > 0 && (
-                        <div className="border-t border-border/40 pt-2.5 space-y-1.5">
-                            <p className="text-[10px] font-bold tracking-wider text-muted-foreground uppercase">
-                                Connected to ({selectedNeighbors.length})
-                            </p>
-                            <div className="flex flex-wrap gap-1.5">
-                                {selectedNeighbors.map(nid => {
-                                    const nb = nodeById[nid];
-                                    if (!nb) return null;
-                                    return (
-                                        <button
-                                            key={nid}
-                                            onClick={() => focusNode(nid)}
-                                            className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground hover:border-primary/50 hover:text-primary transition"
-                                        >
-                                            {nb.title}
-                                        </button>
-                                    );
-                                })}
+                {/* Node detail — anchored right below the clicked node */}
+                {selectedNode && selNodeScreen && (
+                    <div
+                        ref={detailRef}
+                        className="absolute z-20 rounded-2xl bg-card/95 dark:bg-card/90 backdrop-blur-2xl border border-border/70 shadow-2xl p-4 space-y-3 animate-in fade-in duration-150"
+                        style={{
+                            left: detailLeft,
+                            top: placeAbove ? aboveTop : belowTop,
+                            width: detailWidth,
+                            transform: placeAbove ? 'translateY(-100%)' : 'none',
+                        }}
+                        onPointerDown={e => e.stopPropagation()}
+                        onDoubleClick={e => e.stopPropagation()}
+                    >
+                        <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                    className={`inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
+                                        selectedNode.kind === 'rule'
+                                            ? 'bg-primary/10 text-primary border-primary/30'
+                                            : 'bg-muted text-muted-foreground border-border'
+                                    }`}
+                                >
+                                    {selectedNode.kind === 'rule' ? '[RULE]' : '[NOTE]'}
+                                </span>
+                                <h4 className="text-sm font-semibold text-foreground truncate">
+                                    {selectedNode.title}
+                                </h4>
                             </div>
+                            <button
+                                onClick={() => setSelectedId(null)}
+                                className="p-1 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition shrink-0"
+                                title="Close"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
                         </div>
-                    )}
-                </div>
-            )}
+
+                        <p className="text-xs text-foreground/95 leading-relaxed whitespace-pre-wrap max-h-[38vh] overflow-y-auto border-t border-border/40 pt-2.5">
+                            {selectedNode.content}
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                                <BookOpen className="h-3 w-3" />
+                                {selectedNode.author_name}
+                            </span>
+                            <span className="inline-flex items-center gap-1 capitalize">
+                                {selectedNode.kind === 'rule' && <ShieldCheck className="h-3 w-3 text-primary" />}
+                                {selectedNode.kind === 'rule' ? 'Directive' : 'Knowledge'}
+                            </span>
+                            <span
+                                className={`inline-flex items-center gap-1 ${selectedNode.is_active ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}
+                            >
+                                <Power className="h-3 w-3" />
+                                {selectedNode.is_active ? 'active' : 'paused'}
+                            </span>
+                        </div>
+
+                        {selectedNeighbors.length > 0 && (
+                            <div className="border-t border-border/40 pt-2.5 space-y-2">
+                                <p className="text-[10px] font-bold tracking-wider text-muted-foreground uppercase">
+                                    Synapses ({selectedNeighbors.length})
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {selectedNeighbors.map(nid => {
+                                        const nb = nodeById[nid];
+                                        if (!nb) return null;
+                                        const link = linkInfoTo[nid];
+                                        const relName = link?.relation
+                                            ? RELATION_LABEL[link.relation] ?? link.relation
+                                            : link?.label ?? 'Related';
+                                        const w = link?.weight;
+                                        return (
+                                            <button
+                                                key={nid}
+                                                onClick={() => focusNode(nid)}
+                                                title={link?.reason ?? link?.label ?? relName}
+                                                className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground hover:border-primary/50 hover:text-primary transition"
+                                            >
+                                                {nb.title}
+                                                <span className="ml-1.5 inline-flex items-center gap-1 text-[9px] font-semibold text-primary uppercase">
+                                                    {relName}
+                                                    {w !== null && w !== undefined && (
+                                                        <span className="font-mono text-muted-foreground">
+                                                            {Math.round(w * 100)}%
+                                                        </span>
+                                                    )}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
