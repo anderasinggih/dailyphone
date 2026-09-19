@@ -44,6 +44,9 @@ class AiActionService
                 case 'delete_stock':
                     return $this->executeDeleteStock($payload, $user);
 
+                case 'delete_all_stocks':
+                    return $this->executeDeleteAllStocks($payload, $user);
+
                 case 'create_money_note':
                     return $this->executeCreateMoneyNote($payload, $user);
 
@@ -450,6 +453,48 @@ class AiActionService
     }
 
     /**
+     * Delete all available stock units (or store-specific), recording an activity log for each.
+     */
+    protected function executeDeleteAllStocks(array $payload, User $user): array
+    {
+        $storeId = $payload['store_id'] ?? null;
+        $stockQuery = Stock::where('status', 'available');
+
+        if ($storeId) {
+            $stockQuery->where('store_id', $storeId);
+        }
+
+        $stocks = $stockQuery->get();
+        $count = $stocks->count();
+
+        if ($count === 0) {
+            return [
+                'success' => false,
+                'message' => 'Tidak ada unit stok aktif yang ditemukan untuk dihapus.',
+            ];
+        }
+
+        $deletedIds = [];
+        DB::transaction(function () use ($stocks, &$deletedIds) {
+            foreach ($stocks as $stock) {
+                $oldValues = $stock->toArray();
+                $stock->delete();
+                $deletedIds[] = $stock->id;
+                ActivityLog::log('ai_delete_stock', Stock::class, $stock->id, null, $oldValues);
+            }
+        });
+
+        return [
+            'success' => true,
+            'message' => "Berhasil menghapus seluruh {$count} unit stok aktif ke keranjang sampah (soft delete), dan masing-masing telah dicatat di Activity Log.",
+            'undo' => [
+                'type' => 'bulk_stocks_deleted',
+                'stock_ids' => $deletedIds,
+            ],
+        ];
+    }
+
+    /**
      * Record a completed sale transaction for a stock unit.
      * All required operational fields must be present and valid.
      */
@@ -738,6 +783,28 @@ class AiActionService
                     ];
                 }
                 return ['success' => false, 'message' => 'Unit tidak ditemukan di keranjang sampah.'];
+
+            case 'bulk_stocks_deleted':
+                $stockIds = $undoData['stock_ids'] ?? [];
+                if (!empty($stockIds) && is_array($stockIds)) {
+                    $restoredCount = 0;
+                    DB::transaction(function () use ($stockIds, &$restoredCount) {
+                        foreach ($stockIds as $id) {
+                            $stk = Stock::withTrashed()->find($id);
+                            if ($stk && $stk->trashed()) {
+                                $stk->restore();
+                                ActivityLog::log('ai_undo_delete_stock', Stock::class, $id, $stk->fresh()->toArray());
+                                $restoredCount++;
+                            }
+                        }
+                    });
+
+                    return [
+                        'success' => true,
+                        'message' => "Berhasil memulihkan kembali {$restoredCount} unit stok yang sebelumnya dihapus massal.",
+                    ];
+                }
+                return ['success' => false, 'message' => 'Tidak ada data ID unit untuk dipulihkan.'];
 
             case 'stock_sold':
                 $saleId = $undoData['sale_id'] ?? null;

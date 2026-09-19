@@ -200,6 +200,8 @@ export default function AiActionProposalCard({
                 return <PackagePlus className="h-4 w-4 text-emerald-500" />;
             case 'delete_stock':
                 return <Trash2 className="h-4 w-4 text-destructive" />;
+            case 'delete_all_stocks':
+                return <Trash2 className="h-4 w-4 text-destructive" />;
             case 'create_money_note':
                 return <Wallet className="h-4 w-4 text-emerald-500" />;
             case 'run_python_script':
@@ -221,10 +223,12 @@ export default function AiActionProposalCard({
                 return 'Tambah Stok Massal (Bulk Import)';
             case 'delete_stock':
                 return 'Hapus Unit (Delete Stock)';
+            case 'delete_all_stocks':
+                return 'Hapus Semua Unit (Clear Active Inventory)';
             case 'create_money_note':
                 return 'Catat Buku Kas (Money Note)';
             case 'run_python_script':
-                return 'Eksekusi Python Script';
+                return 'Eksekusi Kalkulasi';
             default:
                 return proposal.action;
         }
@@ -467,17 +471,7 @@ export default function AiActionProposalCard({
                     </div>
                 )}
 
-                {/* Code Preview if Python Script */}
-                {proposal.action === 'run_python_script' && proposal.payload?.code && (
-                    <div className="space-y-1">
-                        <span className="text-[10px] font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
-                            <FileCode className="h-3 w-3" /> Python Script:
-                        </span>
-                        <pre className="p-2.5 rounded-xl bg-black/5 dark:bg-black/40 border border-border/40 font-mono text-[10.5px] overflow-x-auto text-foreground max-h-40">
-                            <code>{proposal.payload.code}</code>
-                        </pre>
-                    </div>
-                )}
+
 
                 {/* Output log if executed */}
                 {executionOutput && (

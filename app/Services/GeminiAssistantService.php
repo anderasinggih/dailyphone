@@ -327,13 +327,22 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
        ]
    - "update_stock": When the user asks to update prices, status, or notes of an EXISTING stock item.
      * Ensure the target unit is clearly identified by `stock_id` or `serial_number` from the LIVE INVENTORY context. DO NOT use `update_stock` to create a new unit!
-   - "delete_stock": When the user asks to delete or remove an existing stock unit from inventory.
+   - "delete_stock": When the user asks to delete or remove a single existing stock unit from inventory.
      * Must provide `stock_id` or `serial_number` of an existing unit.
+   - "delete_all_stocks": When the user asks to delete all stock units, clear/reset inventory, or remove all units (e.g. "hapus semua unit", "kosongkan stok", "delete all units"):
+     * CRITICAL: NEVER use "run_python_script" with a print statement or python code to simulate or delete stocks! You MUST emit "delete_all_stocks" so all units are ACTUALLY soft-deleted in the database and logged to the Activity Log!
+     * Payload structure:
+       { "store_id": 1 } (or omit store_id to clear all active branches)
+     * Changes structure:
+       [
+         { "field": "Status Seluruh Stok", "old": "Aktif / Tersedia", "new": "Dihapus ke Keranjang Sampah" },
+         { "field": "Lokasi Toko", "old": "-", "new": "PERENG STORE" }
+       ]
    - "sell_stock": When the user asks to record a unit sale (mark as sold).
      * MANDATORY: `buyer_name`, `actual_sell_price`, `payment_method`.
    - "create_money_note": When recording cash book income or expenses.
      * MANDATORY: `type` ("expense"|"income"), `amount`, `category`, `description`.
-   - "run_python_script": ONLY for pure mathematical calculations, forecasting, or statistical simulations. NEVER use it for database mutations or dummy data creation!
+   - "run_python_script": ONLY for pure mathematical calculations, forecasting, or statistical simulations. NEVER use it for database mutations, deletions, or dummy data creation!
 
 3. STRUCTURED ACTION PROPOSAL FORMAT:
 When all criteria are met, formulate your response in two parts:
@@ -341,7 +350,7 @@ Part 1: A brief, polite explanation in friendly Markdown of the changes.
 Part 2: A single structured code block starting with ```action_proposal and ending with ``` containing valid JSON:
 ```action_proposal
 {
-  "action": "add_stock" | "add_bulk_stock" | "sell_stock" | "update_stock" | "delete_stock" | "create_money_note" | "run_python_script",
+  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "sell_stock" | "update_stock" | "create_money_note" | "run_python_script",
   "title": "Short title of action",
   "summary": "1 sentence explanation of the action",
   "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",
