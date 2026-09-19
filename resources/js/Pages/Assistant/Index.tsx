@@ -212,6 +212,8 @@ export default function Assistant({
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Live token-by-token draft rendered while Gemini streams its answer.
     const [draftStream, setDraftStream] = useState<string>('');
+    // Collapsible "AI is thinking" panel — arrow toggles, like opencode's thought.
+    const [streamCollapsed, setStreamCollapsed] = useState(false);
 
     // Reuse a single AudioContext so completion chimes do not leak one context per
 // message (browsers cap concurrent AudioContexts).
@@ -476,6 +478,7 @@ function playCompletionChime(soundEnabled: boolean): void {
         setAttachments([]);
         setAccessedNetwork({ nodes: [], edges: [] });
         setDraftStream('');
+        setStreamCollapsed(false);
 
         const applyReply = (data: any) => {
             const looksLikeProposal = !!data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('"action":'));
@@ -1049,28 +1052,47 @@ function playCompletionChime(soundEnabled: boolean): void {
                                 );
                             })}
 
-                            {isLoading && !draftStream && (
-                                <div className="max-w-3xl mx-auto py-2 text-xs select-none space-y-2">
-                                    {/* Ultra Clean & Simple: no containers, just a spinner + live progress */}
-                                    <div className="flex items-center gap-2 text-muted-foreground font-mono">
+                            {isLoading && (
+                                <div className="max-w-3xl mx-auto select-none">
+                                    {/* Collapsible "AI is thinking" panel — arrow toggles the body */}
+                                    <button
+                                        type="button"
+                                        onClick={() => setStreamCollapsed(c => !c)}
+                                        className="w-full flex items-center gap-2 text-muted-foreground/80 hover:text-foreground transition group"
+                                    >
+                                        <ChevronDown
+                                            className={`h-3.5 w-3.5 text-primary transition-transform duration-200 ${streamCollapsed ? '-rotate-90' : ''}`}
+                                        />
                                         <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
-                                        <span className="font-semibold text-foreground">Thinking...</span>
-                                        <span className="text-[11px] text-muted-foreground/60 font-mono">({thinkingSeconds}s)</span>
-                                    </div>
+                                        <span className="font-semibold text-[12px] text-foreground group-hover:underline underline-offset-2">
+                                            AI is thinking
+                                        </span>
+                                        <span className="text-[11px] font-mono text-muted-foreground/60">
+                                            ({thinkingSeconds}s)
+                                        </span>
+                                        {accessedNetwork.nodes.length > 0 && (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10.5px] font-medium text-primary ml-1">
+                                                <Network className="h-3 w-3" />
+                                                {accessedNetwork.nodes.length} neurons
+                                            </span>
+                                        )}
+                                    </button>
 
-                                    {/* Neurons the AI is tapping into — shown live while thinking */}
-                                    {accessedNetwork.nodes.length > 0 && (
-                                        <NeuronFiringMap nodes={accessedNetwork.nodes} edges={accessedNetwork.edges} />
+                                    {!streamCollapsed && (
+                                        <div className="mt-2 space-y-3">
+                                            {/* Neurons the AI is tapping into — stay live while streaming */}
+                                            {accessedNetwork.nodes.length > 0 && (
+                                                <NeuronFiringMap nodes={accessedNetwork.nodes} edges={accessedNetwork.edges} />
+                                            )}
+
+                                            {draftStream && (
+                                                <div key="draft-stream" className="text-[13px] leading-relaxed whitespace-pre-wrap light-wipe">
+                                                    {draftStream}
+                                                    <span className="inline-block ml-0.5 h-3.5 w-[2px] translate-y-[2px] bg-primary animate-pulse" />
+                                                </div>
+                                            )}
+                                        </div>
                                     )}
-                                </div>
-                            )}
-
-                            {draftStream && (
-                                <div key="draft-stream" className="max-w-3xl mx-auto">
-                                    <div className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground/90 rounded-2xl bg-card border border-border/60 px-4 py-2.5 shadow-2xs">
-                                        {draftStream}
-                                        <span className="inline-block ml-0.5 h-3.5 w-[2px] translate-y-[2px] bg-primary animate-pulse" />
-                                    </div>
                                 </div>
                             )}
 

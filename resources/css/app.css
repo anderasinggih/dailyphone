@@ -180,6 +180,29 @@
 
 /* ── Apple-style utility classes ── */
 @layer utilities {
+  /* Streaming "light wipe" — a soft Apple-blue shimmer sweeping across
+     freshly generated text (kept subtle; full text uses foreground color). */
+  .light-wipe {
+    color: var(--foreground);
+    background-image: linear-gradient(
+      110deg,
+      var(--foreground) 30%,
+      var(--primary) 48%,
+      var(--foreground) 66%
+    );
+    background-size: 240% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: light-wipe-shine 2.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  @keyframes light-wipe-shine {
+    0%   { background-position: 220% 0; }
+    55%  { background-position: -60% 0; }
+    100% { background-position: -60% 0; }
+  }
+
   /* Liquid Glass — Apple translucent material */
   .apple-glass {
     @apply backdrop-blur-2xl bg-white/70 dark:bg-black/50 border border-white/30 dark:border-white/10;
