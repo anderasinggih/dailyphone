@@ -248,12 +248,40 @@ class AiAssistantController extends Controller
             };
 
             try {
+                // If the user asked to "learn / study / remember" an uploaded
+                // document (PDF book, DOCX, ...), the system indexes it into real
+                // knowledge neurons BEFORE the model replies — so the model can
+                // honestly confirm with real numbers instead of guessing.
+                $ingestNotice = '';
+                if ($attachments->isNotEmpty()) {
+                    $userTextLower = strtolower($userText);
+                    $learnIntent = preg_match('/(bel[ae]jar|study|learn|pahami|memahami|pelajari|ingat|simpan|materi|bac[ae]|jadikan\s*(?:node|memory))/i', $userTextLower);
+                    if ($learnIntent) {
+                        $ingested = app(\App\Services\AiFileIngestService::class)->ingestDocument($attachments, $user);
+                        if ($ingested['notes_count'] > 0) {
+                            $ingestNotice = "\nSISTEM INGEST (FAKTUAL): " . $ingested['message'] . " Telah tersambung ke neuron network.\n";
+                            $emit([
+                                'type' => 'learned',
+                                'notes_count' => $ingested['notes_count'],
+                                'message' => $ingested['message'],
+                            ]);
+                        } else {
+                            $ingestNotice = "\nSISTEM INGEST: file lampiran tidak memuat teks baru yang bisa diindeks (" . $ingested['message'] . "). Jangan mengklaim node dibuat.\n";
+                        }
+                    }
+                }
+
                 $network = $this->geminiService->resolveNeuronNetwork($userText);
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
                 // 3. Send to Gemini with full session memory & custom session rules/training
-                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments);
+                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments,
+                    function (string $delta) use ($emit) {
+                        $emit(['type' => 'chunk', 'text' => $delta]);
+                    },
+                    $ingestNotice
+                );
 
                 // 4. Save AI reply to database in this session
                 if (!empty($result['reply'])) {

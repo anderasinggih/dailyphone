@@ -305,8 +305,13 @@ CONTEXT;
      *
      * @param  array  $messages  Recent session messages ([{role, content}]).
      * @param  mixed  $attachments  Collection of AiChatAttachment to include.
+     * @param  callable|null  $onChunk  When given, uses :streamGenerateContent and
+     *                                  receives each visible text delta as it streams
+     *                                  (ai_memo blocks are stripped live).
+     * @param  string  $ingestNotice  Verifiable system notice about documents that
+     *                                were actually indexed into neurons this request.
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = ''): array
     {
         if (!$this->isConfigured()) {
             return [
@@ -346,6 +351,12 @@ ACCESS RULES (STRICT):
 - KARYAWAN (staff): Only access their assigned store ({$userStoreName}). Do not reveal data from other stores/branches.
 - Never claim information is "not accessible" when it exists in the SYSTEM CONTEXT below.
 - If a requested metric is absent from the context, say so honestly and suggest what data would be needed.
+
+GENERAL KNOWLEDGE (SUPERADMIN):
+- As a Superadmin you may discuss ANY topic — general knowledge, education, business/management theory, economics, world facts, science, tech, culture, etc. You are a general-purpose assistant, like any modern AI chatbot.
+- If a question is general (world knowledge, theories, concepts, books, ideas) and NOT about Daily Phone store operations, answer openly and completely from your general knowledge. Do not force the store context below into general answers.
+- The store context, actions, and neuron memory are only tools to use WHEN RELEVANT to the user's question — not a cage.
+- Never claim that a training node/memory was saved unless the system confirms it (see the SISTEM INGEST notice below) or you genuinely emitted a valid ```ai_memo block yourself.
 
 SUPERADMIN EXECUTION & ACTION PROPOSALS:
 Whenever the Superadmin explicitly asks or implies an action (such as changing a price, marking a unit as sold/terjual, updating a stock status/note, recording a money note/expense/income, or running a python calculation/script), you MUST act as an intelligent business partner:
@@ -541,6 +552,7 @@ PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (AI MENULIS SENDIRI — S
 ```ai_memo
 {"kind": "rule", "title": "label pendek untuk node (maks 5 kata)", "related": ["kata-kunci-relasi-1", "kata-kunci-relasi-2"], "content": "instruksi singkat, spesifik, 1-2 kalimat"}
 ```
+- Penting: blok ```ai_memo hanya untuk mencatat ATURAN/FAKTA singkat yang kamu simpulkan sendiri. JANGAN membuat ai_memo yang mengklaim "seluruh isi dokumen/PDF tersimpan" — dokumen yang sudah diindeks sistem tidak perlu kamu catat ulang (sudah menjadi node sendiri).
 - "kind" harus "rule" HANYA jika pengguna SUPERADMIN (lihat ACCESS RULES). Untuk pengguna lain gunakan "kind": "knowledge".
 - "title" boleh dihilangkan (otomatis dibuat dari content). "related" juga opsional tapi sangat dianjurkan karena itulah cara kamu menentukan "relasinya kemana" di dalam neuron map — isi 2-4 kata kunci spesifik yang menghubungkan node ini ke node lain yang relevan.
 - Tulis content padat & actionable, hanya aturan/fakta yang belum tercatat.
@@ -548,6 +560,7 @@ PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (AI MENULIS SENDIRI — S
 
 GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, setiap baris = satu node):
 {$trainingNotesStr}
+{$ingestNotice}
 PROMPT;
 
         // Build contents for Gemini API
@@ -608,21 +621,48 @@ PROMPT;
 
         foreach ($candidateModels as $modelToTry) {
             try {
-                // 8192 output tokens can take well over 30s; keep the client from
-                // racing ahead of slow completions.
-                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:generateContent?key={$this->apiKey}";
-                $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
+                $endpoint = $onChunk !== null ? 'streamGenerateContent?alt=json' : 'generateContent';
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$modelToTry}:{$endpoint}&key={$this->apiKey}";
 
-                if ($response->successful()) {
-                    $text = $response->json('candidates.0.content.parts.0.text', '');
-                    return [
-                        'success' => true,
-                        'reply' => trim($text),
-                        'neurons' => $neurons,
-                    ];
+                if ($onChunk === null) {
+                    // Blocking call: wait for the full completion (used by non-chat
+                    // callers or when the client did not ask for streaming).
+                    $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
+                    if ($response->successful()) {
+                        $text = $response->json('candidates.0.content.parts.0.text', '');
+                        return [
+                            'success' => true,
+                            'reply' => trim($text),
+                            'neurons' => $neurons,
+                        ];
+                    }
+                    $lastErrorMsg = $response->json('error.message') ?? $response->body();
+                } else {
+                    // Token streaming: relay each visible delta to $onChunk while
+                    // the rest of the route continues to think, so the UI renders
+                    // words ~1s after the user sends the message.
+                    $response = Http::withOptions(['stream' => true])
+                        ->timeout(300)
+                        ->connectTimeout(15)
+                        ->post($url, $payload);
+
+                    if (!$response->successful()) {
+                        $lastErrorMsg = $response->json('error.message') ?? $response->body();
+                        Log::warning("Gemini stream model {$modelToTry} failed: {$lastErrorMsg}");
+                        continue;
+                    }
+
+                    $text = $this->streamGeminiContent($response, $onChunk);
+                    if ($text !== '') {
+                        return [
+                            'success' => true,
+                            'reply' => trim($text),
+                            'neurons' => $neurons,
+                        ];
+                    }
+                    $lastErrorMsg = 'The model returned an empty stream.';
                 }
 
-                $lastErrorMsg = $response->json('error.message') ?? $response->body();
                 Log::warning("Gemini model {$modelToTry} failed: {$lastErrorMsg}");
             } catch (\Exception $e) {
                 $lastErrorMsg = $e->getMessage();
@@ -633,6 +673,93 @@ PROMPT;
             'success' => false,
             'reply' => "I encountered an error communicating with Gemini: {$lastErrorMsg}"
         ];
+    }
+
+    /**
+     * Consume a :streamGenerateContent?alt=json response and relay each visible
+     * text delta to the callback. ```ai_memo blocks are dropped live so the
+     * client never flashes the temporary memory JSON. Returns the full text.
+     */
+    protected function streamGeminiContent($response, callable $onChunk): string
+    {
+        $body = $response->toPsrResponse()->getBody();
+
+        $out = '';
+        $pending = '';
+        $inMemo = false;
+
+        $flush = function (string $s) use (&$out, $onChunk): void {
+            if ($s === '') {
+                return;
+            }
+            $out .= $s;
+            $onChunk($s);
+        };
+
+        $buffer = '';
+        while (!$body->eof()) {
+            $buffer .= $body->read(8192);
+            while (($pos = strpos($buffer, "\n")) !== false) {
+                $line = rtrim(substr($buffer, 0, $pos));
+                $buffer = substr($buffer, $pos + 1);
+                if ($line === '') {
+                    continue;
+                }
+                $json = json_decode($line, true);
+                $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                if ($delta === '') {
+                    continue;
+                }
+                $pending .= $delta;
+                $this->streamVisible($pending, $inMemo, $flush);
+            }
+        }
+
+        $tail = trim($buffer);
+        if ($tail !== '') {
+            $json = json_decode($tail, true);
+            $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
+            if ($delta !== '') {
+                $pending .= $delta;
+                $this->streamVisible($pending, $inMemo, $flush);
+            }
+        }
+        $this->streamVisible($pending, $inMemo, $flush);
+
+        return $out;
+    }
+
+    /**
+     * Split the accumulated pending text into visible (emitted) and memo
+     * (dropped) parts using a small state machine that survives chunk splits.
+     */
+    protected function streamVisible(string &$pending, bool &$inMemo, callable $flush): void
+    {
+        while ($pending !== '') {
+            if (!$inMemo) {
+                $idx = strpos($pending, '```ai_memo');
+                if ($idx === false) {
+                    $flush($pending);
+                    $pending = '';
+                    return;
+                }
+                $flush(substr($pending, 0, $idx));
+                $pending = substr($pending, $idx);
+                $inMemo = true;
+                continue;
+            }
+
+            // Inside a memo: discard everything up to and including the closing
+            // fence. If the closing fence has not arrived yet, drop the buffer
+            // and keep waiting for more chunks.
+            $close = strpos($pending, '```', 4);
+            if ($close === false) {
+                $pending = '';
+                return;
+            }
+            $pending = substr($pending, $close + 3);
+            $inMemo = false;
+        }
     }
 
     /**

@@ -56,6 +56,7 @@ async function consumeNdjson(
     res: Response,
     handlers: {
         onNeurons?: (nodes: AccessedNeuron[], edges: NeuronLink[]) => void;
+        onToken?: (text: string) => void;
     }
 ): Promise<any> {
     if (!res.body) return null;
@@ -79,6 +80,9 @@ async function consumeNdjson(
                 Array.isArray(evt.nodes) ? evt.nodes : [],
                 Array.isArray(evt.edges) ? evt.edges : []
             );
+        }
+        if (evt.type === 'chunk' && handlers.onToken && typeof evt.text === 'string') {
+            handlers.onToken(evt.text);
         }
         if (evt.type === 'done' || evt.type === 'error') last = evt;
     };
@@ -195,6 +199,8 @@ export default function Assistant({
     const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // Live token-by-token draft rendered while Gemini streams its answer.
+    const [draftStream, setDraftStream] = useState<string>('');
 
     // Reuse a single AudioContext so completion chimes do not leak one context per
 // message (browsers cap concurrent AudioContexts).
@@ -457,6 +463,7 @@ function playCompletionChime(soundEnabled: boolean): void {
         setIsLoading(true);
         setAttachments([]);
         setAccessedNetwork({ nodes: [], edges: [] });
+        setDraftStream('');
 
         const applyReply = (data: any) => {
             const looksLikeProposal = !!data.reply && (data.reply.includes('```action_proposal') || data.reply.includes('"action":'));
@@ -521,9 +528,10 @@ function playCompletionChime(soundEnabled: boolean): void {
             }
 
             if (contentType.includes('ndjson')) {
-                // Live stream: accessed neurons show while thinking.
+                // Live stream: accessed neurons + tokens render while thinking.
                 const last = await consumeNdjson(response, {
                     onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
+                    onToken: (text) => setDraftStream(prev => prev + text),
                 });
                 if (!last || last.type === 'error') {
                     throw new Error(
@@ -531,12 +539,14 @@ function playCompletionChime(soundEnabled: boolean): void {
                         'The server did not reply — the file may be too large or the AI is busy. Try again, split the file into smaller parts, or wait a moment.'
                     );
                 }
+                setDraftStream('');
                 applyReply(last);
             } else {
                 const data = await response.json();
                 applyReply(data);
             }
         } catch (error: any) {
+            setDraftStream('');
             setMessages(prev => [
                 ...prev,
                 {
@@ -547,6 +557,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                 }
             ]);
         } finally {
+            setDraftStream('');
             setIsLoading(false);
             setTimeout(() => inputRef.current?.focus(), 100);
         }
@@ -1036,6 +1047,18 @@ function playCompletionChime(soundEnabled: boolean): void {
                                     {accessedNetwork.nodes.length > 0 && (
                                         <NeuronFiringMap nodes={accessedNetwork.nodes} edges={accessedNetwork.edges} />
                                     )}
+                                </div>
+                            )}
+
+                            {draftStream && (
+                                <div key="draft-stream" className="max-w-3xl mx-auto text-foreground">
+                                    <div className="text-[13px] leading-relaxed">
+                                        <Markdown content={draftStream} />
+                                    </div>
+                                    <div className="flex items-center gap-1 text-muted-foreground/70 pt-1">
+                                        <span className="inline-block h-3 w-[2px] bg-primary animate-pulse" />
+                                        <span className="text-[10.5px] font-mono">streaming</span>
+                                    </div>
                                 </div>
                             )}
 

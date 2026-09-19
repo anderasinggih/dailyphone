@@ -400,6 +400,140 @@ class AiFileIngestService
         }
     }
 
+    /**
+     * Persist uploaded documents (PDF books, DOCX, spreadsheets, text, ...) as
+     * real training-memory nodes. The extracted text is chunked so each node
+     * stays within the content column limit, then wired into the neuron graph.
+     *
+     * @return array{success: bool, notes_count: int, files_done: int, message: string}
+     */
+    public function ingestDocument($attachments, User $user): array
+    {
+        $notesCount = 0;
+        $filesDone = 0;
+        $scanned = 0;
+
+        foreach ($attachments as $att) {
+            $scanned++;
+
+            $text = trim((string)($att->extracted_text ?? ''));
+            if ($text === '') {
+                // PDFs/images may have yielded no text on upload; retry the
+                // extraction from storage now that we have a concrete request.
+                $fullPath = storage_path('app/private/' . $att->storage_path);
+                if ($att->storage_path && is_file($fullPath)) {
+                    $text = trim($this->extractText($fullPath, $att->mime_type, $att->original_name, self::NOTE_CONTENT_MAX * 8));
+                }
+            }
+
+            if (mb_strlen($text) < 40) {
+                continue;
+            }
+
+            $name = (string)($att->original_name ?? 'dokumen');
+            $base = pathinfo($name, PATHINFO_FILENAME);
+            $slug = strtolower((string)preg_replace('/[^A-Za-z0-9]+/', ' ', $base));
+            $related = array_values(array_unique(array_filter([
+                Str::limit($slug, 24),
+                (string)($att->kind ?? ''),
+                strtolower((string)pathinfo($name, PATHINFO_EXTENSION)),
+            ], fn ($v) => $v !== null && trim((string)$v) !== '')));
+
+            foreach ($this->chunkText($text, 9000) as $i => $chunk) {
+                $chunkNo = $i + 1;
+                $title = $chunkNo === 1
+                    ? Str::limit($base, 200)
+                    : Str::limit($base, 170) . ' (bagian ' . $chunkNo . ')';
+
+                if ($this->persistDocumentNode($title, $chunk, $related, $name . ' (bagian ' . $chunkNo . ')', $user)) {
+                    $notesCount++;
+                }
+            }
+            $filesDone++;
+        }
+
+        return [
+            'success' => $notesCount > 0,
+            'notes_count' => $notesCount,
+            'files_done' => $filesDone,
+            'message' => $notesCount > 0
+                ? "Dokumen telah diindeks menjadi {$notesCount} node memori baru."
+                : 'Tidak ada teks baru yang layak disimpan sebagai node memory.',
+        ];
+    }
+
+    /**
+     * Split a long text into readable chunks of roughly $max characters,
+     * preferring paragraph breaks near the boundary.
+     *
+     * @return string[]
+     */
+    protected function chunkText(string $text, int $max): array
+    {
+        $text = trim($text);
+        if ($text === '' || mb_strlen($text) <= $max) {
+            return $text === '' ? [] : [$text];
+        }
+
+        $chunks = [];
+        $cursor = 0;
+        $length = mb_strlen($text);
+
+        while ($cursor < $length) {
+            $end = min($cursor + $max, $length);
+            if ($end < $length) {
+                $span = mb_substr($text, $cursor, $end - $cursor);
+                $break = mb_strrpos($span, "\n");
+                if ($break !== false && $break > $max * 0.5) {
+                    $end = $cursor + $break;
+                }
+            }
+            $chunks[] = mb_substr($text, $cursor, $end - $cursor);
+            $cursor = $end;
+        }
+
+        return $chunks;
+    }
+
+    /**
+     * Save one document chunk as a knowledge neuron (deduplicated by content).
+     */
+    protected function persistDocumentNode(string $title, string $content, array $related, string $sourceLabel, User $user): bool
+    {
+        $content = mb_substr(trim($content), 0, self::NOTE_CONTENT_MAX);
+        if (mb_strlen($content) < 40) {
+            return false;
+        }
+
+        $hash = md5($content);
+        if (AiTrainingNote::where('content_hash', $hash)->exists()
+            || app(AiMemoryGraphService::class)->isDuplicateContent($content)) {
+            return false;
+        }
+
+        try {
+            AiTrainingNote::create([
+                'user_id' => $user->id,
+                'author_name' => 'Document Learn',
+                'author_role' => 'system',
+                'content' => $content,
+                'title' => $title,
+                'related_keywords' => $related === [] ? null : $related,
+                'content_hash' => $hash,
+                'kind' => 'knowledge',
+                'is_active' => true,
+                'source_url' => null,
+                'source_label' => $sourceLabel,
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning('Failed to persist document training node: ' . $e->getMessage(), [
+                'source' => $sourceLabel,
+            ]);
+            return false;
+        }
+    }
+
     protected function extractXlsx(string $path): string
     {
         $zip = new ZipArchive();
