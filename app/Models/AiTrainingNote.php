@@ -19,12 +19,16 @@ class AiTrainingNote extends Model
         'content_hash',
         'kind',
         'is_active',
+        'used_count',
+        'last_used_at',
         'source_url',
         'source_label',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'used_count' => 'integer',
+        'last_used_at' => 'datetime',
         'related_keywords' => 'array',
     ];
 

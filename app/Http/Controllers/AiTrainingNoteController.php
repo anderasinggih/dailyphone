@@ -61,6 +61,8 @@ class AiTrainingNoteController extends Controller
             'title' => $n->title,
             'content' => $n->content,
             'is_active' => $n->is_active,
+            'used_count' => (int)$n->used_count,
+            'last_used_at' => $n->last_used_at ? $n->last_used_at->diffForHumans() : null,
             'author_name' => $n->author_name,
             'author_role' => $n->author_role,
             'updated_at' => $n->updated_at->diffForHumans(),
@@ -79,14 +81,15 @@ class AiTrainingNoteController extends Controller
             abort(403, 'Unauthorized action.');
         }
 
+        $graph = app(AiMemoryGraphService::class);
+
         $request->validate([
             'content' => 'required|string|max:1000',
-            'kind' => 'required|in:rule,knowledge',
+            'kind' => 'required|in:' . implode(',', $graph->kinds()),
         ]);
 
         $content = trim($request->input('content'));
-        $kind = $request->input('kind');
-        $graph = app(AiMemoryGraphService::class);
+        $kind = $graph->normalizeKind($request->input('kind'));
 
         if (!$graph->isDuplicateContent($content)) {
             AiTrainingNote::create([
@@ -103,6 +106,55 @@ class AiTrainingNoteController extends Controller
 
         return redirect()->route('settings.ai.training-notes')
             ->with('success', 'Training note saved to AI memory.');
+    }
+
+    /**
+     * Re-classify a node into another brain kind (validation, condition,
+     * emotions, memory, ...). The node's synapses are rebuilt so its place in
+     * the mind map always matches its role.
+     */
+    public function reclassify(Request $request, $id): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $graph = app(AiMemoryGraphService::class);
+
+        $request->validate([
+            'kind' => 'required|in:' . implode(',', $graph->kinds()),
+        ]);
+
+        $result = $graph->reclassifyNode((int)$id, $request->input('kind'));
+
+        $snippet = mb_strimwidth((string)AiTrainingNote::find($id)?->title ?: 'node', 0, 50, '…');
+
+        return redirect()->back()
+            ->with('success', $result['changed']
+                ? "Reclassified '{$snippet}' → " . $request->input('kind') . ' and rewired its synapses.'
+                : "Node '{$snippet}' already has that kind.");
+    }
+
+    /**
+     * Let the AI tidy its own brain: it reviews the neuron network and fixes
+     * node kinds, titles, keywords and synapse paths that no longer fit.
+     * Returns the refreshed training-notes page so the mind map re-renders.
+     */
+    public function tidy(Request $request): Response
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $result = app(\App\Services\AiBrainMaintenanceService::class)->tidy(80);
+
+        if ($result['ok']) {
+            session()->flash('success', $result['message']);
+        } else {
+            session()->flash('error', $result['message']);
+        }
+
+        return $this->index($request);
     }
 
     /**
@@ -125,6 +177,7 @@ class AiTrainingNoteController extends Controller
                 'title' => $n->title,
                 'content' => $n->content,
                 'is_active' => $n->is_active,
+                'used_count' => (int)$n->used_count,
                 'author_name' => $n->author_name,
                 'updated_at' => $n->updated_at->diffForHumans(),
                 'source_label' => $n->source_label,

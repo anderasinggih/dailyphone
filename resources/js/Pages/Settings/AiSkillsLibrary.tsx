@@ -13,6 +13,7 @@ import {
     Check,
     ExternalLink,
     RefreshCw,
+    Activity,
 } from 'lucide-react';
 import type { PageProps } from '@/types';
 
@@ -22,6 +23,7 @@ interface SkillFile {
     title: string;
     content: string;
     is_active: boolean;
+    used_count?: number;
     author_name: string | null;
     updated_at: string;
     source_label: string;
@@ -79,6 +81,8 @@ export default function AiSkillsLibrary({ repos }: AiSkillsLibraryProps) {
             active: files.filter(f => f.is_active).length,
         };
     }, [safeRepos]);
+
+    const repoUses = (repo: SkillRepo) => repo.files.reduce((sum, f) => sum + (f.used_count || 0), 0);
 
     const submit = (e: FormEvent) => {
         e.preventDefault();
@@ -277,6 +281,7 @@ export default function AiSkillsLibrary({ repos }: AiSkillsLibraryProps) {
                                                         </p>
                                                         <p className="caption text-muted-foreground mt-0.5">
                                                             {repo.total} files · {repo.active} active
+                                                            {repoUses(repo) > 0 ? ` · ${repoUses(repo)} consult${repoUses(repo) === 1 ? '' : 's'}` : ''}
                                                         </p>
                                                     </div>
                                                     <ChevronDown
@@ -335,6 +340,15 @@ export default function AiSkillsLibrary({ repos }: AiSkillsLibraryProps) {
                                                                     <span>{file.author_name || 'System'}</span>
                                                                     <span>•</span>
                                                                     <span>{file.updated_at}</span>
+                                                                    {(file.used_count || 0) > 0 && (
+                                                                        <>
+                                                                            <span>•</span>
+                                                                            <span className="inline-flex items-center gap-1 text-violet-600 dark:text-violet-400 font-semibold">
+                                                                                <Activity className="h-3 w-3 shrink-0" />
+                                                                                {file.used_count}× used
+                                                                            </span>
+                                                                        </>
+                                                                    )}
                                                                     {!file.is_active && (
                                                                         <>
                                                                             <span>•</span>

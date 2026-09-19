@@ -10,18 +10,22 @@ import {
     Tag,
     BookOpen,
     Power,
-    ShieldCheck
+    ShieldCheck,
+    Sparkles,
+    Palette
 } from 'lucide-react';
 import { RELATION_LABEL } from '@/lib/relations';
+import { kindOf, kindMeta, KIND_META, kindList, type Kind } from '@/lib/kinds';
 
 interface MindMapNode {
     id: number;
     title: string;
     content: string;
-    kind: 'rule' | 'knowledge';
+    kind: string;
     is_active: boolean;
     author_name: string | null;
     degree: number;
+    used_count?: number;
 }
 
 interface MindMapLink {
@@ -38,6 +42,8 @@ interface NeuralMindMapProps {
     nodes: MindMapNode[];
     links: MindMapLink[];
     onToggleActive?: (node: MindMapNode) => void;
+    onReclassify?: (node: MindMapNode, kind: Kind) => void;
+    onTidy?: () => void | Promise<void>;
 }
 
 interface Point {
@@ -116,13 +122,14 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
         comps.push(comp);
     });
 
-    // Generous, readable spacing so every memory can be analyzed comfortably.
-    // ROW_H must stay comfortably above NODE_H: the dendrogram can place two
-    // same-depth nodes half a slot apart, so 2x NODE_H guarantees they can
-    // never touch.
-    const COL_W = 240; // horizontal gap between depth columns
-    const ROW_H = 108; // vertical gap between sibling slots (> 2 * NODE_H)
-    const COMP_GAP = 120; // padding around each component's bounding box
+    // Tight, cozy spacing so the brain reads as one whole organism — never so
+    // far apart that related neurons drift out of the composition. ROW_H stays
+    // comfortably above NODE_H (44px): the dendrogram can place two same-depth
+    // nodes half a slot apart, and resolveOverlaps() below guards the rare
+    // parent/child collision at this density anyway.
+    const COL_W = 176; // horizontal gap between depth columns
+    const ROW_H = 84; // vertical gap between sibling slots
+    const COMP_GAP = 72; // padding around each component's bounding box
 
     // Dendrogram of one component: root on the left, generations grow right.
     const layoutComponent = (ids: number[]) => {
@@ -209,7 +216,7 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     // Pack every component's bounding box left→right, wrapping into a new row
     // when a row fills up, so the whole canvas stays structured and overlap-free.
     const global: Record<number, Point> = {};
-    const ROW_BUDGET = 2600;
+    const ROW_BUDGET = 2200;
     let curX = 0;
     let curY = 0;
     let rowMaxH = 0;
@@ -332,6 +339,8 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
     const [hoveredLink, setHoveredLink] = useState<number | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [showLabels, setShowLabels] = useState(false);
+    const [showLegend, setShowLegend] = useState(true);
+    const [tidying, setTidying] = useState(false);
     const [layoutSeed, setLayoutSeed] = useState(0);
     const [rearrangeTick, setRearrangeTick] = useState(0);
     const [savedPos, setSavedPos] = useState<Record<number, Point> | null>(() => loadSavedPositions());
@@ -470,6 +479,32 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
         setSavedPos(null);
         setLayoutSeed(Math.floor(Math.random() * 1_000_000));
         setRearrangeTick(t => t + 1);
+    };
+
+    // AI self-organizes the brain: after the maintenance call returns (fresh
+    // nodes/links come back through the Inertia page props), drop the manual
+    // positions so the AI's newly rewired mind map is the one that shows.
+    const runTidy = async () => {
+        if (!onTidy || tidying) return;
+        setTidying(true);
+        try {
+            await onTidy();
+            try {
+                localStorage.removeItem(STORAGE_KEY);
+            } catch {
+                // ignore
+            }
+            setSavedPos(null);
+            setLayoutSeed(Math.floor(Math.random() * 1_000_000));
+            setRearrangeTick(t => t + 1);
+        } finally {
+            setTidying(false);
+        }
+    };
+
+    const recast = (node: MindMapNode, kind: Kind) => {
+        if (kind === kindOf(node.kind)) return;
+        onReclassify?.(node, kind);
     };
 
     const focusNode = (id: number) => {
@@ -674,6 +709,25 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
                 <button onClick={rearrangeLayout} title="Rearrange layout" className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm text-muted-foreground hover:text-primary hover:border-primary/40 flex items-center justify-center transition">
                     <RefreshCw className="h-4 w-4" />
                 </button>
+                <button
+                    onClick={runTidy}
+                    disabled={tidying || !onTidy}
+                    title={onTidy ? 'AI tidy — the AI reorganizes nodes, fixes categories and rewires synapses' : 'AI tidy is not available here'}
+                    className="w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border shadow-sm flex items-center justify-center transition disabled:opacity-50 hover:border-primary/40 text-muted-foreground hover:text-primary"
+                >
+                    <Sparkles className={`h-4 w-4 ${tidying ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                    onClick={() => setShowLegend(v => !v)}
+                    title="Toggle category legend"
+                    className={`w-8 h-8 rounded-xl bg-background/85 dark:bg-card/80 backdrop-blur-xl border shadow-sm flex items-center justify-center transition ${
+                        showLegend
+                            ? 'border-primary/40 text-primary'
+                            : 'border-border/50 text-muted-foreground hover:text-primary'
+                    }`}
+                >
+                    <Palette className="h-4 w-4" />
+                </button>
             </div>
 
             <div
@@ -792,7 +846,8 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
                                 const isSelected = selectedId === node.id;
                                 const isMatch = matches.size > 0 && matches.has(node.id);
                                 const dimmed = matches.size > 0 && !matches.has(node.id);
-                                const isRule = node.kind === 'rule';
+                                const meta = kindMeta(node.kind);
+                                const kind = kindOf(node.kind);
 
                                 return (
                                     <g key={node.id} transform={`translate(${p.x},${p.y})`}>
@@ -805,21 +860,33 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
                                         >
                                             <div
                                                 className={`flex items-center gap-1.5 h-full w-full px-3 rounded-full border-[1.5px] shadow-sm transition ${
-                                                    isRule
-                                                        ? 'bg-primary/15 border-primary/45'
-                                                        : 'bg-white dark:bg-[#1B1C1E] border-black/[0.08] dark:border-white/[0.14]'
+                                                    kind === 'rule' ? 'font-semibold' : ''
                                                 } ${!node.is_active ? 'opacity-55' : ''} ${
                                                     isSelected ? 'ring-2 ring-primary' : ''
                                                 } ${isMatch ? 'ring-2 ring-primary/60' : ''} ${
                                                     dimmed ? 'opacity-25' : ''
                                                 }`}
+                                                style={{
+                                                    backgroundColor: `${meta.color}24`,
+                                                    borderColor: `${meta.color}73`,
+                                                }}
                                             >
+                                                <span
+                                                    className="h-2 w-2 rounded-full shrink-0"
+                                                    style={{ backgroundColor: meta.color }}
+                                                />
                                                 <span
                                                     className="text-[10.5px] font-semibold text-foreground leading-tight truncate"
                                                     title={node.title}
                                                 >
                                                     {node.title}
                                                 </span>
+                                                {(node.used_count || 0) > 0 && (
+                                                    <span
+                                                        title="Consulted in chat replies"
+                                                        className="shrink-0 h-2 w-2 rounded-full bg-violet-500/80"
+                                                    />
+                                                )}
                                                 {node.degree > 0 && (
                                                     <span className="ml-auto shrink-0 pl-1 text-[9px] font-mono text-muted-foreground bg-black/[0.05] dark:bg-white/[0.08] rounded-full px-1.5 py-0.5">
                                                         {node.degree}
@@ -850,6 +917,25 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
                 )}
 
                 </div>
+
+                {/* Category legend — one color per brain kind */}
+                {showLegend && nodes.length > 0 && (
+                    <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5">
+                        {kindList().map(k => {
+                            const meta = KIND_META[k];
+                            return (
+                                <span
+                                    key={k}
+                                    className="inline-flex items-center gap-1 rounded-full bg-background/80 dark:bg-card/85 backdrop-blur-xl border border-border/50 px-1.5 py-0.5 shadow-sm"
+                                    title={meta.blurb}
+                                >
+                                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+                                    <span className="text-[9px] font-semibold text-muted-foreground">{meta.label}</span>
+                                </span>
+                            );
+                        })}
+                    </div>
+                )}
             </div>
 
         {/* Node detail — rendered BELOW the mind-map container, never covering the graph. */}
@@ -861,19 +947,38 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
                 <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-3">
                     <div className="flex items-center gap-2.5 min-w-0">
                         <span
-                            className={`inline-flex items-center shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border ${
-                                selectedNode.kind === 'rule'
-                                    ? 'bg-primary/10 text-primary border-primary/30'
-                                    : 'bg-muted text-muted-foreground border-border'
-                            }`}
+                            className="inline-flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-0.5 text-[10px] font-bold tracking-wide border"
+                            style={{
+                                backgroundColor: `${kindMeta(selectedNode.kind).color}1f`,
+                                borderColor: `${kindMeta(selectedNode.kind).color}73`,
+                                color: kindMeta(selectedNode.kind).color,
+                            }}
                         >
-                            {selectedNode.kind === 'rule' ? 'RULE' : 'NOTE'}
+                            <span
+                                className="h-1.5 w-1.5 rounded-full"
+                                style={{ backgroundColor: kindMeta(selectedNode.kind).color }}
+                            />
+                            {kindMeta(selectedNode.kind).label.toUpperCase()}
                         </span>
                         <h4 className="text-sm font-semibold text-foreground truncate">
                             {selectedNode.title}
                         </h4>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
+                        {onReclassify && (
+                            <select
+                                value={kindOf(selectedNode.kind)}
+                                onChange={e => recast(selectedNode, e.target.value as Kind)}
+                                title="Re-classify this memory node"
+                                className="rounded-lg border border-border/60 bg-background px-2 py-1.5 text-[10px] font-semibold text-foreground focus:outline-none focus:border-primary"
+                            >
+                                {kindList().map(k => (
+                                    <option key={k} value={k}>
+                                        {kindMeta(k).label}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
                         <button
                             onClick={() => onToggleActive?.(selectedNode)}
                             className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold tracking-wider transition flex items-center gap-1 ${
@@ -907,8 +1012,11 @@ export default function NeuralMindMap({ nodes, links, onToggleActive }: NeuralMi
                             {selectedNode.author_name || 'System'}
                         </span>
                         <span className="inline-flex items-center gap-1">
-                            {selectedNode.kind === 'rule' && <ShieldCheck className="h-3 w-3 text-primary" />}
-                            {selectedNode.kind === 'rule' ? 'Directive' : 'Knowledge'}
+                            <ShieldCheck
+                                className="h-3 w-3"
+                                style={{ color: kindMeta(selectedNode.kind).color }}
+                            />
+                            {kindMeta(selectedNode.kind).label}
                         </span>
                         <span
                             className={`inline-flex items-center gap-1 ${

@@ -21,6 +21,48 @@ class AiMemoryGraphService
 {
     protected const MAX_LINKS = 5;
 
+    // The AI "brain" taxonomy. Every node belongs to ONE typed kind so the mind
+    // map can color-code neurons by role, and the AI can reorganize a node into
+    // the kind that actually fits its content (validation, condition, memory…).
+    public const KINDS = [
+        self::KIND_RULE,
+        self::KIND_VALIDATION,
+        self::KIND_CONDITION,
+        self::KIND_EMOTIONS,
+        self::KIND_NOTE,
+        self::KIND_MEMORY,
+        self::KIND_PREFERENCE,
+        self::KIND_IDENTITY,
+        self::KIND_GOAL,
+        self::KIND_WARNING,
+    ];
+
+    public const KIND_RULE = 'rule';
+    public const KIND_VALIDATION = 'validation';
+    public const KIND_CONDITION = 'condition';
+    public const KIND_EMOTIONS = 'emotions';
+    public const KIND_NOTE = 'note';
+    public const KIND_MEMORY = 'memory';
+    public const KIND_PREFERENCE = 'preference';
+    public const KIND_IDENTITY = 'identity';
+    public const KIND_GOAL = 'goal';
+    public const KIND_WARNING = 'warning';
+
+    // Kinds that are NOT user-typed directives but still qualify as "brain
+    // content" — used by the candidate pool whenever a query may match any
+    // non-rule neuron (rules are always injected separately into prompts).
+    public const NON_RULE_KINDS = [
+        self::KIND_VALIDATION,
+        self::KIND_CONDITION,
+        self::KIND_EMOTIONS,
+        self::KIND_NOTE,
+        self::KIND_MEMORY,
+        self::KIND_PREFERENCE,
+        self::KIND_IDENTITY,
+        self::KIND_GOAL,
+        self::KIND_WARNING,
+    ];
+
     protected const MIN_SCORE = 0.08;
 
     protected const HINT_BOOST = 0.35;
@@ -45,14 +87,22 @@ class AiMemoryGraphService
      * @param array $hints Optional relation keywords (e.g. from the AI memo
      *                     `related` field or manual entry) used both as node
      *                     labels and to boost candidate ranking.
+     * @param bool  $fullScan When true, every existing note is compared (used
+     *                        by the offline rebuild command for a complete
+     *                        re-layout). Live writes default to false so we only
+     *                        score candidates sharing a real token with the new
+     *                        note, keeping per-node cost bounded as memory grows.
      *
      * @return AiTrainingNoteLink[]
      */
-    public function linkNewNote(AiTrainingNote $note, array $hints = []): array
+    public function linkNewNote(AiTrainingNote $note, array $hints = [], bool $fullScan = false): array
     {
         $created = [];
 
-        $others = AiTrainingNote::where('id', '!=', $note->id)->get();
+        $others = $fullScan
+            ? AiTrainingNote::where('id', '!=', $note->id)->get()
+            : $this->linkCandidates($note);
+
         if ($others->isEmpty()) {
             return $created;
         }
@@ -205,16 +255,184 @@ class AiMemoryGraphService
 
         $created = 0;
         AiTrainingNote::orderBy('id', 'asc')->get()->each(function ($note) use (&$created) {
-            $created += count($this->linkNewNote($note, $note->related_keywords ?? []));
+            $created += count($this->linkNewNote($note, $note->related_keywords ?? [], true));
         });
 
         return $created;
     }
 
     /**
+     * The candidate notes a fresh note should be compared against: every note
+     * that shares at least one informative token with the new note's title +
+     * content + hints, falling back to recently touched notes when nothing
+     * shares a word (so brand-new topics still plug into the graph). This keeps
+     * per-write cost proportional to the relevant neighbourhood, not the whole
+     * table, as the memory grows.
+     */
+    protected function linkCandidates(AiTrainingNote $note): \Illuminate\Support\Collection
+    {
+        $tokens = $this->tokenize($this->labelSource($note));
+        foreach ((array)($note->related_keywords ?? []) as $hint) {
+            foreach ($this->tokenize((string)$hint) as $t) {
+                $tokens[] = $t;
+            }
+        }
+
+        $ids = $this->candidateNoteIds($tokens, 300);
+        if ($ids === []) {
+            $ids = AiTrainingNote::where('id', '!=', $note->id)
+                ->orderBy('updated_at', 'desc')
+                ->limit(100)
+                ->pluck('id')
+                ->all();
+        }
+
+        return AiTrainingNote::whereIn('id', $ids)
+            ->where('id', '!=', $note->id)
+            ->get();
+    }
+
+    /**
+     * Ids of every note that shares at least one informative token with the
+     * given token list, found with cheap LIKE filters over title, content and
+     * related keywords. Ordered most-recent-first and capped so a huge memory
+     * never forces a full-table materialization into PHP.
+     */
+    public function candidateNoteIds(array $tokens, int $limit = 300): array
+    {
+        $tokens = array_values(array_unique(array_filter(array_map(function ($t) {
+            $t = strtolower(trim((string)$t));
+            return strlen($t) >= 4 ? $t : null;
+        }, $tokens))));
+
+        if ($tokens === []) {
+            return [];
+        }
+
+        // Longest tokens first: they are the strongest, most selective filters.
+        usort($tokens, fn($a, $b) => strlen((string)$b) <=> strlen((string)$a));
+        $tokens = array_slice($tokens, 0, 8);
+
+        $query = AiTrainingNote::query()->select('id');
+        foreach ($tokens as $token) {
+            // related_keywords is a JSON column, but LIKE over its serialized
+            // text works identically on MySQL and SQLite for substring hits.
+            $query->orWhere('title', 'like', "%{$token}%")
+                ->orWhere('content', 'like', "%{$token}%")
+                ->orWhere('related_keywords', 'like', "%{$token}%");
+        }
+
+        return $query->orderBy('updated_at', 'desc')->limit($limit)->pluck('id')->all();
+    }
+
+    /**
+     * The full set of valid node kinds (brain taxonomy).
+     */
+    public function kinds(): array
+    {
+        return self::KINDS;
+    }
+
+    /**
+     * Coerce any kind string into a valid taxonomy value. Unknown or empty
+     * values land on the generic 'note' kind, so untrusted input (AI memos,
+     * manual entry, link hints) can never produce an undefined node category.
+     */
+    public function normalizeKind(?string $kind): string
+    {
+        $kind = strtolower(trim((string)$kind));
+        return in_array($kind, self::KINDS, true) ? $kind : self::KIND_NOTE;
+    }
+
+    /**
+     * Re-classify an existing node into another kind and re-wire its synapses
+     * afterwards, because a node's place in the brain defines which relations
+     * make sense (a directive relates differently than a memory). Used by the
+     * manual "reclassify" control and by AI self-maintenance.
+     */
+    public function reclassifyNode(int $noteId, ?string $kind, ?string $title = null, ?array $related = null): array
+    {
+        $note = AiTrainingNote::findOrFail($noteId);
+        $newKind = $this->normalizeKind($kind);
+
+        $change = [];
+        if ($note->kind !== $newKind) {
+            $note->kind = $newKind;
+            $change[] = "kind:{$note->getOriginal('kind')}→{$newKind}";
+        }
+        if ($title !== null && trim((string)$title) !== '' && (string)$note->title !== trim((string)$title)) {
+            $note->title = mb_substr(trim((string)$title), 0, 200);
+            $change[] = 'title';
+        }
+        if (is_array($related)) {
+            $normalized = array_values(array_unique(array_filter(array_map(
+                fn($r) => strtolower(trim((string)$r)),
+                $related
+            ), fn($r) => $r !== '')));
+            $note->related_keywords = $normalized === [] ? null : array_slice($normalized, 0, 8);
+            $change[] = 'related';
+        }
+
+        $note->save();
+
+        // Re-connect the node from scratch so its synapses reflect the new role.
+        if ($change !== []) {
+            $this->pruneLinksFor($noteId);
+            $links = $this->linkNewNote($note, (array)$note->related_keywords, true);
+            $change[] = 're-linked (' . count($links) . ')';
+        }
+
+        return [
+            'changed' => $change !== [],
+            'changes' => $change,
+            'kind' => $newKind,
+        ];
+    }
+
+    /**
+     * Bounded knowledge candidate pool for a chat query: only notes that
+     * actually share a real token with the query are materialized, so the
+     * ranking loop below never walks the whole memory table.
+     *
+     * @param  array|string|null  $kind  Restrict to one kind, one of several
+     *                                   kinds, or null to include every active
+     *                                   non-rule neuron (rules load separately).
+     */
+    public function candidateNotes(?string $query, array|string|null $kind = null, int $limit = 200): \Illuminate\Support\Collection
+    {
+        $tokens = $this->tokenize(trim((string)$query));
+        $ids = $this->candidateNoteIds($tokens, $limit);
+
+        if ($ids === []) {
+            return collect();
+        }
+
+        $query = AiTrainingNote::whereIn('id', $ids)->where('is_active', true);
+        if (is_array($kind)) {
+            $kinds = array_values(array_filter(array_map(
+                fn($k) => $this->normalizeKind(is_string($k) ? $k : null),
+                $kind
+            )));
+            $query->whereIn('kind', $kinds === [] ? self::NON_RULE_KINDS : $kinds);
+        } elseif (is_string($kind) && $kind !== '') {
+            $query->where('kind', $this->normalizeKind($kind));
+        } else {
+            $query->whereIn('kind', self::NON_RULE_KINDS);
+        }
+
+        return $query->limit($limit)->get();
+    }
+
+    /**
      * True when the content is an exact OR a rephrased duplicate of an already
      * stored memory. Used before every save so the AI does not accumulate the
      * same rule/fact twice in different wording.
+     *
+     * The rephrased check is bounded: only notes sharing at least one real
+     * token are compared (rephrased duplicates virtually always share their
+     * key words — "Yaya adik Singgih" vs "Singgih punya adik Yaya" both
+     * contain "adik" & "singgih"). Exact duplicates are caught first by the
+     * content hash, which scans every row cheaply via the unique index.
      */
     public function isDuplicateContent(string $content): bool
     {
@@ -223,7 +441,7 @@ class AiMemoryGraphService
             return true;
         }
 
-        // Cheap exact check first.
+        // Cheap exact check first (indexed, scans all rows quickly).
         if (AiTrainingNote::where('content_hash', md5($normalized))->exists()) {
             return true;
         }
@@ -233,9 +451,11 @@ class AiMemoryGraphService
             return false;
         }
 
-        $candidates = AiTrainingNote::query()->pluck('content');
+        $candidates = AiTrainingNote::whereIn('id', $this->candidateNoteIds($newTokens, 300))
+            ->get(['content']);
+
         foreach ($candidates as $existing) {
-            $existingTokens = $this->tokenize((string)$existing);
+            $existingTokens = $this->tokenize((string)$existing->content);
             if (count($existingTokens) < 3) {
                 continue;
             }
@@ -250,6 +470,24 @@ class AiMemoryGraphService
         }
 
         return false;
+    }
+
+    /**
+     * Record that a set of memory nodes was actually consulted in a chat reply.
+     * The AI cites the node ids it relied on; bump their counters so the
+     * superadmin can see which neurons are load-bearing vs dead weight.
+     */
+    public function registerUsage(array $ids): void
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($id) => $id > 0)));
+        if ($ids === []) {
+            return;
+        }
+
+        AiTrainingNote::whereIn('id', $ids)->update([
+            'used_count' => \Illuminate\Support\Facades\DB::raw('used_count + 1'),
+            'last_used_at' => now(),
+        ]);
     }
 
     /**
@@ -280,6 +518,7 @@ class AiMemoryGraphService
                 'is_active' => $n->is_active,
                 'author_name' => $n->author_name ?? 'System',
                 'degree' => $degree[$n->id] ?? 0,
+                'used_count' => (int)($n->used_count ?? 0),
             ];
         })->values()->all();
 
@@ -328,8 +567,25 @@ class AiMemoryGraphService
             return ['persistent_hint', "AI-linked via keyword: {$keywords}"];
         }
 
-        if (($note->kind === 'rule') !== ($other->kind === 'rule') && $sharedTokens !== []) {
-            return ['rule_applies', 'Behavioral rule applies to this related topic'];
+        if ($sharedTokens !== []) {
+            // A directive governs whatever it shares concepts with.
+            if (($note->kind === 'rule') !== ($other->kind === 'rule')) {
+                return ['rule_applies', 'Behavioral rule applies to this related topic'];
+            }
+            // Validation & condition nodes are the "logic circuits" of the brain:
+            // attach them to the things they verify or gate.
+            if (($note->kind === self::KIND_VALIDATION) !== ($other->kind === self::KIND_VALIDATION)) {
+                return ['validation_required', 'Validation check applies to this related topic'];
+            }
+            if (($note->kind === self::KIND_CONDITION) !== ($other->kind === self::KIND_CONDITION)) {
+                return ['condition_trigger', 'Conditional rule gates this related topic'];
+            }
+            if (($note->kind === self::KIND_WARNING) !== ($other->kind === self::KIND_WARNING)) {
+                return ['risk_warning', 'Warning signal flags this related topic'];
+            }
+            if (($note->kind === self::KIND_GOAL) !== ($other->kind === self::KIND_GOAL)) {
+                return ['serves_goal', 'Related memory serves this goal'];
+            }
         }
 
         if (count($sharedTokens) >= 4) {

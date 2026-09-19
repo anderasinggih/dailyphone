@@ -13,11 +13,13 @@ import {
     Sparkles,
     Check,
     List,
-    Network
+    Network,
+    Activity
 } from 'lucide-react';
 import type { PageProps } from '@/types';
 import NeuralMindMap from '@/Components/NeuralMindMap';
 import { relationName } from '@/lib/relations';
+import { kindOf, kindMeta, kindList, type Kind } from '@/lib/kinds';
 
 interface SynapseRef {
     id: number;
@@ -30,10 +32,12 @@ interface SynapseRef {
 
 interface TrainingNote {
     id: number;
-    kind: 'rule' | 'knowledge';
+    kind: string;
     title: string | null;
     content: string;
     is_active: boolean;
+    used_count?: number;
+    last_used_at?: string | null;
     author_name: string | null;
     author_role: string | null;
     updated_at: string;
@@ -44,10 +48,11 @@ interface MindGraphNode {
     id: number;
     title: string;
     content: string;
-    kind: 'rule' | 'knowledge';
+    kind: string;
     is_active: boolean;
     author_name: string | null;
     degree: number;
+    used_count?: number;
 }
 
 interface MindGraphLink {
@@ -112,7 +117,15 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
         const total = safeNotes.length;
         const active = safeNotes.filter(n => n.is_active).length;
         const rules = safeNotes.filter(n => n.kind === 'rule').length;
-        return { total, active, rules };
+        const uses = safeNotes.reduce((sum, n) => sum + (n.used_count || 0), 0);
+        const topNote = safeNotes.reduce<{ title: string; used: number } | null>((best, n) => {
+            if (!n.used_count || n.used_count < 1) return best;
+            if (!best || n.used_count > best.used) {
+                return { title: n.title || n.content.slice(0, 42).replace(/\s+/g, ' ').trim(), used: n.used_count };
+            }
+            return best;
+        }, null);
+        return { total, active, rules, uses, topNote };
     }, [safeNotes]);
 
     const form = useForm({
@@ -210,7 +223,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                     )}
 
                     {/* Stats */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                         <div className="apple-card p-4 flex items-center gap-3">
                             <div className="h-9 w-9 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
                                 <BookOpen className="h-4 w-4" />
@@ -236,6 +249,18 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                             <div>
                                 <div className="text-xl font-bold text-foreground font-mono leading-none">{stats.rules}</div>
                                 <div className="caption text-muted-foreground mt-1">Rules (prioritized)</div>
+                            </div>
+                        </div>
+                        <div className="apple-card p-4 flex items-center gap-3"
+                            title={stats.topNote ? `Most consulted: ${stats.topNote.title} (${stats.topNote.used}×)` : 'No node consulted in chat replies yet'}>
+                            <div className="h-9 w-9 rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20 flex items-center justify-center shrink-0">
+                                <Activity className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0">
+                                <div className="text-xl font-bold text-foreground font-mono leading-none">{stats.uses}</div>
+                                <div className="caption text-muted-foreground mt-1 truncate">
+                                    {stats.topNote ? `Most used: ${stats.topNote.title}` : 'Node consultations'}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -379,6 +404,21 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                                                             <Network className="h-3 w-3 shrink-0" />
                                                                             {note.links.length} synapse{note.links.length === 1 ? '' : 's'}
                                                                         </span>
+                                                                    </>
+                                                                )}
+                                                                {(note.used_count || 0) > 0 && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="inline-flex items-center gap-1 text-violet-600 dark:text-violet-400 font-semibold">
+                                                                            <Activity className="h-3 w-3 shrink-0" />
+                                                                            {note.used_count}× used
+                                                                        </span>
+                                                                    </>
+                                                                )}
+                                                                {note.last_used_at && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span>last {note.last_used_at}</span>
                                                                     </>
                                                                 )}
                                                                 {!note.is_active && (

@@ -330,12 +330,23 @@ class AiAssistantController extends Controller
                     $rawReply = $result['raw_reply'] ?? $result['reply'];
                     $this->persistTrainingMemos($rawReply, $user);
 
-                    $hasProposal = str_contains($result['reply'], '```action_proposal') || str_contains($result['reply'], '```json' . "\n" . '{' . "\n" . '  "action":');
+                    // The AI cites which neuron nodes it actually consulted in a
+                    // trailing metadata line (see the system prompt). Record that
+                    // usage signal, then strip the line from the text the user
+                    // sees / the session stores so it never leaks to the UI.
+                    $usedNodeIds = $this->extractCitedNodeIds($result['reply']);
+                    if ($usedNodeIds !== []) {
+                        app(\App\Services\AiMemoryGraphService::class)->registerUsage($usedNodeIds);
+                    }
+                    $replyText = $this->stripCitedNodeFooter($result['reply']);
+                    $result['reply'] = $replyText;
+
+                    $hasProposal = str_contains($replyText, '```action_proposal') || str_contains($replyText, '```json' . "\n" . '{' . "\n" . '  "action":');
                     $aiChat = \App\Models\AiChat::create([
                         'user_id' => $user->id,
                         'session_id' => $sessionId,
                         'role' => 'assistant',
-                        'content' => $result['reply'],
+                        'content' => $replyText,
                         'action_status' => $hasProposal ? 'pending' : null,
                     ]);
 
@@ -671,6 +682,43 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Extract the node ids the AI cited as "Memori node yang dikonsultasi:
+     * #12, #45" at the end of its reply. Any "#<id>" token at the tail of the
+     * reply counts as a usage signal, so even free-form citations register.
+     */
+    protected function extractCitedNodeIds(string $text): array
+    {
+        $ids = [];
+
+        if (preg_match('/(?:memori node)[^\n]*?:?\s*(.+)$/mi', $text, $m)) {
+            foreach (preg_split('/[,\s#]+/', $m[1]) ?: [] as $part) {
+                $v = (int)trim((string)$part);
+                if ($v > 0) {
+                    $ids[] = $v;
+                }
+            }
+        }
+
+        if ($ids === []) {
+            preg_match_all('/#(\d+)/', mb_substr($text, -400), $m2);
+            foreach ($m2[1] as $v) {
+                $ids[] = (int)$v;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * Remove the citation footer line from the reply before it is persisted /
+     * shown, so telemetry metadata never leaks into the visible conversation.
+     */
+    protected function stripCitedNodeFooter(string $text): string
+    {
+        return trim((string) preg_replace('/(?:^|\n)\s*(?:Memori node yang dikonsultasi|Memory node[^\n]*consulted)[^\n]*/mi', '', $text));
+    }
+
+    /**
      * Extract and persist AI-written training memos from a reply.
      * Kind 'rule' is preserved only when the author is superadmin;
      * everyone else's notes are stored as 'knowledge'.
@@ -698,6 +746,11 @@ class AiAssistantController extends Controller
      * Persist one decoded ```ai_memo payload as a new neuron node.
      * Returns true only when a brand-new node was actually created
      * (invalid, empty, privileged-kind or duplicate payloads return false).
+     *
+     * The AI picks the node kind from its own brain taxonomy (rule,
+     * validation, condition, emotions, memory, preference, ...). Anything
+     * outside the known kinds is safely normalized to the generic 'note',
+     * and behavioral 'rule' nodes are reserved for superadmin authors.
      */
     protected function persistMemo(array $decoded, $user): bool
     {
@@ -706,12 +759,10 @@ class AiAssistantController extends Controller
             return false;
         }
 
-        $kind = strtolower((string)($decoded['kind'] ?? 'knowledge'));
-        if ($kind !== 'rule') {
-            $kind = 'knowledge';
-        }
+        $graph = app(\App\Services\AiMemoryGraphService::class);
+        $kind = $graph->normalizeKind($decoded['kind'] ?? null);
         if ($kind === 'rule' && $user->role !== 'superadmin') {
-            $kind = 'knowledge';
+            $kind = 'note';
         }
 
         // The AI may also propose a short node label and the related
@@ -725,7 +776,7 @@ class AiAssistantController extends Controller
 
         $hash = md5($content);
         if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists()
-            || app(\App\Services\AiMemoryGraphService::class)->isDuplicateContent($content)) {
+            || $graph->isDuplicateContent($content)) {
             return false;
         }
 

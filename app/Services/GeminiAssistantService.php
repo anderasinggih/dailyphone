@@ -582,13 +582,29 @@ PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (ATURAN PENYIMPANAN WAJIB
 - Sebelum mencatat, cek GLOBAL AI TRAINING MEMORY di bawah. Jika ide yang sama SUDAH tercatat: JANGAN keluarkan blok — cukup jawab jujur bahwa hal itu memang sudah tercatat.
 - Jika belum tercatat, AKHIRI balasanmu dengan blok persis seperti ini (skala kecil, max 1 blok per balasan):
 ```ai_memo
-{"kind": "rule", "title": "label pendek untuk node (maks 5 kata)", "related": ["kata-kunci-relasi-1", "kata-kunci-relasi-2"], "content": "fakta/instruksi singkat, spesifik, 1-2 kalimat"}
+{"kind": "note", "title": "label pendek untuk node (maks 5 kata)", "related": ["kata-kunci-relasi-1", "kata-kunci-relasi-2"], "content": "fakta/instruksi singkat, spesifik, 1-2 kalimat"}
 ```
-- JANGAN membuat ai_memo yang mengklaim "seluruh isi dokumen/PDF/link artikel tersimpan" — dokumen atau tautan yang sudah diindeks sistem sudah menjadi node sendiri (lihat SISTEM INGEST di bawah).
-- "kind" harus "rule" HANYA jika pengguna SUPERADMIN (lihat ACCESS RULES). Untuk pengguna lain gunakan "kind": "knowledge".
+- BRAIN TAXONOMY — pilih "kind" yang PALING TEPAT untuk isi node:
+  * "rule"       = DIRECTIVE perilaku/kebijakan yang HARUS selalu dipatuhi (HANYA boleh saat pengguna SUPERADMIN).
+  * "validation" = CHECK/verifikasi wajib sebelum suatu aksi (mis. "Imei wajib 15 digit sebelum unit terjual", "data pembeli wajib lengkap").
+  * "condition"  = LOGIKA kondisional/if-then ("jika stok > 45 hari, tawarkan promo", "kalau pembayaran QRIS, catat bank").
+  * "emotions"   = konteks EMOsi/suasana hati/sentimen yang memengaruhi komunikasi (pelanggan kesal, tone sales).
+  * "note"       = catatan factual umum yang tidak masuk kategori lain.
+  * "memory"     = KEJADIAN/experience spesifik & pribadi yang dialami/belajar dari waktu ke waktu.
+  * "preference" = PREFERENSI pengguna/pelanggan (brand favorit, cara kontak, harga nyaman).
+  * "identity"   = fakta IDENTITAS pribadi/relasi (nama, keluarga, peran, "Yaya adik Singgih").
+  * "goal"       = TUJUAN/target yang sedang dikejar (target omzet, rencana promo).
+  * "warning"    = PERINGATAN/risiko yang harus diingatkan kembali (jangan percaya garansi palsu, hindari supplier X).
+- "kind" harus "rule" HANYA jika pengguna SUPERADMIN (lihat ACCESS RULES). Untuk pengguna lain pilih kind non-rule di atas (decode kependekan pun diterima, contoh "memory"/"memori"/"validation").
 - "title" boleh dihilangkan (otomatis dibuat dari content). "related" sangat dianjurkan: 2-4 kata kunci spesifik yang menentukan relasi node ini di neuron map.
 - Tulis content padat & actionable, hanya aturan/fakta yang belum tercatat.
 - Konfirmasi visual "📝 Node baru: ..." di teks normal HANYA boleh muncul BERSAMA blok ```ai_memo yang benar-benar kamu keluarkan pada balasan yang sama.
+
+USAGE FEEDBACK / CITATION (PENTING):
+- Ketika kamu menjawab dengan benar-benar memanfaatkan isi satu atau beberapa node dari GLOBAL AI TRAINING MEMORY di atas (bukan sekadar menyebut umum), AKHIRI balasanmu dengan SATU baris penutup persis:
+  Memori node yang dikonsultasi: #12, #45
+  (gunakan nomor id node asli dari blok memori di atas, dipisahkan koma; JANGAN menebak atau mengarang id; JANGAN menulis baris ini bila tidak ada node yang kamu pakai).
+- Baris penutup ini hanya sinyal telemetri — sistem otomatis menghapusnya dari teks yang tampil ke pengguna dan memakainya untuk mengukur memori mana yang benar-benar berguna.
 
 GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, setiap baris = satu node):
 {$trainingNotesStr}
@@ -708,6 +724,54 @@ PROMPT;
             'success' => false,
             'reply' => "I encountered an error communicating with Gemini: {$lastErrorMsg}"
         ];
+    }
+
+    /**
+     * One-shot non-streaming completion (used by brain maintenance and any
+     * tool-style call that needs a plain JSON/text answer instead of chat).
+     * Reuses the same model + API-key failover as chat().
+     *
+     * @return string|null  Full text reply, or null on failure.
+     */
+    public function generate(string $systemPrompt, string $userPrompt, int $maxTokens = 1600, float $temperature = 0.2): ?string
+    {
+        if (!$this->isConfigured()) {
+            return null;
+        }
+
+        $payload = [
+            'system_instruction' => ['parts' => [['text' => $systemPrompt]]],
+            'contents' => [
+                ['role' => 'user', 'parts' => [['text' => $userPrompt]]],
+            ],
+            'generationConfig' => [
+                'temperature' => $temperature,
+                'maxOutputTokens' => $maxTokens,
+            ],
+        ];
+
+        $useModel = $this->model;
+        $apiKeys = array_values($this->apiKeys);
+        $totalKeys = count($apiKeys);
+
+        foreach ($apiKeys as $i => $apiKey) {
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
+                $response = Http::timeout(45)->connectTimeout(15)->post($url, $payload);
+
+                if ($response->successful()) {
+                    $text = trim((string)$response->json('candidates.0.content.parts.0.text', ''));
+                    return $text === '' ? null : $text;
+                }
+                Log::warning("Gemini generate key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+            } catch (\Exception $e) {
+                Log::warning("Gemini generate key #" . ($i + 1) . "/{$totalKeys} threw: " . $e->getMessage());
+            }
+
+            $this->logKeyRotation($i, $totalKeys);
+        }
+
+        return null;
     }
 
     /**
@@ -956,7 +1020,7 @@ PROMPT;
             return [
                 'id' => (int)$n->id,
                 'title' => $this->neuronLabel($n),
-                'kind' => $n->kind === 'rule' ? 'rule' : 'knowledge',
+                'kind' => $n->kind,
             ];
         })->values()->all();
 
@@ -1004,15 +1068,24 @@ PROMPT;
             ->orderBy('updated_at', 'desc')
             ->get();
 
-        $knowledge = \App\Models\AiTrainingNote::where('is_active', true)
-            ->where('kind', 'knowledge')
-            ->get();
-
-        $tokens = app(\App\Services\AiMemoryGraphService::class)->tokenize(trim((string)$query));
+        $graph = app(\App\Services\AiMemoryGraphService::class);
+        $tokens = $graph->tokenize(trim((string)$query));
 
         if ($tokens === []) {
-            $notes = $rules->merge($knowledge->sortByDesc('updated_at')->take(10)->values());
+            $notes = $rules->merge(
+                \App\Models\AiTrainingNote::where('is_active', true)
+                    ->where('kind', '!=', 'rule')
+                    ->orderBy('updated_at', 'desc')
+                    ->take(10)
+                    ->get()
+                    ->values()
+            );
         } else {
+            // Bounded knowledge pool: only notes sharing a real token with the
+            // query are materialized (LIKE pre-filter), so the ranking below
+            // never walks the whole memory table as it grows.
+            $knowledge = $graph->candidateNotes($key);
+
             $scored = $knowledge->map(function ($n) use ($tokens) {
                 return ['note' => $n, 'score' => $this->scoreAgainst($n, $tokens)];
             });
@@ -1025,7 +1098,12 @@ PROMPT;
 
             $selected = $matched->isNotEmpty()
                 ? $matched
-                : $knowledge->sortByDesc('updated_at')->take(6)->values();
+                : \App\Models\AiTrainingNote::where('is_active', true)
+                    ->where('kind', '!=', 'rule')
+                    ->orderBy('updated_at', 'desc')
+                    ->take(6)
+                    ->get()
+                    ->values();
 
             $notes = $rules->merge($selected);
         }
@@ -1065,6 +1143,28 @@ PROMPT;
         }
         $compact = preg_replace('/\s+/', ' ', trim((string)$note->content)) ?: '';
         return mb_strimwidth($compact, 0, 56, '…');
+    }
+
+    /**
+     * Uppercased [KIND] tag for a node so the AI instantly recognizes the role
+     * of each memory (TRUST 'rule', 'condition', 'warning', ...) in its prompt.
+     */
+    protected static function kindTag(string $kind): string
+    {
+        $map = [
+            'rule' => 'RULE',
+            'validation' => 'VALIDATION',
+            'condition' => 'CONDITION',
+            'emotions' => 'EMOTIONS',
+            'note' => 'NOTE',
+            'memory' => 'MEMORY',
+            'preference' => 'PREFERENCE',
+            'identity' => 'IDENTITY',
+            'goal' => 'GOAL',
+            'warning' => 'WARNING',
+        ];
+
+        return '[' . ($map[$kind] ?? mb_strtoupper((string)$kind)) . ']';
     }
 
     protected function lastUserText(array $messages): string
@@ -1111,7 +1211,7 @@ PROMPT;
         $selectedIds = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
 
         $main = $notes->map(function ($n) use ($synapses) {
-            $tag = $n->kind === 'rule' ? '[RULE]' : '[NOTE]';
+            $tag = self::kindTag($n->kind);
             $content = mb_strimwidth((string)$n->content, 0, 170, '…');
             $author = $n->author_name ?? 'System';
             $line = "- {$tag} node #{$n->id}: {$content} (oleh: {$author})";
@@ -1175,7 +1275,7 @@ PROMPT;
                 ->values();
 
             $lines = $paths->map(function ($p) {
-                $tag = $p['kind'] === 'rule' ? '[RULE]' : '[NOTE]';
+                $tag = self::kindTag($p['kind']);
                 $via = mb_strimwidth((string)$p['rel'], 0, 24, '');
                 return "- {$tag} node #{$p['id']}: {$p['content']} (jalur dari node #{$p['from']} via {$via})";
             })->implode("\n");

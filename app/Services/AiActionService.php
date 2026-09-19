@@ -112,7 +112,7 @@ class AiActionService
                 'author_role' => 'system',
                 'content' => $content,
                 'content_hash' => $hash,
-                'kind' => $user->role === 'superadmin' ? 'rule' : 'knowledge',
+                'kind' => $user->role === 'superadmin' ? 'rule' : 'note',
                 'is_active' => true,
             ]);
         } catch (\Throwable $e) {
