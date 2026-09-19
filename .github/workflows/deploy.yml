@@ -50,6 +50,12 @@ jobs:
             # Tarik kode terbaru dari GitHub
             git pull origin main
 
+            # Update file .env production secara otomatis jika diset di GitHub Secret
+            if [ -n "${{ secrets.ENV_PRODUCTION }}" ]; then
+              echo "${{ secrets.ENV_PRODUCTION }}" > .env
+              echo "✅ .env production berhasil diupdate dari GitHub Secrets!"
+            fi
+
             # Install vendor dependencies jika ada update package
             composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
