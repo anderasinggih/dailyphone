@@ -138,6 +138,9 @@ const AVAILABLE_MODELS = [
     { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
     { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
     { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+    { value: 'gemini-3.1-flash-image', label: 'Nano Banana 2 (Image) — Gemini 3.1 Flash Image' },
+    { value: 'gemini-3.1-flash-lite-image', label: 'Nano Banana 2 Lite (Image) — Gemini 3.1 Flash Lite Image' },
+    { value: 'gemini-2.5-flash-image', label: 'Nano Banana (Image) — Gemini 2.5 Flash Image' },
 ];
 
 interface AssistantProps {

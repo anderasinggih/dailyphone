@@ -834,6 +834,9 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                             <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                             <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
                                             <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                                            <option value="gemini-3.1-flash-image">Nano Banana 2 (Image) — Gemini 3.1 Flash Image</option>
+                                            <option value="gemini-3.1-flash-lite-image">Nano Banana 2 Lite (Image) — Gemini 3.1 Flash Lite Image</option>
+                                            <option value="gemini-2.5-flash-image">Nano Banana (Image) — Gemini 2.5 Flash Image</option>
                                         </select>
                                     </div>
 

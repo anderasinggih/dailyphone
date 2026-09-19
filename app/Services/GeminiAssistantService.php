@@ -87,6 +87,56 @@ class GeminiAssistantService
     }
 
     /**
+     * Whether the model can output native images (Nano Banana family:
+     * *-flash-image models).
+     */
+    protected function isImageModel(string $model): bool
+    {
+        return (bool) preg_match('/image/i', trim($model));
+    }
+
+    /**
+     * Persist a base64 inline image returned by an image-capable model into the
+     * ai_generated store and return its download metadata (or null on failure).
+     */
+    protected function persistInlineImage(array $inlineData, string $runId, int $index): ?array
+    {
+        $data = (string) ($inlineData['data'] ?? '');
+        if ($data === '') {
+            return null;
+        }
+
+        $mime = (string) ($inlineData['mimeType'] ?? $inlineData['mime_type'] ?? 'image/png');
+        $ext = match ($mime) {
+            'image/jpeg' => 'jpg',
+            'image/webp' => 'webp',
+            default => 'png',
+        };
+
+        $baseDir = storage_path('app/ai_generated/images/' . $runId);
+        if (!is_dir($baseDir)) {
+            mkdir($baseDir, 0755, true);
+        }
+
+        $name = 'generated-' . ($index + 1) . '.' . $ext;
+        $full = $baseDir . '/' . $name;
+        file_put_contents($full, base64_decode($data, true) ?: '');
+        if (!is_file($full) || filesize($full) === 0) {
+            return null;
+        }
+
+        $rel = 'images/' . $runId . '/' . $name;
+
+        return [
+            'name' => $name,
+            'path' => $rel,
+            'mime' => $mime,
+            'size' => filesize($full),
+            'url' => route('assistant.file', $rel),
+        ];
+    }
+
+    /**
      * Test connection to Gemini API.
      */
     public function testConnection(?string $testKey = null, ?string $testModel = null): array
@@ -380,6 +430,11 @@ GENERAL KNOWLEDGE (SUPERADMIN):
 - The store context, actions, and neuron memory are only tools to use WHEN RELEVANT to the user's question — not a cage.
 - Never claim that a training node/memory was saved unless the system confirms it (see the SISTEM INGEST notice below) or you genuinely emitted a valid ```ai_memo block yourself.
 
+IMAGE GENERATION (NATIVE, MODEL-DEPENDENT):
+- When the currently selected model supports native image output (a Nano Banana model — its name ends with "-flash-image"), the system automatically enables image modality and attaches the generated image to your reply. If the user asks to create/generate an image ("buatkan gambar ...", "generate an image", "gambar logo", "design poster", etc.), respond by describing the image you generated in a clear, detailed prompt so the visual matches their request.
+- NEVER use "run_python_script" to draw/generate images with PIL — that is only a fallback sandbox; native image generation is preferred whenever the selected model supports it.
+- If the current model cannot output images, honestly tell the user that and suggest switching the model to a Nano Banana (*-flash-image) model in the model selector.
+
 SUPERADMIN EXECUTION & ACTION PROPOSALS:
 Whenever the Superadmin explicitly asks or implies an action (such as changing a price, marking a unit as sold/terjual, updating a stock status/note, recording a money note/expense/income, or running a python calculation/script), you MUST act as an intelligent business partner:
 
@@ -662,6 +717,11 @@ PROMPT;
         // keys act as failover: if a key hits its rate/exhaustion limit, the
         // same request retries the SAME model with the next configured key.
         $useModel = !empty($model) ? $model : $this->model;
+        $isImageModel = $this->isImageModel($useModel);
+        if ($isImageModel) {
+            // Image-capable models may answer with inline images alongside text.
+            $payload['generationConfig']['responseModalities'] = ['TEXT', 'IMAGE'];
+        }
         $lastErrorMsg = '';
         $apiKeys = array_values($this->apiKeys);
         $totalKeys = count($apiKeys);
@@ -676,11 +736,27 @@ PROMPT;
                     // callers or when the client did not ask for streaming).
                     $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
                     if ($response->successful()) {
-                        $raw = (string)$response->json('candidates.0.content.parts.0.text', '');
+                        $parts = $response->json('candidates.0.content.parts', []);
+                        $runId = date('Ymd_His') . '_' . uniqid();
+                        $text = '';
+                        $imageMd = '';
+                        $n = 0;
+                        foreach ((array) $parts as $part) {
+                            if (!empty($part['text'])) {
+                                $text .= $part['text'];
+                            }
+                            if (!empty($part['inlineData'])) {
+                                $meta = $this->persistInlineImage($part['inlineData'], $runId, $n++);
+                                if ($meta) {
+                                    $imageMd .= "\n\n[![Generated image]({$meta['url']})]({$meta['url']})";
+                                }
+                            }
+                        }
+                        $raw = trim($text . $imageMd);
                         return [
                             'success' => true,
                             'reply' => $this->stripMemoBlocks($raw),
-                            'raw_reply' => trim($raw),
+                            'raw_reply' => trim($text),
                             'neurons' => $neurons,
                         ];
                     }
@@ -703,13 +779,15 @@ PROMPT;
 
                     $meta = [];
                     $raw = null;
-                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw);
+                    $images = [];
+                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw, $images);
                     if ($text !== '') {
                         return [
                             'success' => true,
                             'reply' => trim($text),
                             'raw_reply' => trim((string)$raw),
                             'neurons' => $neurons,
+                            'images' => $images,
                         ];
                     }
                     $lastErrorMsg = 'The model returned an empty stream.';
@@ -791,7 +869,7 @@ PROMPT;
      * (memos included) is still appended to $raw so the caller can persist the
      * memos afterwards.
      */
-    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null): string
+    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null): string
     {
         $body = $response->toPsrResponse()->getBody();
 
@@ -799,12 +877,26 @@ PROMPT;
         $pending = '';
         $inMemo = false;
 
-        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw): void {
+        if ($images === null) {
+            $images = [];
+        }
+        $runId = date('Ymd_His') . '_' . uniqid();
+        $imgIndex = 0;
+
+        $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$imgIndex, $runId): void {
             if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
             if (($meta['blockReason'] ?? '') === '' && !empty($json['promptFeedback']['blockReason'])) {
                 $meta['blockReason'] = $json['promptFeedback']['blockReason'];
+            }
+            foreach (($json['candidates'][0]['content']['parts'] ?? []) as $part) {
+                if (!empty($part['inlineData']) && is_array($part['inlineData'])) {
+                    $m = $this->persistInlineImage($part['inlineData'], $runId, $imgIndex++);
+                    if ($m) {
+                        $images[] = $m;
+                    }
+                }
             }
             $delta = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
             if ($delta === '') {
@@ -916,6 +1008,14 @@ PROMPT;
             $out .= $s;
             $onChunk($s);
         });
+
+        // Attach any generated images as clickable markdown so they persist in
+        // the message and render inline in the chat.
+        foreach ($images as $img) {
+            $md = "\n\n[![Generated image]({$img['url']})]({$img['url']})";
+            $out .= $md;
+            $raw .= $md;
+        }
 
         return $out;
     }
