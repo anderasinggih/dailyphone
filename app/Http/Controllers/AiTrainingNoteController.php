@@ -70,6 +70,73 @@ class AiTrainingNoteController extends Controller
             ->with('success', 'Training note saved to AI memory.');
     }
 
+    /**
+     * Index of every file learned from a GitHub repository ("skills"),
+     * grouped by source repo so each skill set can be managed as one unit.
+     */
+    public function skillsIndex(Request $request): Response
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $notes = AiTrainingNote::query()
+            ->whereNotNull('source_label')
+            ->orderByDesc('updated_at')
+            ->get()
+            ->map(fn ($n) => [
+                'id' => $n->id,
+                'kind' => $n->kind,
+                'title' => $n->title,
+                'content' => $n->content,
+                'is_active' => $n->is_active,
+                'author_name' => $n->author_name,
+                'updated_at' => $n->updated_at->diffForHumans(),
+                'source_label' => $n->source_label,
+                'source_url' => $n->source_url,
+            ]);
+
+        $repos = [];
+        foreach ($notes as $note) {
+            $key = $note['source_label'] ?: 'unknown';
+            $repos[$key]['label'] = $key;
+            $repos[$key]['url'] = $note['source_url'] ?: "https://github.com/{$key}";
+            $repos[$key]['files'][] = $note;
+        }
+
+        $repos = collect(array_values($repos))->map(function ($repo) {
+            $files = $repo['files'];
+            $repo['total'] = count($files);
+            $repo['active'] = collect($files)->where('is_active', true)->count();
+            return $repo;
+        })->values();
+
+        return Inertia::render('Settings/AiSkillsLibrary', [
+            'repos' => $repos,
+        ]);
+    }
+
+    /**
+     * Learn a new public GitHub repository and save its readable files as
+     * AI skill/memory neurons (deduplicated by content).
+     */
+    public function storeRepo(Request $request): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $request->validate([
+            'repo' => 'required|string|max:200',
+        ]);
+
+        $result = app(\App\Services\AiFileIngestService::class)
+            ->ingestRepository($request->input('repo'), $request->user());
+
+        return redirect()->route('settings.ai.skills')
+            ->with($result['success'] ? 'success' : 'error', $result['message']);
+    }
+
     public function toggle(Request $request, $id): RedirectResponse
     {
         if ($request->user()->role !== 'superadmin') {
@@ -81,7 +148,7 @@ class AiTrainingNoteController extends Controller
 
         $snippet = mb_strimwidth((string)$note->content, 0, 60, '…');
 
-        return redirect()->route('settings.ai.training-notes')
+        return redirect()->back()
             ->with('success', $note->is_active
                 ? "Training note '{$snippet}' is now active."
                 : "Training note '{$snippet}' is now paused.");
@@ -95,7 +162,7 @@ class AiTrainingNoteController extends Controller
 
         AiTrainingNote::findOrFail($id)->delete();
 
-        return redirect()->route('settings.ai.training-notes')
+        return redirect()->back()
             ->with('success', 'Training note deleted from AI memory.');
     }
 }

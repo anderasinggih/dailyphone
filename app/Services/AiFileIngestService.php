@@ -171,7 +171,7 @@ class AiFileIngestService
         }
 
         $owner = $m[1];
-        $repo = $m[2];
+        $repo = preg_replace('/\.git$/i', '', $m[2]);
 
         $zipPath = null;
         $extractDir = null;
