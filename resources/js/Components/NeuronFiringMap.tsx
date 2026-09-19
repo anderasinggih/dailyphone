@@ -29,13 +29,13 @@ const GOLDEN = 2.39996323;
 // Keep the circuit airy: a compact slice of the accessed network is drawn.
 const MAX_NODES = 9;
 
-// Ignition pacing is eased (fast mid-run, crawling at the edges) so the energy
-// moves like a living pulse instead of a metronome.
-const STEP_MIN = 260;
-const STEP_MAX = 620;
-const LOOP_PAUSE = 1600;
+// Ignition pacing is eased (fast mid-run, finishing soft at the edges) so the
+// energy snaps quickly and glides — never a stiff metronome.
+const STEP_MIN = 150;
+const STEP_MAX = 420;
+const LOOP_PAUSE = 1300;
 
-const GLOW_BLUR = '1.4';
+const GLOW_BLUR = '1.2';
 const GLOW_FILTER = 'url(#dp-glow)';
 
 const ACTIVE_BLUE = 'rgba(0,122,255,0.9)';
@@ -49,8 +49,8 @@ function hashSeed(id: number, salt: number): number {
     return x - Math.floor(x);
 }
 
-function easeInOutCubic(t: number): number {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+function easeInOutSine(t: number): number {
+    return -(Math.cos(Math.PI * t) - 1) / 2;
 }
 
 function computePositions(nodes: NeuronFiringNode[]): Record<number, Point> {
@@ -210,7 +210,7 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                 const stepStart = timeline[i];
                 const stepDur = durations[i];
                 const local = Math.min(1, (elapsed - stepStart) / stepDur);
-                setFrame({ lit: i + 1, current: order[i], wipe: easeInOutCubic(local) });
+                setFrame({ lit: i + 1, current: order[i], wipe: easeInOutSine(local) });
             } else {
                 setFrame({ lit: order.length, current: null, wipe: 0 });
             }
@@ -230,10 +230,13 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
     const firingEdges = new Set(
         wipeActive ? shownEdges.filter(e => e.source === frame.current || e.target === frame.current) : []
     );
+    // Soft fade-in/out along the pulse so each wave glides instead of slashing.
+    const pulseOpacity = Math.sin(Math.PI * frame.wipe);
 
     return (
         <div className="w-full max-w-[190px]">
             <svg viewBox="-52 -52 104 104" className="block w-full" style={{ overflow: 'visible' }}>
+                <style>{`@keyframes dp-flow { to { stroke-dashoffset: -14; } }`}</style>
                 <defs>
                     <filter id="dp-glow" x="-80%" y="-80%" width="260%" height="260%">
                         <feGaussianBlur stdDeviation={GLOW_BLUR} result="blur" />
@@ -263,10 +266,24 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                                 d={trace.d}
                                 fill="none"
                                 stroke={charged === 2 ? CABLE_FULL : charged === 1 ? CABLE_ONE : CABLE_DIM}
-                                strokeWidth={charged === 2 ? 0.8 : charged === 1 ? 0.65 : 0.5}
+                                strokeWidth={charged === 2 ? 0.7 : charged === 1 ? 0.55 : 0.4}
                                 strokeLinecap="round"
                                 opacity={charged === 0 ? 0.75 : 1}
                             />
+                            {/* Fully connected traces carry a slow stream of energy,
+                                so the lit web visibly hums as one network. */}
+                            {charged === 2 && (
+                                <path
+                                    d={trace.d}
+                                    fill="none"
+                                    stroke="rgba(168,214,255,0.55)"
+                                    strokeWidth={0.6}
+                                    strokeLinecap="round"
+                                    strokeDasharray="1.5 6"
+                                    opacity={0.5}
+                                    style={{ animation: 'dp-flow 1100ms linear infinite' }}
+                                />
+                            )}
                             {/* White energy pulse racing along the trace. */}
                             {grown > 0 && (
                                 <>
@@ -274,11 +291,11 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                                         d={fromSource ? trace.d : trace.reverse}
                                         fill="none"
                                         stroke="#ffffff"
-                                        strokeWidth={1}
+                                        strokeWidth={0.9}
                                         strokeLinecap="round"
                                         strokeDasharray={`${grown.toFixed(2)} ${trace.length.toFixed(2)}`}
                                         filter={GLOW_FILTER}
-                                        opacity={0.9}
+                                        opacity={0.95 * pulseOpacity}
                                     />
                                     <circle
                                         cx={cubicPoint(
@@ -295,9 +312,10 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                                             fromSource ? positions[edge.target]! : positions[edge.source]!,
                                             frame.wipe
                                         ).y}
-                                        r={1.4}
+                                        r={1.2}
                                         fill="#ffffff"
                                         filter={GLOW_FILTER}
+                                        opacity={pulseOpacity}
                                     />
                                 </>
                             )}
@@ -318,7 +336,7 @@ export default function NeuronFiringMap({ nodes, edges }: { nodes: NeuronFiringN
                             <circle
                                 cx={p.x}
                                 cy={p.y}
-                                r={isFiring ? dotRadius + 0.6 : dotRadius}
+                                r={isFiring ? dotRadius + 0.4 + frame.wipe * 0.5 : dotRadius}
                                 fill={isFiring ? '#ffffff' : lit ? ACTIVE_BLUE : NODE_IDLE}
                                 filter={isFiring ? GLOW_FILTER : undefined}
                                 opacity={isFiring ? 1 : lit ? 0.95 : 0.6}
