@@ -388,6 +388,37 @@ class StockController extends Controller
         return redirect()->back()->with('success', 'Parameter option deleted.');
     }
 
+    public function destroyParameter(Request $request, $id): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $param = DynamicParameter::with('values')->findOrFail($id);
+        $valueIds = $param->values->pluck('id');
+
+        if ($valueIds->isNotEmpty()) {
+            $usedCount = Stock::where(function ($q) use ($valueIds) {
+                $q->whereIn('brand_id', $valueIds)
+                    ->orWhereIn('color_id', $valueIds)
+                    ->orWhereIn('memory_id', $valueIds)
+                    ->orWhereIn('license_id', $valueIds);
+            })->count();
+
+            if ($usedCount > 0) {
+                return redirect()->back()->with('error', "Parameter '{$param->name}' gagal dihapus karena masih dipakai oleh {$usedCount} unit stok. Kosongkan dulu pemakaian opsinya pada stok, lalu ulangi.");
+            }
+        }
+
+        try {
+            $param->delete();
+        } catch (\Throwable $e) {
+            return redirect()->back()->with('error', "Parameter '{$param->name}' gagal dihapus: " . $e->getMessage());
+        }
+
+        return redirect()->back()->with('success', "Parameter '{$param->name}' deleted successfully.");
+    }
+
     public function parameters(Request $request): Response
     {
         $user = $request->user();

@@ -1,7 +1,8 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Head, router, Link } from '@inertiajs/react';
+import { Head, router, Link, usePage } from '@inertiajs/react';
 import { useState } from 'react';
 import { Settings, Plus, Trash2, Tag, Check, Pencil, X, ChevronLeft, Sliders } from 'lucide-react';
+import type { PageProps } from '@/types';
 
 interface ParameterValue {
     id: number;
@@ -129,6 +130,7 @@ function AddParameterForm({ existingNames = [] }: { existingNames?: string[] }) 
 }
 
 export default function Parameters({ parameters = [] }: ParametersProps) {
+    const { props } = usePage<PageProps<{ flash?: { success?: string; error?: string } }>>();
     const safeParameters = Array.isArray(parameters) 
         ? parameters 
         : (parameters && typeof parameters === 'object' ? Object.values(parameters as Record<string, Parameter>) : []);
@@ -186,6 +188,21 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
         router.post(route('parameters.value.toggle', valueId), {}, { preserveScroll: true });
     };
 
+    const updateOptionColor = (val: ParameterValue, colorKey: string) => {
+        if (val.color === colorKey) return;
+
+        router.put(route('parameters.value.update', val.id), {
+            value: val.value,
+            color: colorKey,
+        }, { preserveScroll: true });
+    };
+
+    const deleteParameter = (paramId: number, paramName: string) => {
+        if (confirm(`Delete parameter "${paramName}" and all its options permanently?`)) {
+            router.delete(route('parameters.destroy', paramId), { preserveScroll: true });
+        }
+    };
+
     const deleteParameterOption = (valueId: number) => {
         if (confirm('Delete this option permanently?')) {
             router.delete(route('parameters.value.destroy', valueId), { preserveScroll: true });
@@ -234,6 +251,17 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                         <AddParameterForm existingNames={safeParameters.map(p => p.name)} />
                     )}
 
+                    {props.flash?.success && (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-4 py-3 text-xs font-semibold">
+                            {props.flash.success}
+                        </div>
+                    )}
+                    {props.flash?.error && (
+                        <div className="rounded-xl border border-destructive/30 bg-destructive/10 text-destructive px-4 py-3 text-xs font-semibold">
+                            {props.flash.error}
+                        </div>
+                    )}
+
                     {safeParameters.length === 0 ? (
                         <div className="apple-card p-12 text-center text-muted-foreground space-y-4">
                             <Sliders className="h-8 w-8 mx-auto text-muted-foreground/50" />
@@ -258,10 +286,17 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                                                 <h4 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
                                                     <Tag className="h-4 w-4 text-primary" />
                                                     {param.name}
+                                                    <span className="rounded-lg bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary normal-case">
+                                                        {param.category}
+                                                    </span>
                                                 </h4>
-                                                <span className="rounded-lg bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-                                                    {param.category}
-                                                </span>
+                                                <button
+                                                    onClick={() => deleteParameter(param.id, param.name)}
+                                                    className="p-1 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition"
+                                                    title="Delete this parameter"
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </button>
                                             </div>
                                             <p className="text2 mb-4">
                                                 Preset values for {param.name.toLowerCase()}.
@@ -343,6 +378,22 @@ export default function Parameters({ parameters = [] }: ParametersProps) {
                                                             <div className="flex items-center gap-2">
                                                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold border ${badgeClass} ${!val.is_active ? 'opacity-40 line-through' : ''}`}>
                                                                     {val.value}
+                                                                </span>
+                                                                <span className="h-4 w-px bg-border/60 shrink-0" />
+                                                                <span className="flex items-center gap-1">
+                                                                    {COLOR_OPTIONS.map((c) => (
+                                                                        <button
+                                                                            key={c.key}
+                                                                            type="button"
+                                                                            onClick={() => updateOptionColor(val, c.key)}
+                                                                            title={`Set color: ${c.label}`}
+                                                                            className={`h-3.5 w-3.5 rounded-full ${c.bgClass} transition-transform shrink-0 ${
+                                                                                val.color === c.key
+                                                                                    ? 'ring-2 ring-primary ring-offset-1 scale-110'
+                                                                                    : 'opacity-60 hover:opacity-100'
+                                                                            }`}
+                                                                        />
+                                                                    ))}
                                                                 </span>
                                                             </div>
 
