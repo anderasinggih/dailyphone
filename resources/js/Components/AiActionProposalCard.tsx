@@ -196,6 +196,8 @@ export default function AiActionProposalCard({
                 return <Smartphone className="h-4 w-4 text-blue-500" />;
             case 'add_stock':
                 return <PackagePlus className="h-4 w-4 text-primary" />;
+            case 'add_bulk_stock':
+                return <PackagePlus className="h-4 w-4 text-emerald-500" />;
             case 'delete_stock':
                 return <Trash2 className="h-4 w-4 text-destructive" />;
             case 'create_money_note':
@@ -215,6 +217,8 @@ export default function AiActionProposalCard({
                 return 'Update Unit / Stok';
             case 'add_stock':
                 return 'Tambah Stok Baru (Add Stock)';
+            case 'add_bulk_stock':
+                return 'Tambah Stok Massal (Bulk Import)';
             case 'delete_stock':
                 return 'Hapus Unit (Delete Stock)';
             case 'create_money_note':
@@ -424,6 +428,42 @@ export default function AiActionProposalCard({
                                 </table>
                             </div>
                         )}
+                    </div>
+                )}
+
+                {/* Items Preview if add_bulk_stock */}
+                {proposal.action === 'add_bulk_stock' && Array.isArray(editablePayload.items) && editablePayload.items.length > 0 && (
+                    <div className="rounded-xl border border-border/60 bg-muted/20 overflow-hidden space-y-1">
+                        <div className="flex items-center justify-between px-3 py-2 bg-muted/40 text-[11px] font-semibold text-foreground">
+                            <span>Daftar Unit yang Akan Diimpor ({editablePayload.items.length} unit)</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">Bulk Queue</span>
+                        </div>
+                        <div className="overflow-x-auto max-h-56 scrollbar-thin">
+                            <table className="w-full text-left text-[11px]">
+                                <thead className="bg-muted/30 text-muted-foreground border-b border-border/30 sticky top-0 backdrop-blur-md">
+                                    <tr>
+                                        <th className="px-3 py-1.5 font-semibold">#</th>
+                                        <th className="px-3 py-1.5 font-semibold">Nama Unit</th>
+                                        <th className="px-3 py-1.5 font-semibold">Warna / Memori</th>
+                                        <th className="px-3 py-1.5 font-semibold">Lisensi</th>
+                                        <th className="px-3 py-1.5 font-semibold text-right">Harga Beli</th>
+                                        <th className="px-3 py-1.5 font-semibold text-right">Harga Jual</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border/20 font-mono text-[10.5px]">
+                                    {editablePayload.items.map((item: any, i: number) => (
+                                        <tr key={i} className="hover:bg-muted/30 transition">
+                                            <td className="px-3 py-1.5 text-muted-foreground">{i + 1}</td>
+                                            <td className="px-3 py-1.5 font-sans font-medium text-foreground">{item.name}</td>
+                                            <td className="px-3 py-1.5 text-muted-foreground">{[item.color, item.memory].filter(Boolean).join(' • ') || '-'}</td>
+                                            <td className="px-3 py-1.5 text-muted-foreground">{item.license || 'iBox'}</td>
+                                            <td className="px-3 py-1.5 text-right text-muted-foreground">Rp {Number(item.buy_price || 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-3 py-1.5 text-right font-semibold text-emerald-600 dark:text-emerald-400">Rp {Number(item.sell_price || 0).toLocaleString('id-ID')}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 )}
 

@@ -346,31 +346,12 @@ Part 2: A single structured code block starting with ```action_proposal and endi
   "summary": "1 sentence explanation of the action",
   "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",
   "changes": [
-    // CRITICAL: Must be COMPREHENSIVE and DETAILED! Never output only 2-3 fields.
-    // For add_stock, YOU MUST LIST ALL SPECIFICATION FIELDS in changes so the user can review:
-    // - Nama Unit
-    // - Brand / Merk
-    // - Kapasitas Memori (e.g. 64GB, 128GB, 256GB, 512GB)
-    // - Warna (e.g. Midnight, Blue, Black, White, Purple, Starlight)
-    // - Tipe Lisensi (e.g. iBox (Resmi), Bea Cukai (Sinyal On), Inter (Sinyal Off))
-    // - Kondisi / Tipe (e.g. Second Mulus, Baru (BNIB))
-    // - Nomor IMEI / Serial Number (e.g. 35xxxxxxxxxxxxx / DP-IP-xxxxxx)
-    // - Garansi Toko (e.g. 30 Hari)
-    // - Lokasi Cabang Toko (e.g. PERENG STORE)
-    // - Harga Beli / HPP (e.g. Rp 4.500.000)
-    // - Harga Jual Katalog (e.g. Rp 5.800.000)
-    // - Status Unit (e.g. Available)
-    { "field": "Nama Unit", "old": "-", "new": "iPhone 12 128GB" },
-    { "field": "Kapasitas Memori", "old": "-", "new": "128GB" },
-    { "field": "Warna", "old": "-", "new": "Blue" },
-    { "field": "Nomor IMEI", "old": "-", "new": "358729104829104" },
-    { "field": "Tipe Lisensi", "old": "-", "new": "iBox (Resmi)" },
-    { "field": "Kondisi", "old": "-", "new": "Second" },
+    // For single unit actions (add_stock, update_stock, sell_stock): list specific unit fields.
+    // For add_bulk_stock: provide high-level summary fields (Total Unit, Kategori, Lokasi Cabang, Status), while the full breakdown goes into payload.items!
+    { "field": "Jumlah Unit Ditambahkan", "old": "0 Unit", "new": "20 Unit" },
+    { "field": "Kategori Unit", "old": "-", "new": "iPhone & Android" },
     { "field": "Lokasi Toko", "old": "-", "new": "PERENG STORE" },
-    { "field": "Harga Beli (HPP)", "old": "-", "new": "Rp 4.500.000" },
-    { "field": "Harga Jual", "old": "-", "new": "Rp 5.800.000" },
-    { "field": "Masa Garansi", "old": "-", "new": "30 Hari" },
-    { "field": "Status Unit", "old": "-", "new": "Available" }
+    { "field": "Status Unit", "old": "-", "new": "Available (Ready)" }
   ],
   "payload": {
     // For add_stock:
@@ -417,8 +398,8 @@ PROMPT;
             ],
             'contents' => $contents,
             'generationConfig' => [
-                'temperature' => 0.3,
-                'maxOutputTokens' => 1400,
+                'temperature' => 0.2,
+                'maxOutputTokens' => 8192,
             ]
         ];
 

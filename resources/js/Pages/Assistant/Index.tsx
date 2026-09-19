@@ -731,15 +731,53 @@ export default function Assistant({
                                 let textContent = m.content;
                                 let proposalData: ActionProposalData | null = null;
 
-                                if (!isUser && m.content.includes('```action_proposal')) {
-                                    const match = m.content.match(/```action_proposal\s*([\s\S]*?)\s*```/);
-                                    if (match && match[1]) {
+                                if (!isUser && (m.content.includes('```action_proposal') || m.content.includes('```json\n{\n  "action":') || m.content.includes('```json\n{"action":'))) {
+                                    // Try matching properly closed codeblock first, fallback to unclosed codeblock if still streaming or cut off
+                                    let jsonStr: string | null = null;
+                                    let matchedBlock: string | null = null;
+
+                                    const closedMatch = m.content.match(/```(?:action_proposal|json)\s*([\s\S]*?)\s*```/);
+                                    if (closedMatch && closedMatch[1]) {
+                                        jsonStr = closedMatch[1];
+                                        matchedBlock = closedMatch[0];
+                                    } else {
+                                        const openMatch = m.content.match(/```(?:action_proposal|json)\s*(\{[\s\S]*)/);
+                                        if (openMatch && openMatch[1]) {
+                                            jsonStr = openMatch[1].trim();
+                                            matchedBlock = openMatch[0];
+                                        }
+                                    }
+
+                                    if (jsonStr) {
                                         try {
-                                            proposalData = JSON.parse(match[1]);
-                                            // Remove the raw proposal codeblock from the displayed markdown text
-                                            textContent = m.content.replace(/```action_proposal\s*[\s\S]*?\s*```/, '').trim();
+                                            const parsed = JSON.parse(jsonStr);
+                                            if (parsed && parsed.action) {
+                                                proposalData = parsed;
+                                                if (matchedBlock) {
+                                                    textContent = m.content.replace(matchedBlock, '').trim();
+                                                }
+                                            }
                                         } catch (e) {
-                                            console.error('Failed to parse action_proposal JSON:', e);
+                                            // If JSON was cut off at the end, attempt simple bracket repair
+                                            try {
+                                                let repaired = jsonStr.trim();
+                                                if (repaired.includes('"items": [') && !repaired.endsWith('}')) {
+                                                    // Close unclosed array and object if trailing
+                                                    const lastBrace = repaired.lastIndexOf('}');
+                                                    if (lastBrace > -1) {
+                                                        repaired = repaired.substring(0, lastBrace + 1) + '\n  ]\n}';
+                                                        const recovered = JSON.parse(repaired);
+                                                        if (recovered && recovered.action) {
+                                                            proposalData = recovered;
+                                                            if (matchedBlock) {
+                                                                textContent = m.content.replace(matchedBlock, '').trim();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } catch {
+                                                console.error('Failed to parse action_proposal JSON:', e);
+                                            }
                                         }
                                     }
                                 }
