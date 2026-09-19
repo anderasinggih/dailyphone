@@ -74,15 +74,151 @@ function nodeWidth(n: MindMapNode | undefined): number {
     return Math.min(152, Math.max(104, len * 6.6 + 48));
 }
 
+// Seeded PRNG (mulberry32): every "rearrange" draws a fresh pose that stays
+// fully deterministic, so identical seeds always render identical brains.
+function mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+        a |= 0;
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Force-directed relaxation shaped like a real neural web: every neuron
+// repels every other, wired pairs attract along their synapses, and a soft
+// gravity keeps the lobe cohesive. Random-but-structured — the tangled,
+// organic look of brain tissue instead of a rigid vertical tree.
+function forceLayout(
+    ids: number[],
+    edges: Array<[number, number]>,
+    seed: number,
+): Record<number, Point> {
+    if (ids.length === 0) return {};
+    if (ids.length === 1) return { [ids[0]]: { x: 0, y: 0 } };
+
+    const rng = mulberry32((seed + ids.length * 104729) >>> 0);
+    const pos: Record<number, Point> = {};
+    const disp: Record<number, Point> = {};
+    const radius = 120 + ids.length * 2.2;
+
+    ids.forEach(id => {
+        const angle = rng() * Math.PI * 2;
+        const r = Math.sqrt(rng()) * radius;
+        pos[id] = { x: Math.cos(angle) * r, y: Math.sin(angle) * r };
+        disp[id] = { x: 0, y: 0 };
+    });
+
+    const k = 44 + Math.sqrt(ids.length) * 2.2;
+    const iterations = Math.max(14, Math.min(70, Math.round(76 - ids.length * 0.12)));
+    let temp = 16;
+
+    for (let iter = 0; iter < iterations; iter++) {
+        // Repulsion — every neuron pushes every other neuron apart.
+        for (let i = 0; i < ids.length; i++) {
+            const a = ids[i];
+            const A = pos[a];
+            for (let j = i + 1; j < ids.length; j++) {
+                const b = ids[j];
+                const B = pos[b];
+                let dx = A.x - B.x;
+                let dy = A.y - B.y;
+                let d2 = dx * dx + dy * dy;
+                if (d2 < 0.01) {
+                    dx = (rng() - 0.5) * 0.2;
+                    dy = (rng() - 0.5) * 0.2;
+                    d2 = dx * dx + dy * dy;
+                }
+                const d = Math.sqrt(d2);
+                const f = (k * k) / d;
+                const fx = (dx / d) * f;
+                const fy = (dy / d) * f;
+                disp[a].x += fx;
+                disp[a].y += fy;
+                disp[b].x -= fx;
+                disp[b].y -= fy;
+            }
+        }
+
+        // Attraction — every synapse pulls its two neurons together.
+        for (const [a, b] of edges) {
+            const A = pos[a];
+            const B = pos[b];
+            if (!A || !B) continue;
+            const dx = B.x - A.x;
+            const dy = B.y - A.y;
+            const d = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
+            const f = (d * d) / k;
+            const fx = (dx / d) * f;
+            const fy = (dy / d) * f;
+            disp[a].x += fx;
+            disp[a].y += fy;
+            disp[b].x -= fx;
+            disp[b].y -= fy;
+        }
+
+        // Gravity — a soft hook to the lobe centroid keeps everything cohesive
+        // instead of drifting into a shapeless cloud.
+        let cx = 0;
+        let cy = 0;
+        ids.forEach(id => {
+            cx += pos[id].x;
+            cy += pos[id].y;
+        });
+        cx /= ids.length;
+        cy /= ids.length;
+        ids.forEach(id => {
+            disp[id].x += (cx - pos[id].x) * 0.06;
+            disp[id].y += (cy - pos[id].y) * 0.06;
+        });
+
+        // Integrate, clamped by the cooling temperature, then reset forces.
+        ids.forEach(id => {
+            const d = disp[id];
+            const len = Math.sqrt(d.x * d.x + d.y * d.y) || 0.001;
+            const lim = Math.min(len, temp);
+            pos[id].x += (d.x / len) * lim;
+            pos[id].y += (d.y / len) * lim;
+            d.x = 0;
+            d.y = 0;
+        });
+        temp *= 0.9;
+    }
+
+    // Uniformly rescale the finished lobe into a bounded circle so every
+    // island reads as balanced and organic — no direction ever dominates, so
+    // nothing stretches into a tall, skinny column.
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    ids.forEach(id => {
+        minX = Math.min(minX, pos[id].x);
+        maxX = Math.max(maxX, pos[id].x);
+        minY = Math.min(minY, pos[id].y);
+        maxY = Math.max(maxY, pos[id].y);
+    });
+    const w = Math.max(maxX - minX, 1);
+    const h = Math.max(maxY - minY, 1);
+    const target = 120 + Math.sqrt(ids.length) * 15;
+    const scale = target / Math.max(w / 2, h / 2, 1);
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+    ids.forEach(id => {
+        pos[id].x = (pos[id].x - midX) * scale;
+        pos[id].y = (pos[id].y - midY) * scale;
+    });
+
+    return pos;
+}
+
 /* ─────────────────────────────────────────────────────────────
-   Structured tree layout: each connected component becomes a
-   tidy dendrogram — the busiest node is the root, related nodes
-   branch out level by level to the right, and siblings stack
-   cleanly one below the other. This reads like an organized
-   knowledge map instead of a circular galaxy, with generous
-   spacing and zero overlaps.
-   $seed perturbs a tiny deterministic jitter so a "rearrange"
-   refreshes the pose without ever breaking the structure.
+   Organic brain-lobe layout: every connected component is pushed
+   through a seeded force simulation (above) into a tangled, dense
+   "neural web" blob — random but structured, centered, overlap-free.
+   Components pack left→right into rows so the whole canvas reads as
+   one sprawling, balanced neural network instead of a vertical list.
+   $seed reseeds the (deterministic) scatter + forces, so a
+   "rearrange" always yields a brand-new, plausible brain pose.
    ───────────────────────────────────────────────────────────── */
 function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Record<number, Point> {
     const n = nodes.length;
@@ -90,7 +226,6 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
     if (n === 0) return result;
 
     const nodeById = new Map(nodes.map(nd => [nd.id, nd]));
-    const jitter = (id: number) => hash1(id + seed * 7919) - 0.5;
 
     const adj: Record<number, number[]> = {};
     nodes.forEach(nd => (adj[nd.id] = []));
@@ -122,82 +257,43 @@ function computeLayout(nodes: MindMapNode[], links: MindMapLink[], seed = 0): Re
         comps.push(comp);
     });
 
-    // Tight, cozy spacing so the brain reads as one whole organism — never so
-    // far apart that related neurons drift out of the composition. ROW_H stays
-    // comfortably above NODE_H (44px): the dendrogram can place two same-depth
-    // nodes half a slot apart, and resolveOverlaps() below guards the rare
-    // parent/child collision at this density anyway.
-    const COL_W = 176; // horizontal gap between depth columns
-    const ROW_H = 84; // vertical gap between sibling slots
-    const COMP_GAP = 72; // padding around each component's bounding box
+    // Cozy gaps so the lobes stay close enough to read as ONE brain.
+    const COMP_GAP = 56;
 
-    // Dendrogram of one component: root on the left, generations grow right.
-    const layoutComponent = (ids: number[]) => {
-        let hub = ids[0];
-        ids.forEach(id => {
-            if ((adj[id] || []).length > (adj[hub] || []).length) hub = id;
-        });
-
-        // BFS tree from the hub: depth, parent and ordered children (busiest
-        // neighbours first so the most connected concepts sit closest to the top).
-        const depth: Record<number, number> = { [hub]: 0 };
-        const children: Record<number, number[]> = {};
-        const queue = [hub];
-        while (queue.length) {
-            const cur = queue.shift()!;
-            const neighbours = [...(adj[cur] || [])].sort((a, b) =>
-                (adj[b]?.length || 0) - (adj[a]?.length || 0)
-            );
-            for (const next of neighbours) {
-                if (depth[next] === undefined) {
-                    depth[next] = (depth[cur] ?? 0) + 1;
-                    (children[cur] ||= []).push(next);
-                    queue.push(next);
-                }
-            }
+    // Unique undirected edges shared by every lobe's force pass.
+    const edgeSet = new Set<string>();
+    links.forEach(l => {
+        if (adj[l.source] && adj[l.target]) {
+            const key = l.source < l.target ? `${l.source}|${l.target}` : `${l.target}|${l.source}`;
+            edgeSet.add(key);
         }
+    });
+    const edges: Array<[number, number]> = [];
+    edgeSet.forEach(key => {
+        const [a, b] = key.split('|').map(Number);
+        edges.push([a, b]);
+    });
 
-        // Post-order slot assignment: leaves take sequential rows, internal
-        // nodes sit centered between their children so branches stay tidy and
-        // never collide with a sibling subtree.
-        const slot: Record<number, number> = {};
-        let cursor = 0;
-        const assignSlots = (id: number): number[] => {
-            const kids = children[id] || [];
-            if (kids.length === 0) {
-                const s = cursor;
-                cursor += 1;
-                slot[id] = s;
-                return [s];
-            }
-            const spans: number[] = [];
-            kids.forEach(k => spans.push(...assignSlots(k)));
-            slot[id] = (spans[0] + spans[spans.length - 1]) / 2;
-            return spans;
-        };
-        assignSlots(hub);
+    // One organic "brain lobe": the component is force-relaxed into a tangled,
+    // balanced blob by forceLayout(), which already rescales it into a bounded
+    // circle. A final seeded wobble here (busy hubs breathe a little more) makes
+    // each island look grown — organic, never geometric.
+    const layoutComponent = (ids: number[]) => {
+        const local = forceLayout(ids, edges, seed);
 
-        let minSlot = Infinity, maxSlot = -Infinity, maxDepth = 0;
         ids.forEach(id => {
-            minSlot = Math.min(minSlot, slot[id]);
-            maxSlot = Math.max(maxSlot, slot[id]);
-            maxDepth = Math.max(maxDepth, depth[id] ?? 0);
+            const spread = 9 + Math.min(9, (adj[id]?.length || 0) * 1.4);
+            local[id].x += (hash1(id + seed * 7919) - 0.5) * spread;
+            local[id].y += (hash1(id + seed * 9173) - 0.5) * spread;
         });
-        const midSlot = (minSlot + maxSlot) / 2;
 
-        const local: Record<number, Point> = {};
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         ids.forEach(id => {
-            const jx = jitter(id) * 10;
-            const jy = jitter(id + 3) * 6;
-            const x = (depth[id] ?? 0) * COL_W + jx;
-            const y = ((slot[id] ?? 0) - midSlot) * ROW_H + jy;
-            local[id] = { x, y };
             const w = nodeWidth(nodeById.get(id));
-            minX = Math.min(minX, x - w / 2);
-            maxX = Math.max(maxX, x + w / 2);
-            minY = Math.min(minY, y - NODE_H / 2);
-            maxY = Math.max(maxY, y + NODE_H / 2);
+            minX = Math.min(minX, local[id].x - w / 2);
+            maxX = Math.max(maxX, local[id].x + w / 2);
+            minY = Math.min(minY, local[id].y - NODE_H / 2);
+            maxY = Math.max(maxY, local[id].y + NODE_H / 2);
         });
 
         return {
