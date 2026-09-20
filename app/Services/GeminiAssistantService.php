@@ -232,6 +232,51 @@ class GeminiAssistantService
     }
 
     /**
+     * Decide whether a message needs live store function calling (the get_stock
+     * / get_sales_today / get_aging_stock / get_customer read tools and the
+     * submit_action_proposal mutation tool). Every tool turn costs an extra
+     * Gemini round-trip, so it is only armed when the query actually targets
+     * live store rows or a store data mutation. Greetings, general knowledge,
+     * marketing copy and chit-chat skip the tool declarations entirely — the
+     * full store snapshot (stock catalog sample + customer directory + sales
+     * digest) is pasted into the prompt instead, so the common case stays a
+     * single fast round-trip.
+     */
+    protected function wantsLiveTools(string $query): bool
+    {
+        $q = mb_strtolower(trim($query));
+        if ($q === '' || $q === ' ' || $q === '...') {
+            return false;
+        }
+
+        $liveIntents = [
+            // Store object nouns — anything that touches live rows triggers the
+            // tools so data reads AND data mutations are never starved of the
+            // function-calling channel (catch the mutation even when the verb
+            // is ambiguous: "catet", "jadiin", "beliin", "koreksi", ...).
+            '/\b(?:stok|stock|unit|ready|available|in stock|tersedia|inventori|inventory|gudang|aging|dead stock|stok macet|produk|barang|imei|serial|garansi|warranty)\b/',
+            '/\b(?:harga|price|jual|laku|terjual|sold|omzet|sales|penjualan|transaksi|invoice|profit|laba|kas|pemasukan|pengeluaran|expense|income|uang|keuangan)\b/',
+            '/\b(?:pelanggan|customer|pembeli|buyer|member|langganan|konsumen)\b/',
+            '/\b(?:transfer|antarcabang|cabang|store|toko|trash|sampah|void|batal|audit|hilang|rusak|klaim|distributor|supplier)\b/',
+            // Action verbs — explicit store mutations & recordings (kept only
+            // for unambiguous store actions; generic "buatkan" is intentionally
+            // NOT here so marketing/writing requests stay on the fast single
+            // round-trip and never arm the tool loop).
+            '/\b(?:catat|catet|tambah|input|add\b|ubah|update|edit|adjust|koreksi|revisi|hapus|delete|remove|jualin|jualkan|jadikan?\b|register|simpan|mark\b|bayar|refund|kembalikan|restore|pulihkan|kosongkan|bersihkan|hitung|cek)\b/',
+            // Requested proposal card.
+            '/\b(?:proposal|action\b|aksi)\b/',
+        ];
+
+        foreach ($liveIntents as $pattern) {
+            if ((bool) preg_match($pattern, $q)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Persist a base64 inline image returned by an image-capable model into the
      * ai_generated store and return its download metadata (or null on failure).
      */
@@ -448,6 +493,8 @@ SYSTEM CONTEXT & LIVE STORE DATA:
 - Total Active Branches: {$stores->count()}
 {$storeListStr}
 
+LIVE DATA FIRST (CRITICAL): Answer directly from the live numbers ALREADY listed in this block (available count, today's sales count/volume, aging count, void/transfer status, customer count). Only call a read tool (get_stock / get_sales_today / get_aging_stock / get_customer) when the user asks for SPECIFIC rows / detail that is NOT present here (e.g. a particular unit's price, a full aging list, a payment-method breakdown, or a customer lookup). Do not pay a second round-trip for data you already have.
+
 LIVE INVENTORY HIGHLIGHTS:
 - Total Units Available: {$availableCount}
 - (Use the get_stock tool to search specific units, prices, IMEI/serial.)
@@ -459,12 +506,12 @@ TODAYS OPERATIONS:
 - Today's Completed Sales Count: {$salesTodayCount}
 - Today's Sales Volume: Rp {$formattedSales}
 - Total Registered Customers: {$customerCount}
-- (Use get_sales_today / get_customer for method-level or per-customer detail.)
+- (Use get_sales_today only for the payment-method breakdown; get_customer only for a name/phone lookup.)
 
 OPERATIONAL AUDIT DATA:
 - Aging/Dead Stock (>45 days): {$agingCount} units
 {$agingSample}
-- (Use get_aging_stock for the full aging list.)
+- (Use get_aging_stock for the full aging list only when the user wants the complete breakdown.)
 - Void Transactions (Last 7 Days):
 {$voidAuditStr}
 - Pending Inter-Store Transfers: {$pendingTransferCount} pending
@@ -610,14 +657,20 @@ CONTEXT;
         // skip Google Search entirely, so most replies are a single fast model
         // round-trip instead of a web-search + multi-tool detour.
         $groundingWanted = $groundingRequested && $this->wantsWebGrounding($queryText);
-        $comboWanted = $toolsEnabled
+        // Function calling is gated the same way: tool declarations load only
+        // when the message actually targets live store rows or a store mutation
+        // (see wantsLiveTools). Chit-chat / general questions skip the tool
+        // loop entirely and fall back to the full store snapshot in context, so
+        // they resolve in ONE fast round-trip instead of a tool-turn detour.
+        $liveToolsWanted = $toolsEnabled && $this->wantsLiveTools($queryText);
+        $comboWanted = $liveToolsWanted
             && $groundingWanted
             && (bool) ($settings?->ai_tool_combo ?? true);
         $comboSupported = $comboWanted && $this->isGemini3Model($useModel);
 
         $toolService = app(AiToolService::class);
         $tools = [];
-        if ($toolsEnabled) {
+        if ($liveToolsWanted) {
             $tools = $toolService->declarations();
         }
         if ($groundingWanted && ($tools === [] || $comboSupported)) {
@@ -639,7 +692,7 @@ CONTEXT;
 
         $userRole = $user ? $user->role : 'user';
         $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
-        $storeContext = $this->generateStoreContext($user, $toolsEnabled);
+        $storeContext = $this->generateStoreContext($user, $liveToolsWanted);
         $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : '';
         $sessionRulesPrompt = ! empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n".$sessionRules."\n" : '';
 
@@ -2497,19 +2550,34 @@ SYSTEM;
             return '- (empty - no training memories yet)';
         }
 
-        $linkRows = AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'relation', 'label', 'weight', 'reason']);
-
-        $synapses = [];
-        foreach ($linkRows as $l) {
-            $rel = $l->relation ?: ($l->label ?: 'related');
-            $synapses[$l->note_id][] = [
-                'id' => (int) $l->linked_note_id,
-                'rel' => (string) $rel,
-                'w' => $l->weight !== null ? (float) $l->weight : 0.0,
-            ];
-        }
-
         $selectedIds = $notes->map(fn ($n) => (int) $n->id)->filter()->flip();
+
+        // Synapse map is built ONLY for the ids that actually matter (the
+        // selected seeds + their first-hop candidates) instead of dumping every
+        // link in the graph. At thousands of nodes a full `AiTrainingNoteLink::get()`
+        // grows linearly with the graph on every request; restricting the fetch
+        // to the recall set keeps the request path bounded no matter how large
+        // the neuron network becomes.
+        $loadSynapses = function (array $sourceIds): array {
+            $out = [];
+            if ($sourceIds === []) {
+                return $out;
+            }
+            $rows = AiTrainingNoteLink::whereIn('note_id', $sourceIds)
+                ->get(['note_id', 'linked_note_id', 'relation', 'label', 'weight', 'reason']);
+            foreach ($rows as $l) {
+                $rel = $l->relation ?: ($l->label ?: 'related');
+                $out[(int) $l->note_id][] = [
+                    'id' => (int) $l->linked_note_id,
+                    'rel' => (string) $rel,
+                    'w' => $l->weight !== null ? (float) $l->weight : 0.0,
+                ];
+            }
+
+            return $out;
+        };
+
+        $synapses = $loadSynapses($selectedIds->keys()->all());
 
         $main = $notes->map(function ($n) use ($synapses) {
             $tag = self::kindTag($n->kind);
@@ -2621,6 +2689,10 @@ SYSTEM;
             ->filter(fn ($c) => $c['activation'] > 0)
             ->sortByDesc('activation')
             ->take(self::SECOND_HOP_SOURCES);
+
+        // Hop 2 needs the outgoing edges of the first-hop favourites: fetch
+        // just those, merging into the sparse synapse map built above.
+        $synapses = $synapses + $loadSynapses($hopOneRanked->keys()->all());
 
         foreach ($hopOneRanked as $c) {
             foreach (array_slice($strongEdges($synapses[$c['id']] ?? []), 0, self::SECOND_HOP_PER_SOURCE) as $l) {

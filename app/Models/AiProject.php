@@ -6,15 +6,12 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class AiSession extends Model
+class AiProject extends Model
 {
     protected $fillable = [
         'user_id',
-        'project_id',
         'title',
-        'custom_rules',
-        'ai_summary',
-        'ai_model',
+        'description',
     ];
 
     public function user(): BelongsTo
@@ -22,13 +19,13 @@ class AiSession extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function project(): BelongsTo
+    public function sessions(): HasMany
     {
-        return $this->belongsTo(AiProject::class, 'project_id');
+        return $this->hasMany(AiSession::class, 'project_id')->orderBy('updated_at', 'desc');
     }
 
-    public function chats(): HasMany
+    public function files(): HasMany
     {
-        return $this->hasMany(AiChat::class, 'session_id');
+        return $this->hasMany(AiProjectFile::class, 'project_id');
     }
 }

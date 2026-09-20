@@ -18,6 +18,7 @@ import {
     ChevronDown,
     ChevronUp,
     ChevronLeft,
+    ChevronRight,
     Copy,
     Check,
     CheckCircle2,
@@ -33,12 +34,20 @@ import {
     FileText,
     FileArchive,
     FileSpreadsheet,
+    FileCode2,
+    File as FileIcon,
+    Folder,
+    FolderOpen,
+    FolderPlus,
+    Paperclip,
+    Download,
     Upload
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData } from '@/Components/AiActionProposalCard';
 import NeuronFiringMap from '@/Components/NeuronFiringMap';
+import FileViewerModal from '@/Components/Assistant/FileViewerModal';
 import { consumeNdjson } from '@/lib/ndjson';
 
 type AccessedNeuron = import('@/lib/ndjson').StreamNeuron;
@@ -64,11 +73,41 @@ interface UploadedAttachment {
 
 interface Session {
     id: number;
+    project_id?: number | null;
     title: string;
     custom_rules?: string | null;
     ai_model?: string | null;
     created_at: string;
     updated_at: string;
+}
+
+interface ProjectSession {
+    id: number;
+    title: string;
+    created_at: string;
+    updated_at: string;
+}
+
+interface ProjectFileNode {
+    id: number;
+    name: string;
+    is_folder: boolean;
+    kind: string;
+    mime_type?: string | null;
+    size_bytes?: number;
+    created_at?: string;
+    updated_at?: string;
+    children: ProjectFileNode[];
+}
+
+interface AiProject {
+    id: number;
+    title: string;
+    description?: string | null;
+    created_at: string;
+    updated_at: string;
+    sessions: ProjectSession[];
+    files: ProjectFileNode[];
 }
 
 const AVAILABLE_MODELS = [
@@ -91,6 +130,7 @@ interface AssistantProps {
     };
     userRole: string;
     chatOnly?: boolean;
+    projects?: AiProject[];
     sessions: Session[];
     activeSessionId: number | null;
     initialMessages: Message[];
@@ -123,6 +163,7 @@ export default function Assistant({
     aiConfig,
     userRole,
     chatOnly = false,
+    projects = [],
     sessions = [],
     activeSessionId = null,
     initialMessages = []
@@ -158,6 +199,27 @@ export default function Assistant({
     const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // Projects layer: each project groups sessions and owns a shared file tree.
+    const [projectList, setProjectList] = useState<AiProject[]>(projects);
+    const [expandedProjects, setExpandedProjects] = useState<Set<number>>(() => {
+        const activeProject = projects.find(p => p.sessions.some(s => s.id === activeSessionId));
+        return new Set(activeProject ? [activeProject.id] : []);
+    });
+    // When set, the sidebar swaps from the project/session tree to that
+    // project's file explorer.
+    const [filePanelProjectId, setFilePanelProjectId] = useState<number | null>(null);
+    const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
+    const [editingProjectTitle, setEditingProjectTitle] = useState('');
+    const [openFileFolders, setOpenFileFolders] = useState<Set<number>>(new Set());
+    const [isProjectUploading, setIsProjectUploading] = useState(false);
+    const projectFileInputRef = useRef<HTMLInputElement>(null);
+    const fileUploadTargetRef = useRef<number | null>(null);
+    // Project files referenced into the current message (@-mention / picker).
+    const [projectFileRefs, setProjectFileRefs] = useState<ProjectFileNode[]>([]);
+    const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
+    const [mentionFilter, setMentionFilter] = useState('');
+    // Built-in file viewer (code / image / pdf preview).
+    const [viewerFile, setViewerFile] = useState<{ projectId: number; file: ProjectFileNode } | null>(null);
     // Drag & drop file attach state for the chat panel.
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
@@ -334,29 +396,36 @@ function playCompletionChime(soundEnabled: boolean): void {
     // Handle selecting a different session
     const selectSession = (sessionId: number) => {
         setIsSidebarOpen(false);
+        setFilePanelProjectId(null);
+        resetComposerRefs();
         router.get(route('assistant.index'), { session_id: sessionId }, {
             preserveState: false,
             preserveScroll: true,
         });
     };
 
-    // Handle creating a new chat session
-    const createNewChat = async () => {
+    // Handle creating a new chat session (optionally inside a project)
+    const createNewChat = async (projectId?: number | null) => {
         setIsSidebarOpen(false);
+        const targetProject = projectId === undefined ? currentProjectId : projectId;
         try {
             const res = await fetch(route('assistant.session.create'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
-                }
+                },
+                body: JSON.stringify({ project_id: targetProject ?? null }),
             });
             const data = await res.json();
             if (data.success && data.session) {
-                setSessionList(prev => [data.session, ...prev]);
-                setCurrentSessionId(data.session.id);
-                syncUrlSessionId(data.session.id);
+                const next = data.session as Session;
+                setSessionList(prev => [next, ...prev]);
+                addSessionToProject(next);
+                setCurrentSessionId(next.id);
+                syncUrlSessionId(next.id);
                 setMessages([welcomeMessage]);
+                resetComposerRefs();
             }
         } catch (e) {
             // fallback: reset state locally
@@ -379,7 +448,10 @@ function playCompletionChime(soundEnabled: boolean): void {
                 }
             });
 
+            const removed = sessionList.find(s => s.id === sessionId);
             setSessionList(prev => prev.filter(s => s.id !== sessionId));
+            removeSessionFromProject(sessionId, removed?.project_id);
+            resetComposerRefs();
 
             if (currentSessionId === sessionId) {
                 const remaining = sessionList.filter(s => s.id !== sessionId);
@@ -423,9 +495,8 @@ function playCompletionChime(soundEnabled: boolean): void {
             });
             const data = await res.json();
             if (data.success) {
-                setSessionList(prev =>
-                    prev.map(s => (s.id === sessionId ? { ...s, title: trimmedTitle } : s))
-                );
+                const renaming = sessionList.find(s => s.id === sessionId);
+                syncProjectSessionTitle(sessionId, trimmedTitle, renaming?.project_id);
             }
         } catch (err: any) {
             console.error('Failed to rename session:', err);
@@ -466,7 +537,10 @@ function playCompletionChime(soundEnabled: boolean): void {
     const handleSendMessage = async (textToSend?: string) => {
         const uploaded = attachments;
         const rawQuery = (textToSend || inputQuery).trim();
-        if ((!rawQuery && uploaded.length === 0) || isLoading || isUploading) return;
+        if (
+            (!rawQuery && uploaded.length === 0 && projectFileRefs.length === 0) ||
+            isLoading || isUploading
+        ) return;
 
         let query = rawQuery;
 
@@ -476,11 +550,24 @@ function playCompletionChime(soundEnabled: boolean): void {
             query = `[Membalas pesan: "${snippet}"]\n${rawQuery}`;
         }
 
+        // Mentioned project files: explicit picker chips plus any "@filename"
+        // token typed inline. Both resolve to the same server-side context.
+        const allProjectFiles = currentProject ? flatProjectFiles(currentProject.files) : [];
+        const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const mentionedFiles = allProjectFiles.filter(f => {
+            const pattern = new RegExp(`(@${escapeRegExp(f.name)})(?:$|[^A-Za-z0-9_.])`);
+            return pattern.test(rawQuery);
+        });
+        const referencedProjectFiles = Array.from(new Set([
+            ...projectFileRefs.map(f => f.id),
+            ...mentionedFiles.map(f => f.id),
+        ]));
+
         const tempId = 'temp-' + Date.now();
         const userMsg: Message = {
             id: tempId,
             role: 'user',
-            content: rawQuery || '📎 ' + uploaded.map(a => a.original_name).join(', '),
+            content: rawQuery || '📎 ' + [...uploaded.map(a => a.original_name), ...projectFileRefs.map(f => f.name)].join(', '),
             replyToId: replyingTo?.id ?? null,
             replyToRole: replyingTo?.role ?? null,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -492,6 +579,7 @@ function playCompletionChime(soundEnabled: boolean): void {
         setReplyingTo(null);
         setIsLoading(true);
         setAttachments([]);
+        resetComposerRefs();
         setAccessedNetwork({ nodes: [], edges: [] });
         setDraftStream('');
         setStreamCollapsed(false);
@@ -509,10 +597,12 @@ function playCompletionChime(soundEnabled: boolean): void {
             setMessages(prev => [...prev, assistantMsg]);
             playCompletionChime(soundEnabled);
 
-            // Update session list with new session or updated title
+            // Update session list with new session or updated title (and keep
+            // the project tree mirrored for sessions that live in a project)
             if (data.session_id) {
                 setCurrentSessionId(data.session_id);
                 syncUrlSessionId(data.session_id);
+                const existingSess = sessionList.find(s => s.id === data.session_id);
                 setSessionList(prev => {
                     const exists = prev.find(s => s.id === data.session_id);
                     if (exists) {
@@ -520,12 +610,16 @@ function playCompletionChime(soundEnabled: boolean): void {
                     } else {
                         return [{
                             id: data.session_id,
+                            project_id: existingSess?.project_id ?? null,
                             title: data.session_title || query.substring(0, 80),
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString()
                         }, ...prev];
                     }
                 });
+                if (existingSess?.project_id) {
+                    syncProjectSessionTitle(data.session_id, data.session_title || existingSess.title, existingSess.project_id);
+                }
             }
         };
 
@@ -540,7 +634,9 @@ function playCompletionChime(soundEnabled: boolean): void {
                 body: JSON.stringify({
                     message: query,
                     session_id: currentSessionId,
+                    project_id: currentProjectId ?? undefined,
                     attachments: uploaded.map(a => a.id),
+                    project_file_ids: referencedProjectFiles.length > 0 ? referencedProjectFiles : undefined,
                     model: currentModel || aiConfig.model || undefined,
                 })
             });
@@ -609,6 +705,15 @@ function playCompletionChime(soundEnabled: boolean): void {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSendMessage();
+            return;
+        }
+        if (e.key === '@' && currentProject && mentionFiles.length > 0) {
+            setMentionMenuOpen(true);
+            setMentionFilter('');
+            return;
+        }
+        if (e.key === 'Escape' && mentionMenuOpen) {
+            setMentionMenuOpen(false);
         }
     };
 
@@ -688,6 +793,279 @@ function playCompletionChime(soundEnabled: boolean): void {
         setAttachments(prev => prev.filter(a => a.id !== id));
     };
 
+    // ===================== Projects & Project Files =====================
+
+    const currentProjectId = sessionList.find(s => s.id === currentSessionId)?.project_id ?? null;
+    const currentProject = projectList.find(p => p.id === currentProjectId) ?? null;
+    const orphanSessions = sessionList.filter(s => !s.project_id);
+
+    const flatProjectFiles = (nodes: ProjectFileNode[]): ProjectFileNode[] => {
+        const out: ProjectFileNode[] = [];
+        for (const n of nodes) {
+            if (n.is_folder) out.push(...flatProjectFiles(n.children || []));
+            else out.push(n);
+        }
+        return out;
+    };
+
+    const toggleProject = (projectId: number) => {
+        setExpandedProjects(prev => {
+            const next = new Set(prev);
+            if (next.has(projectId)) next.delete(projectId); else next.add(projectId);
+            return next;
+        });
+    };
+
+    const syncProjectSessionTitle = (sessionId: number, title: string, projectId?: number | null) => {
+        setSessionList(prev => prev.map(s => (s.id === sessionId ? { ...s, title } : s)));
+        if (projectId) {
+            setProjectList(prev => prev.map(p => p.id === projectId
+                ? { ...p, sessions: p.sessions.map(s => (s.id === sessionId ? { ...s, title } : s)) }
+                : p));
+        }
+    };
+
+    const addSessionToProject = (session: Session) => {
+        if (!session.project_id) return;
+        setProjectList(prev => prev.map(p => {
+            if (p.id !== session.project_id) return p;
+            const exists = p.sessions.some(s => s.id === session.id);
+            return {
+                ...p,
+                sessions: exists ? p.sessions.map(s => (s.id === session.id ? session : s)) : [session, ...p.sessions],
+            };
+        }));
+        setExpandedProjects(prev => new Set(prev).add(session.project_id!));
+    };
+
+    const removeSessionFromProject = (sessionId: number, projectId?: number | null) => {
+        if (!projectId) return;
+        setProjectList(prev => prev.map(p => p.id === projectId
+            ? { ...p, sessions: p.sessions.filter(s => s.id !== sessionId) }
+            : p));
+    };
+
+    const updateFileTree = (projectId: number, updater: (nodes: ProjectFileNode[]) => ProjectFileNode[]) => {
+        setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, files: updater(p.files) } : p)));
+    };
+
+    const insertFileNode = (nodes: ProjectFileNode[], parentId: number | null, node: ProjectFileNode): ProjectFileNode[] => {
+        if (parentId === null) return [node, ...nodes];
+        return nodes.map(n =>
+            n.is_folder && n.id === parentId
+                ? { ...n, children: insertFileNode(n.children || [], null, node) }
+                : n
+        );
+    };
+
+    const removeFileNode = (nodes: ProjectFileNode[], id: number): ProjectFileNode[] =>
+        nodes.filter(n => n.id !== id).map(n =>
+            n.is_folder ? { ...n, children: removeFileNode(n.children || [], id) } : n
+        );
+
+    const createNewProject = async () => {
+        setIsSidebarOpen(false);
+        const title = window.prompt('Project name:')?.trim();
+        if (!title) return;
+        try {
+            const res = await fetch(route('assistant.project.create'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken(),
+                },
+                body: JSON.stringify({ title }),
+            });
+            const data = await res.json();
+            if (data.success && data.project) {
+                const proj: AiProject = data.project;
+                setProjectList(prev => [proj, ...prev]);
+                setExpandedProjects(prev => new Set(prev).add(proj.id));
+                const first = proj.sessions[0];
+                if (first) {
+                    const nextSession: Session = { ...first, project_id: proj.id, custom_rules: null, ai_model: null };
+                    setSessionList(prev => [nextSession, ...prev]);
+                    setCurrentSessionId(first.id);
+                    syncUrlSessionId(first.id);
+                    setMessages([welcomeMessage]);
+                }
+            }
+        } catch (err: any) {
+            alert('Gagal membuat proyek: ' + (err?.message || 'unknown error'));
+        }
+    };
+
+    const startEditingProject = (project: AiProject, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setEditingProjectId(project.id);
+        setEditingProjectTitle(project.title || 'Project');
+    };
+
+    const saveRenameProject = async (projectId: number, e?: React.FormEvent | React.FocusEvent) => {
+        if (e) e.preventDefault();
+        const trimmed = editingProjectTitle.trim();
+        if (!trimmed) {
+            setEditingProjectId(null);
+            return;
+        }
+        try {
+            const res = await fetch(route('assistant.project.update', projectId), {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken(),
+                },
+                body: JSON.stringify({ title: trimmed }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, title: trimmed } : p)));
+            }
+        } catch (err: any) {
+            console.error('Failed to rename project:', err);
+        } finally {
+            setEditingProjectId(null);
+        }
+    };
+
+    const deleteProject = async (projectId: number, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!window.confirm('Delete this project and all its chats & files? This cannot be undone.')) return;
+        try {
+            await fetch(route('assistant.project.destroy', projectId), {
+                method: 'DELETE',
+                headers: { 'X-CSRF-TOKEN': csrfToken() },
+            });
+            const wasCurrent = currentProjectId === projectId;
+            setProjectList(prev => prev.filter(p => p.id !== projectId));
+            setSessionList(prev => prev.filter(s => s.project_id !== projectId));
+            if (wasCurrent) resetComposerRefs();
+            setFilePanelProjectId(prev => (prev === projectId ? null : prev));
+            setViewerFile(prev => (prev && prev.projectId === projectId ? null : prev));
+            if (wasCurrent) {
+                const remaining = sessionList.filter(s => s.project_id !== projectId);
+                if (remaining.length > 0) selectSession(remaining[0].id);
+                else {
+                    setCurrentSessionId(null);
+                    syncUrlSessionId(null);
+                    setMessages([welcomeMessage]);
+                }
+            }
+        } catch (err: any) {
+            alert('Gagal menghapus proyek: ' + (err?.message || 'unknown error'));
+        }
+    };
+
+    // Upload project files (max 10 MB each) into the file panel's project.
+    const uploadProjectFiles = async (projectId: number, files: File[], parentId: number | null) => {
+        if (files.length === 0) return;
+        setIsProjectUploading(true);
+        try {
+            for (const file of files) {
+                if (file.size > 10 * 1024 * 1024) {
+                    alert(`"${file.name}" is larger than the 10 MB per-file limit for project files.`);
+                    continue;
+                }
+                const formData = new FormData();
+                formData.append('file', file);
+                if (parentId) formData.append('parent_id', String(parentId));
+                const res = await fetch(route('assistant.project.files.upload', projectId), {
+                    method: 'POST',
+                    headers: { 'X-CSRF-TOKEN': csrfToken() },
+                    body: formData,
+                });
+                if (!res.ok) {
+                    const body = await res.json().catch(() => null);
+                    throw new Error(body?.message || `Upload failed (${res.status})`);
+                }
+                const data = await res.json();
+                if (data.success && data.file) {
+                    updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as ProjectFileNode));
+                }
+            }
+        } catch (err: any) {
+            alert('Gagal mengunggah file: ' + err.message);
+        } finally {
+            setIsProjectUploading(false);
+        }
+    };
+
+    const pickProjectFiles = (parentId: number | null) => {
+        fileUploadTargetRef.current = parentId;
+        projectFileInputRef.current?.click();
+    };
+
+    const handleProjectFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files || []);
+        e.target.value = '';
+        const parentId = fileUploadTargetRef.current;
+        fileUploadTargetRef.current = null;
+        if (files.length > 0 && filePanelProjectId) {
+            uploadProjectFiles(filePanelProjectId, files, parentId);
+        }
+    };
+
+    const createProjectFolder = async (projectId: number, parentId: number | null) => {
+        const name = window.prompt('Folder name:')?.trim();
+        if (!name) return;
+        try {
+            const res = await fetch(route('assistant.project.folders.store', projectId), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken(),
+                },
+                body: JSON.stringify({ name, parent_id: parentId ?? undefined }),
+            });
+            const data = await res.json();
+            if (data.success && data.file) {
+                updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as ProjectFileNode));
+                if (parentId) setOpenFileFolders(prev => new Set(prev).add(parentId));
+            }
+        } catch (err: any) {
+            alert('Gagal membuat folder: ' + (err?.message || 'unknown error'));
+        }
+    };
+
+    const deleteProjectFileEntry = async (projectId: number, entry: ProjectFileNode) => {
+        if (!window.confirm(`Delete "${entry.name}"${entry.is_folder ? ' and everything inside it' : ''}?`)) return;
+        try {
+            await fetch(route('assistant.project.files.destroy', [projectId, entry.id]), {
+                method: 'DELETE',
+                headers: { 'X-CSRF-TOKEN': csrfToken() },
+            });
+            updateFileTree(projectId, nodes => removeFileNode(nodes, entry.id));
+            setProjectFileRefs(prev => prev.filter(f => f.id !== entry.id));
+            setViewerFile(prev => (prev && prev.file.id === entry.id ? null : prev));
+        } catch (err: any) {
+            alert('Gagal menghapus: ' + (err?.message || 'unknown error'));
+        }
+    };
+
+    const toggleProjectFileRef = (file: ProjectFileNode) => {
+        setProjectFileRefs(prev =>
+            prev.some(f => f.id === file.id)
+                ? prev.filter(f => f.id !== file.id)
+                : [...prev, file]
+        );
+    };
+
+    const resetComposerRefs = () => {
+        setProjectFileRefs([]);
+        setMentionMenuOpen(false);
+        setMentionFilter('');
+    };
+
+    const fileIconFor = (kind: string) => {
+        const Ic = kind === 'image' ? ImageIcon
+            : kind === 'archive' ? FileArchive
+            : kind === 'spreadsheet' ? FileSpreadsheet
+            : kind === 'pdf' || kind === 'document' ? FileText
+            : FileCode2;
+        return Ic;
+    };
+
     const formatBytes = (bytes: number): string => {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -761,6 +1139,333 @@ function playCompletionChime(soundEnabled: boolean): void {
         setTimeout(() => setCopiedId(prev => (prev === id ? null : prev)), 1500);
     };
 
+    // ===================== Sidebar render helpers =====================
+
+    const renderSessionRow = (s: Session) => {
+        const isActive = s.id === currentSessionId;
+        const isEditingThis = editingSessionId === s.id;
+
+        return (
+            <div
+                key={s.id}
+                onClick={() => !isEditingThis && selectSession(s.id)}
+                className={`group flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
+                    isActive
+                        ? 'bg-primary/10 text-primary font-semibold'
+                        : 'text-foreground hover:bg-muted/60'
+                }`}
+            >
+                <div className="flex items-center gap-2 min-w-0 flex-1 mr-1">
+                    <MessageSquare className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-primary' : 'text-muted-foreground'}`} />
+                    {isEditingThis ? (
+                        <form
+                            onSubmit={(e) => saveRenameSession(s.id, e)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex-1 min-w-0"
+                        >
+                            <input
+                                type="text"
+                                value={editingSessionTitle}
+                                onChange={(e) => setEditingSessionTitle(e.target.value)}
+                                onBlur={() => saveRenameSession(s.id)}
+                                autoFocus
+                                className="w-full rounded-md border border-primary/50 bg-background px-1.5 py-0.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                        </form>
+                    ) : (
+                        <span className="truncate">{s.title || 'Conversation'}</span>
+                    )}
+                </div>
+
+                {!isEditingThis && (
+                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition">
+                        <button
+                            type="button"
+                            onClick={(e) => startEditingSession(s, e)}
+                            className="p-1 rounded-lg hover:bg-muted hover:text-foreground text-muted-foreground transition"
+                            title="Rename chat"
+                        >
+                            <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={(e) => deleteSession(s.id, e)}
+                            className="p-1 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition"
+                            title="Delete session"
+                        >
+                            <Trash2 className="h-3 w-3" />
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const toggleFileFolder = (folderId: number) => {
+        setOpenFileFolders(prev => {
+            const next = new Set(prev);
+            if (next.has(folderId)) next.delete(folderId); else next.add(folderId);
+            return next;
+        });
+    };
+
+    const renderFileTree = (nodes: ProjectFileNode[], depth: number) => {
+        if (!filePanelProjectId) return null;
+        const fileProjectId = filePanelProjectId;
+
+        return nodes.map(node => {
+            const pad = { paddingLeft: `${Math.min(8 + depth * 14, 44)}px` };
+            if (node.is_folder) {
+                const open = openFileFolders.has(node.id);
+                return (
+                    <div key={node.id}>
+                        <div
+                            className="group flex items-center gap-1.5 px-1.5 py-1.5 rounded-lg cursor-pointer transition hover:bg-muted/60"
+                            style={pad}
+                            onClick={() => toggleFileFolder(node.id)}
+                        >
+                            <ChevronRight className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
+                            {open
+                                ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                : <Folder className="h-3.5 w-3.5 shrink-0 text-primary" />}
+                            <span className="truncate flex-1 min-w-0 text-xs font-medium">{node.name}</span>
+                            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition">
+                                <button
+                                    type="button"
+                                    title="Upload into this folder"
+                                    onClick={(e) => { e.stopPropagation(); pickProjectFiles(node.id); }}
+                                    className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                >
+                                    <Upload className="h-3 w-3" />
+                                </button>
+                                <button
+                                    type="button"
+                                    title="New folder here"
+                                    onClick={(e) => { e.stopPropagation(); createProjectFolder(fileProjectId, node.id); }}
+                                    className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                >
+                                    <FolderPlus className="h-3 w-3" />
+                                </button>
+                                <button
+                                    type="button"
+                                    title="Delete folder"
+                                    onClick={(e) => { e.stopPropagation(); deleteProjectFileEntry(fileProjectId, node); }}
+                                    className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition"
+                                >
+                                    <Trash2 className="h-3 w-3" />
+                                </button>
+                            </div>
+                        </div>
+                        {open && node.children && node.children.length > 0 && renderFileTree(node.children, depth + 1)}
+                    </div>
+                );
+            }
+
+            const Ic = fileIconFor(node.kind);
+            return (
+                <div
+                    key={node.id}
+                    className="group flex items-center gap-1.5 px-1.5 py-1.5 rounded-lg cursor-pointer transition hover:bg-muted/60"
+                    style={pad}
+                    onClick={() => setViewerFile({ projectId: fileProjectId, file: node })}
+                    title={`${node.name} — click to preview`}
+                >
+                    <Ic className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate flex-1 min-w-0 text-xs">{node.name}</span>
+                    <span className="text-[9.5px] text-muted-foreground/70 shrink-0">{node.size_bytes ? formatBytes(node.size_bytes) : ''}</span>
+                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition">
+                        <a
+                            title="Download"
+                            href={route('assistant.project.files.download', [fileProjectId, node.id])}
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                        >
+                            <Download className="h-3 w-3" />
+                        </a>
+                        <button
+                            type="button"
+                            title="Delete file"
+                            onClick={(e) => { e.stopPropagation(); deleteProjectFileEntry(fileProjectId, node); }}
+                            className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition"
+                        >
+                            <Trash2 className="h-3 w-3" />
+                        </button>
+                    </div>
+                </div>
+            );
+        });
+    };
+
+    const renderFileExplorer = () => {
+        const proj = projectList.find(p => p.id === filePanelProjectId);
+        if (!proj) return null;
+        const totalFiles = flatProjectFiles(proj.files).length;
+
+        return (
+            <div className="space-y-2">
+                <div className="flex items-center justify-between px-1.5 pt-1">
+                    <button
+                        type="button"
+                        onClick={() => setFilePanelProjectId(null)}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                    >
+                        <ChevronLeft className="h-3 w-3" />
+                        Back to chats
+                    </button>
+                </div>
+
+                <div className="px-1.5">
+                    <div className="text-[10.5px] font-semibold text-primary truncate">{proj.title}</div>
+                    <div className="text-[10px] text-muted-foreground">
+                        {totalFiles} file{totalFiles !== 1 ? 's' : ''} in this project
+                    </div>
+                </div>
+
+                <div className="flex gap-1.5 px-1.5">
+                    <button
+                        type="button"
+                        onClick={() => pickProjectFiles(null)}
+                        disabled={isProjectUploading}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-border/50 bg-background/60 hover:bg-muted/80 px-2 py-1.5 text-[11px] font-semibold text-foreground transition active:scale-95 disabled:opacity-50"
+                    >
+                        {isProjectUploading
+                            ? <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                            : <Upload className="h-3 w-3 text-primary" />}
+                        Upload
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => createProjectFolder(proj.id, null)}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-border/50 bg-background/60 hover:bg-muted/80 px-2 py-1.5 text-[11px] font-semibold text-foreground transition active:scale-95"
+                    >
+                        <FolderPlus className="h-3 w-3 text-primary" />
+                        Folder
+                    </button>
+                </div>
+
+                <input
+                    ref={projectFileInputRef}
+                    type="file"
+                    multiple
+                    onChange={handleProjectFilePick}
+                    className="hidden"
+                    aria-label="Upload project files"
+                />
+
+                <div className="pt-1 pb-2 space-y-0.5">
+                    {proj.files.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground text-center py-4 px-3">
+                            No files yet. Upload code, docs, sheets, or images — up to 10 MB each.
+                        </p>
+                    ) : (
+                        renderFileTree(proj.files, 0)
+                    )}
+                </div>
+
+                <p className="px-1.5 pb-1 text-[9.5px] leading-relaxed text-muted-foreground/70">
+                    Type <span className="font-mono text-primary/80">@filename</span> or use{' '}
+                    <span className="font-mono text-primary/80">@</span> in the composer to reference
+                    files from any session of this project.
+                </p>
+            </div>
+        );
+    };
+
+    const renderProjectRow = (proj: AiProject) => {
+        const isExpanded = expandedProjects.has(proj.id);
+        const isEditingThis = editingProjectId === proj.id;
+
+        return (
+            <div key={proj.id} className="mb-0.5">
+                <div
+                    className={`group flex items-center gap-1 px-2 py-1.5 rounded-xl cursor-pointer transition ${
+                        currentProjectId === proj.id ? 'bg-primary/5' : 'hover:bg-muted/60'
+                    }`}
+                    onClick={() => toggleProject(proj.id)}
+                >
+                    <ChevronRight className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    {isExpanded
+                        ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+                        : <Folder className="h-3.5 w-3.5 shrink-0 text-primary" />}
+
+                    {isEditingThis ? (
+                        <form
+                            className="flex-1 min-w-0"
+                            onClick={(e) => e.stopPropagation()}
+                            onSubmit={(e) => saveRenameProject(proj.id, e)}
+                        >
+                            <input
+                                type="text"
+                                value={editingProjectTitle}
+                                onChange={(e) => setEditingProjectTitle(e.target.value)}
+                                onBlur={() => saveRenameProject(proj.id)}
+                                autoFocus
+                                className="w-full rounded-md border border-primary/50 bg-background px-1.5 py-0.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                        </form>
+                    ) : (
+                        <span className="truncate flex-1 min-w-0 text-xs font-semibold">{proj.title || 'Project'}</span>
+                    )}
+
+                    <span className="shrink-0 text-[9.5px] font-mono text-muted-foreground/60">
+                        {proj.sessions.length}
+                    </span>
+
+                    {!isEditingThis && (
+                        <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition">
+                            <button
+                                type="button"
+                                title="Open file explorer for this project"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setFilePanelProjectId(proj.id);
+                                }}
+                                className="p-1 rounded-lg hover:bg-muted hover:text-foreground text-muted-foreground transition"
+                            >
+                                <FileIcon className="h-3 w-3" />
+                            </button>
+                            <button
+                                type="button"
+                                title="Rename project"
+                                onClick={(e) => startEditingProject(proj, e)}
+                                className="p-1 rounded-lg hover:bg-muted hover:text-foreground text-muted-foreground transition"
+                            >
+                                <Pencil className="h-3 w-3" />
+                            </button>
+                            <button
+                                type="button"
+                                title="Delete project"
+                                onClick={(e) => deleteProject(proj.id, e)}
+                                className="p-1 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition"
+                            >
+                                <Trash2 className="h-3 w-3" />
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {isExpanded && (
+                    <div className="ml-3.5 pl-2 border-l border-border/40 space-y-0.5">
+                        {proj.sessions.length === 0 ? (
+                            <p className="text-[10.5px] text-muted-foreground px-2 py-1.5">
+                                No sessions yet.
+                            </p>
+                        ) : (
+                            proj.sessions.map(s => renderSessionRow({ ...s, project_id: proj.id }))
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // ===================== Composer mention menu =====================
+
+    const mentionFiles = currentProject ? flatProjectFiles(currentProject.files) : [];
+    const filteredMentionFiles = mentionFiles.filter(f =>
+        f.name.toLowerCase().includes(mentionFilter.toLowerCase())
+    );
+
     return (
         <AuthenticatedLayout hideMobileNav={true} hideNavbar={chatOnly}>
             <Head title={chatOnly ? 'Chat - Daily Phone Intelligence' : 'Assistant - Daily Phone Intelligence'} />
@@ -790,96 +1495,64 @@ function playCompletionChime(soundEnabled: boolean): void {
                                 : '-translate-x-full w-0 -ml-1 opacity-0 overflow-hidden border-none pointer-events-none'
                         }`}
                     >
-                        {/* New Chat Button */}
-                        <div className="p-3 border-b border-border/40 flex items-center justify-between gap-2">
+                        {/* New Project + New Chat */}
+                        <div className="p-3 border-b border-border/40 space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                                <button
+                                    onClick={createNewProject}
+                                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:opacity-95 active:scale-[0.98] transition shadow-2xs"
+                                >
+                                    <FolderPlus className="h-3.5 w-3.5" />
+                                    <span>New Project</span>
+                                </button>
+                                <button
+                                    onClick={() => setIsSidebarOpen(false)}
+                                    className="md:hidden p-1.5 rounded-lg text-muted-foreground hover:bg-muted/70"
+                                >
+                                    <PanelLeftClose className="h-4 w-4" />
+                                </button>
+                            </div>
                             <button
-                                onClick={createNewChat}
-                                className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:opacity-95 active:scale-[0.98] transition shadow-2xs"
+                                onClick={() => createNewChat()}
+                                className="w-full flex items-center justify-center gap-2 rounded-xl border border-border/50 bg-background/60 px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted/80 active:scale-[0.98] transition"
                             >
-                                <Plus className="h-3.5 w-3.5" />
+                                <Plus className="h-3.5 w-3.5 text-primary" />
                                 <span>New Chat</span>
-                            </button>
-                            <button
-                                onClick={() => setIsSidebarOpen(false)}
-                                className="md:hidden p-1.5 rounded-lg text-muted-foreground hover:bg-muted/70"
-                            >
-                                <PanelLeftClose className="h-4 w-4" />
                             </button>
                         </div>
 
-                        {/* Sessions List */}
+                        {/* Projects / Sessions OR File Explorer */}
                         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                            {sessionList.length === 0 ? (
+                            {filePanelProjectId !== null ? (
+                                renderFileExplorer()
+                            ) : projectList.length === 0 && orphanSessions.length === 0 ? (
                                 <p className="text-[11px] text-muted-foreground text-center py-6 px-3">
-                                    No past chat sessions yet. Send a message to start!
+                                    No projects yet. Create a project to organise your chats and files!
                                 </p>
                             ) : (
-                                sessionList.map((s) => {
-                                    const isActive = s.id === currentSessionId;
-                                    const isEditingThis = editingSessionId === s.id;
+                                <>
+                                    {projectList.map(proj => renderProjectRow(proj))}
 
-                                    return (
-                                        <div
-                                            key={s.id}
-                                            onClick={() => !isEditingThis && selectSession(s.id)}
-                                            className={`group flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
-                                                isActive
-                                                    ? 'bg-primary/10 text-primary font-semibold'
-                                                    : 'text-foreground hover:bg-muted/60'
-                                            }`}
-                                        >
-                                            <div className="flex items-center gap-2 min-w-0 flex-1 mr-1">
-                                                <MessageSquare className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-primary' : 'text-muted-foreground'}`} />
-                                                {isEditingThis ? (
-                                                    <form
-                                                        onSubmit={(e) => saveRenameSession(s.id, e)}
-                                                        onClick={(e) => e.stopPropagation()}
-                                                        className="flex-1 min-w-0"
-                                                    >
-                                                        <input
-                                                            type="text"
-                                                            value={editingSessionTitle}
-                                                            onChange={(e) => setEditingSessionTitle(e.target.value)}
-                                                            onBlur={() => saveRenameSession(s.id)}
-                                                            autoFocus
-                                                            className="w-full rounded-md border border-primary/50 bg-background px-1.5 py-0.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                                                        />
-                                                    </form>
-                                                ) : (
-                                                    <span className="truncate">{s.title || 'Conversation'}</span>
-                                                )}
+                                    {orphanSessions.length > 0 && (
+                                        <>
+                                            <div className="px-2 pt-2.5 pb-1 text-[9.5px] font-bold tracking-[0.08em] text-muted-foreground/60">
+                                                MY CHATS
                                             </div>
-
-                                            {!isEditingThis && (
-                                                <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition">
-                                                    <button
-                                                        type="button"
-                                                        onClick={(e) => startEditingSession(s, e)}
-                                                        className="p-1 rounded-lg hover:bg-muted hover:text-foreground text-muted-foreground transition"
-                                                        title="Ubah nama obrolan"
-                                                    >
-                                                        <Pencil className="h-3 w-3" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={(e) => deleteSession(s.id, e)}
-                                                        className="p-1 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition"
-                                                        title="Delete session"
-                                                    >
-                                                        <Trash2 className="h-3 w-3" />
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })
+                                            <div className="space-y-0.5">
+                                                {orphanSessions.map(s => renderSessionRow(s))}
+                                            </div>
+                                        </>
+                                    )}
+                                </>
                             )}
                         </div>
 
                         {/* Footer in Sidebar */}
                         <div className="p-2.5 border-t border-border/40 space-y-1.5">
                             <div className="text-[10px] text-muted-foreground flex items-center justify-between">
-                                <span className="truncate">{sessionList.length} Sessions saved</span>
+                                <span className="truncate">
+                                    {projectList.length} Project{projectList.length !== 1 ? 's' : ''} · {sessionList.length} Sessions
+                                </span>
                             </div>
                             {userRole === 'superadmin' && !chatOnly && (
                                 <div className="grid grid-cols-2 gap-1.5">
@@ -973,7 +1646,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                                     </button>
 
                                     <button
-                                        onClick={createNewChat}
+                                        onClick={() => createNewChat()}
                                         title="New chat"
                                         className="flex items-center gap-1 rounded-xl border border-border/50 bg-background/70 hover:bg-muted/80 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition shadow-2xs active:scale-95"
                                     >
@@ -1317,6 +1990,88 @@ function playCompletionChime(soundEnabled: boolean): void {
                                     </div>
                                 )}
 
+                                {/* Referenced project files — @ mention chips */}
+                                {projectFileRefs.length > 0 && (
+                                    <div className="flex flex-wrap items-center gap-1.5 px-4">
+                                        {projectFileRefs.map(f => {
+                                            const Ic = fileIconFor(f.kind);
+                                            return (
+                                                <span
+                                                    key={f.id}
+                                                    className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-primary shadow-sm"
+                                                >
+                                                    <Ic className="h-3 w-3 shrink-0" />
+                                                    <span className="max-w-[140px] sm:max-w-[220px] truncate">@{f.name}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleProjectFileRef(f)}
+                                                        className="p-0.5 rounded-full text-primary/70 hover:text-destructive hover:bg-destructive/10 transition"
+                                                        title="Remove reference"
+                                                    >
+                                                        <X className="h-3 w-3" />
+                                                    </button>
+                                                </span>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {/* @ mention picker — reference project files in the message */}
+                                {mentionMenuOpen && currentProject && mentionFiles.length > 0 && (
+                                    <div className="rounded-2xl border border-border/60 bg-background/95 dark:bg-card/95 backdrop-blur-2xl shadow-xl shadow-black/5 dark:shadow-black/25 p-1.5 space-y-1">
+                                        <div className="flex items-center gap-1.5 px-2 py-1">
+                                            <span className="text-primary font-bold text-xs">@</span>
+                                            <input
+                                                autoFocus
+                                                value={mentionFilter}
+                                                onChange={(e) => setMentionFilter(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Escape') setMentionMenuOpen(false);
+                                                    if (e.key === 'Enter') e.preventDefault();
+                                                }}
+                                                placeholder="Filter project files…"
+                                                className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none border-none focus:ring-0 p-0"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setMentionMenuOpen(false)}
+                                                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                                                title="Close"
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        </div>
+                                        <div className="max-h-52 overflow-y-auto space-y-0.5">
+                                            {filteredMentionFiles.map(f => {
+                                                const selected = projectFileRefs.some(r => r.id === f.id);
+                                                const Ic = fileIconFor(f.kind);
+                                                return (
+                                                    <button
+                                                        key={f.id}
+                                                        type="button"
+                                                        onClick={() => toggleProjectFileRef(f)}
+                                                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium transition ${
+                                                            selected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted/70'
+                                                        }`}
+                                                    >
+                                                        <Ic className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                        <span className="truncate flex-1 min-w-0 text-left">{f.name}</span>
+                                                        <span className="text-[9.5px] text-muted-foreground/60 shrink-0">
+                                                            {f.size_bytes ? formatBytes(f.size_bytes) : ''}
+                                                        </span>
+                                                        {selected && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}
+                                                    </button>
+                                                );
+                                            })}
+                                            {filteredMentionFiles.length === 0 && (
+                                                <p className="text-[11px] text-muted-foreground text-center py-3">
+                                                    No matching files in this project.
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
                                 <form
                                     onSubmit={(e: FormEvent) => {
                                         e.preventDefault();
@@ -1347,6 +2102,22 @@ function playCompletionChime(soundEnabled: boolean): void {
                                         )}
                                     </button>
 
+                                    {/* @-mention project files */}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (mentionMenuOpen) setMentionMenuOpen(false);
+                                            else { setMentionFilter(''); setMentionMenuOpen(true); }
+                                        }}
+                                        disabled={isLoading || !aiConfig.is_configured || !currentProject || mentionFiles.length === 0}
+                                        className="h-7 w-7 rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-40 transition flex items-center justify-center shrink-0"
+                                        title={currentProject && mentionFiles.length > 0
+                                            ? `Reference a file from ${currentProject.title} (@)`
+                                            : 'Upload files to a project first to reference them'}
+                                    >
+                                        <Paperclip className="h-4 w-4" />
+                                    </button>
+
                                     <div className="flex-1 flex items-center min-w-0">
                                         <textarea
                                             ref={inputRef}
@@ -1354,7 +2125,15 @@ function playCompletionChime(soundEnabled: boolean): void {
                                             value={inputQuery}
                                             onChange={e => setInputQuery(e.target.value)}
                                             onKeyDown={handleKeyDown}
-                                            placeholder={attachments.length > 0 ? 'Add a question about the file...' : "Ask anything or propose actions... (Enter to send)"}
+                                            placeholder={
+                                                attachments.length > 0
+                                                    ? 'Add a question about the file...'
+                                                    : projectFileRefs.length > 0
+                                                        ? 'Ask about the referenced files…'
+                                                        : currentProject && mentionFiles.length > 0
+                                                            ? "Ask anything, or type @ to reference a project file…"
+                                                            : "Ask anything or propose actions... (Enter to send)"
+                                            }
                                             disabled={isLoading || !aiConfig.is_configured}
                                             className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground border-none outline-none focus:outline-none focus:ring-0 p-0 resize-none max-h-24 min-h-[24px] leading-5"
                                         />
@@ -1362,7 +2141,7 @@ function playCompletionChime(soundEnabled: boolean): void {
 
                                     <button
                                         type="submit"
-                                        disabled={isLoading || isUploading || (!inputQuery.trim() && attachments.length === 0) || !aiConfig.is_configured}
+                                        disabled={isLoading || isUploading || (!inputQuery.trim() && attachments.length === 0 && projectFileRefs.length === 0) || !aiConfig.is_configured}
                                         className="h-8 w-8 rounded-full bg-primary text-primary-foreground hover:opacity-90 active:scale-90 transition flex items-center justify-center disabled:opacity-30 shrink-0 shadow-xs"
                                         title="Send"
                                     >
@@ -1486,6 +2265,17 @@ function playCompletionChime(soundEnabled: boolean): void {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Project file viewer */}
+            {viewerFile && (
+                <FileViewerModal
+                    key={`${viewerFile.projectId}-${viewerFile.file.id}`}
+                    projectId={viewerFile.projectId}
+                    file={viewerFile.file}
+                    onClose={() => setViewerFile(null)}
+                    onDelete={(f) => deleteProjectFileEntry(viewerFile.projectId, f)}
+                />
             )}
 
             {/* Floating corner toast — confirms a new AI memory node was saved */}

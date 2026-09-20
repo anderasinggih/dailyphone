@@ -119,6 +119,18 @@ Route::prefix('application/dp')->group(function () {
         Route::delete('/assistant/session/{id}', [AiAssistantController::class, 'deleteSession'])->name('assistant.session.destroy');
         Route::post('/assistant/chat', [AiAssistantController::class, 'chat'])->name('assistant.chat');
 
+        // Projects (fold sessions + own a shared file tree)
+        Route::post('/assistant/projects', [AiAssistantController::class, 'createProject'])->name('assistant.project.create');
+        Route::patch('/assistant/projects/{id}', [AiAssistantController::class, 'updateProject'])->name('assistant.project.update');
+        Route::delete('/assistant/projects/{id}', [AiAssistantController::class, 'deleteProject'])->name('assistant.project.destroy');
+        Route::get('/assistant/projects/{project}/files', [AiAssistantController::class, 'listProjectFiles'])->name('assistant.project.files');
+        Route::post('/assistant/projects/{project}/files', [AiAssistantController::class, 'uploadProjectFile'])->name('assistant.project.files.upload');
+        Route::post('/assistant/projects/{project}/folders', [AiAssistantController::class, 'createProjectFolder'])->name('assistant.project.folders.store');
+        Route::get('/assistant/projects/{project}/files/{file}', [AiAssistantController::class, 'getProjectFileContent'])->name('assistant.project.files.content');
+        Route::get('/assistant/projects/{project}/files/{file}/preview', [AiAssistantController::class, 'previewProjectFile'])->name('assistant.project.files.preview');
+        Route::get('/assistant/projects/{project}/files/{file}/download', [AiAssistantController::class, 'downloadProjectFile'])->name('assistant.project.files.download');
+        Route::delete('/assistant/projects/{project}/files/{file}', [AiAssistantController::class, 'deleteProjectFile'])->name('assistant.project.files.destroy');
+
         Route::post('/assistant/upload', [AiAssistantController::class, 'upload'])->name('assistant.upload');
         Route::post('/assistant/checkout-summary', [AiAssistantController::class, 'checkoutSummary'])->name('assistant.checkout-summary');
         Route::post('/assistant/execute', [AiAssistantController::class, 'executeAction'])->name('assistant.execute');

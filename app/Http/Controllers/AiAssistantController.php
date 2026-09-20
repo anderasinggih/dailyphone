@@ -64,10 +64,30 @@ class AiAssistantController extends Controller
         $model = $this->geminiService->getModel();
         $user = $request->user();
 
+        // 1a. Fetch user's projects with their nested sessions + file trees.
+        // Projects group sessions and own a shared file system whose files can
+        // be @-referenced inside any session of that project.
+        $projects = \App\Models\AiProject::where('user_id', $user->id)
+            ->orderBy('updated_at', 'desc')
+            ->get()
+            ->map(function ($p) {
+                return [
+                    'id' => (int) $p->id,
+                    'title' => $p->title,
+                    'description' => $p->description,
+                    'created_at' => $p->created_at,
+                    'updated_at' => $p->updated_at,
+                    'sessions' => $p->sessions()->get(['id', 'title', 'created_at', 'updated_at']),
+                    'files' => $this->buildProjectFileTree($p->id),
+                ];
+            })
+            ->values()
+            ->all();
+
         // 1. Fetch user's chat sessions
         $sessions = \App\Models\AiSession::where('user_id', $user->id)
             ->orderBy('updated_at', 'desc')
-            ->get(['id', 'title', 'custom_rules', 'ai_model', 'created_at', 'updated_at']);
+            ->get(['id', 'project_id', 'title', 'custom_rules', 'ai_model', 'created_at', 'updated_at']);
 
         // 2. Determine active session
         $activeSessionId = $request->query('session_id');
@@ -106,10 +126,66 @@ class AiAssistantController extends Controller
             ],
             'userRole' => $user->role,
             'chatOnly' => $chatOnly,
+            'projects' => $projects,
             'sessions' => $sessions,
             'activeSessionId' => $activeSession ? $activeSession->id : null,
             'initialMessages' => $messages,
         ]);
+    }
+
+    /**
+     * Build the nested folder/file tree for a project from a single flat query.
+     * Folders are rows with is_folder = true; nesting comes from parent_id.
+     */
+    protected function buildProjectFileTree(int $projectId): array
+    {
+        $rows = \App\Models\AiProjectFile::where('project_id', $projectId)
+            ->orderBy('is_folder', 'desc')
+            ->orderBy('name', 'asc')
+            ->get();
+
+        $byParent = $rows->groupBy(function ($f) {
+            return (int) ($f->parent_id ?? 0);
+        });
+
+        $build = function (int $parentId) use (&$build, $byParent): array {
+            $bucket = $byParent->get($parentId) ?? collect();
+
+            return $bucket->map(function ($f) use ($build) {
+                return [
+                    'id' => (int) $f->id,
+                    'name' => $f->name,
+                    'is_folder' => (bool) $f->is_folder,
+                    'kind' => $f->kind,
+                    'mime_type' => $f->mime_type,
+                    'size_bytes' => (int) $f->size_bytes,
+                    'created_at' => $f->created_at,
+                    'updated_at' => $f->updated_at,
+                    'children' => $f->is_folder ? $build((int) $f->id) : [],
+                ];
+            })->values()->all();
+        };
+
+        return $build(0);
+    }
+
+    /**
+     * Flat JSON payload for a single project file / folder row, used to
+     * update the client-side tree after uploads and folder creation.
+     */
+    protected function projectFilePayload(\App\Models\AiProjectFile $f): array
+    {
+        return [
+            'id' => (int) $f->id,
+            'name' => $f->name,
+            'is_folder' => (bool) $f->is_folder,
+            'kind' => $f->kind,
+            'mime_type' => $f->mime_type,
+            'size_bytes' => (int) $f->size_bytes,
+            'created_at' => $f->created_at,
+            'updated_at' => $f->updated_at,
+            'children' => $f->is_folder ? [] : [],
+        ];
     }
 
     /**
@@ -159,18 +235,402 @@ class AiAssistantController extends Controller
     }
 
     /**
-     * Create a new chat session.
+     * Create a new chat session, optionally inside a project.
      */
     public function createSession(Request $request): JsonResponse
     {
+        $request->validate([
+            'project_id' => 'nullable|exists:ai_projects,id',
+        ]);
+
+        $projectId = $request->input('project_id');
+        if ($projectId) {
+            \App\Models\AiProject::where('user_id', $request->user()->id)->findOrFail($projectId);
+        }
+
         $session = \App\Models\AiSession::create([
             'user_id' => $request->user()->id,
+            'project_id' => $projectId ? (int) $projectId : null,
             'title' => 'New Chat',
         ]);
 
         return response()->json([
             'success' => true,
             'session' => $session,
+        ]);
+    }
+
+    /**
+     * Create a project and its first chat session.
+     */
+    public function createProject(Request $request): JsonResponse
+    {
+        $request->validate([
+            'title' => 'required|string|max:120',
+            'description' => 'nullable|string|max:2000',
+        ]);
+
+        $user = $request->user();
+        $project = \App\Models\AiProject::create([
+            'user_id' => $user->id,
+            'title' => trim($request->input('title')),
+            'description' => trim((string) $request->input('description')) ?: null,
+        ]);
+
+        $session = \App\Models\AiSession::create([
+            'user_id' => $user->id,
+            'project_id' => $project->id,
+            'title' => 'New Chat',
+        ]);
+
+        $project->touch();
+
+        return response()->json([
+            'success' => true,
+            'project' => [
+                'id' => (int) $project->id,
+                'title' => $project->title,
+                'description' => $project->description,
+                'created_at' => $project->created_at,
+                'updated_at' => $project->updated_at,
+                'sessions' => [$session],
+                'files' => [],
+            ],
+        ]);
+    }
+
+    /**
+     * Rename a project / update its description.
+     */
+    public function updateProject(Request $request, $id): JsonResponse
+    {
+        $request->validate([
+            'title' => 'nullable|string|max:120',
+            'description' => 'nullable|string|max:2000',
+        ]);
+
+        $project = \App\Models\AiProject::where('user_id', $request->user()->id)->findOrFail($id);
+
+        $updateData = [];
+        if ($request->has('title')) {
+            $updateData['title'] = trim($request->input('title'));
+        }
+        if ($request->has('description')) {
+            $updateData['description'] = trim((string) $request->input('description')) ?: null;
+        }
+        if ($updateData !== []) {
+            $project->update($updateData);
+        }
+
+        return response()->json([
+            'success' => true,
+            'project' => [
+                'id' => (int) $project->id,
+                'title' => $project->title,
+                'description' => $project->description,
+                'updated_at' => $project->updated_at,
+            ],
+            'message' => 'Project updated successfully.',
+        ]);
+    }
+
+    /**
+     * Delete a project. Cascades to its sessions, chats and files.
+     */
+    public function deleteProject(Request $request, $id): JsonResponse
+    {
+        $project = \App\Models\AiProject::where('user_id', $request->user()->id)->findOrFail($id);
+
+        // Remove stored blobs before the DB row (and its cascade) goes away.
+        foreach ($project->files()->where('is_folder', false)->get() as $file) {
+            if ($file->storage_path) {
+                \Illuminate\Support\Facades\Storage::disk('local')->delete($file->storage_path);
+            }
+        }
+
+        $project->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Project deleted successfully.',
+        ]);
+    }
+
+    /**
+     * Resolve a project that belongs to the current user (or abort 404).
+     */
+    protected function resolveProject($id): \App\Models\AiProject
+    {
+        return \App\Models\AiProject::where('user_id', request()->user()->id)->findOrFail($id);
+    }
+
+    /**
+     * Resolve a file/folder row that belongs to the current user's project.
+     */
+    protected function resolveProjectFile($projectId, $fileId, bool $mustBeFolder = false): \App\Models\AiProjectFile
+    {
+        $file = \App\Models\AiProjectFile::where('project_id', $projectId)
+            ->where('user_id', request()->user()->id)
+            ->findOrFail($fileId);
+
+        if ($mustBeFolder && ! $file->is_folder) {
+            abort(422, 'Expected a folder.');
+        }
+
+        return $file;
+    }
+
+    /**
+     * Unique name inside a given folder: appends " (2)", " (3)", ... so a
+     * freshly uploaded file or folder never silently overwrites an existing
+     * sibling whose content might already be referenced in a conversation.
+     */
+    protected function uniqueProjectEntryName(int $projectId, ?int $parentId, string $name): string
+    {
+        $existing = \App\Models\AiProjectFile::where('project_id', $projectId)
+            ->where('parent_id', $parentId);
+        $existsInBucket = $existing->pluck('name');
+
+        if (! $existsInBucket->contains($name)) {
+            return $name;
+        }
+
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $base = $ext !== '' ? substr($name, 0, -(strlen($ext) + 1)) : $name;
+
+        for ($i = 2; $i <= 999; $i++) {
+            $candidate = $ext !== ''
+                ? $base . ' (' . $i . ').' . $ext
+                : $base . ' (' . $i . ')';
+            if (! $existsInBucket->contains($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $name . ' ' . uniqid();
+    }
+
+    /**
+     * Upload a file into a project's file tree (max 10 MB per file). Text is
+     * extracted server-side so it can be @-referenced into the AI context.
+     */
+    public function uploadProjectFile(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+
+        $request->validate([
+            'file' => 'required|file|max:10240',
+            'parent_id' => 'nullable|exists:ai_project_files,id',
+        ]);
+
+        $parentId = $request->input('parent_id');
+        if ($parentId) {
+            $this->resolveProjectFile($project->id, $parentId, mustBeFolder: true);
+        }
+
+        $user = $request->user();
+        $file = $request->file('file');
+        $originalName = $file->getClientOriginalName();
+        $mime = $file->getMimeType();
+        $name = $this->uniqueProjectEntryName($project->id, $parentId ? (int) $parentId : null, $originalName);
+
+        $ingest = app(\App\Services\AiFileIngestService::class);
+        $kind = $ingest->classify($originalName, $mime);
+        $storagePath = $file->store('ai-projects', 'local');
+        $fullPath = storage_path('app/private/' . $storagePath);
+
+        $text = $ingest->extractText(
+            $fullPath,
+            $mime,
+            $originalName,
+            $ingest::ATTACHMENT_TEXT_MAX
+        );
+
+        $record = \App\Models\AiProjectFile::create([
+            'user_id' => $user->id,
+            'project_id' => $project->id,
+            'parent_id' => $parentId ? (int) $parentId : null,
+            'name' => $name,
+            'is_folder' => false,
+            'mime_type' => $mime,
+            'size_bytes' => $file->getSize(),
+            'kind' => $kind,
+            'storage_path' => $storagePath,
+            'extracted_text' => $text === '' ? null : $text,
+            'content_hash' => md5_file($fullPath) ?: null,
+        ]);
+
+        $project->touch();
+
+        return response()->json([
+            'success' => true,
+            'file' => $this->projectFilePayload($record),
+        ]);
+    }
+
+    /**
+     * Create a folder inside a project's file tree.
+     */
+    public function createProjectFolder(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+
+        $request->validate([
+            'name' => 'required|string|max:120',
+            'parent_id' => 'nullable|exists:ai_project_files,id',
+        ]);
+
+        $parentId = $request->input('parent_id');
+        if ($parentId) {
+            $this->resolveProjectFile($project->id, $parentId, mustBeFolder: true);
+        }
+
+        $name = $this->uniqueProjectEntryName($project->id, $parentId ? (int) $parentId : null, trim($request->input('name')));
+
+        $folder = \App\Models\AiProjectFile::create([
+            'user_id' => $request->user()->id,
+            'project_id' => $project->id,
+            'parent_id' => $parentId ? (int) $parentId : null,
+            'name' => $name,
+            'is_folder' => true,
+        ]);
+
+        $project->touch();
+
+        return response()->json([
+            'success' => true,
+            'file' => $this->projectFilePayload($folder),
+        ]);
+    }
+
+    /**
+     * List a project's file tree (fresh copy used after mutations).
+     */
+    public function listProjectFiles(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+
+        return response()->json([
+            'success' => true,
+            'files' => $this->buildProjectFileTree($project->id),
+        ]);
+    }
+
+    /**
+     * Return the readable text of a project file for the built-in viewer.
+     * Images / PDFs / archives return no text; the client renders those via
+     * the preview stream endpoint instead.
+     */
+    public function getProjectFileContent(Request $request, $project, $file): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        $record = $this->resolveProjectFile($project->id, $file);
+
+        if ($record->is_folder) {
+            abort(422, 'Folders have no content.');
+        }
+
+        $content = $record->extracted_text;
+        if ($content === null && $record->storage_path) {
+            $fullPath = storage_path('app/private/' . $record->storage_path);
+            if (is_file($fullPath)) {
+                $content = @file_get_contents($fullPath) ?: null;
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'file' => $this->projectFilePayload($record),
+            'content' => $content,
+        ]);
+    }
+
+    /**
+     * Stream a project file so <img> / <iframe> previews render inline.
+     */
+    public function previewProjectFile(Request $request, $project, $file): BinaryFileResponse
+    {
+        $project = $this->resolveProject($project);
+        $record = $this->resolveProjectFile($project->id, $file);
+
+        if ($record->is_folder || ! $record->storage_path) {
+            abort(404);
+        }
+
+        $fullPath = storage_path('app/private/' . $record->storage_path);
+        if (! is_file($fullPath)) {
+            abort(404);
+        }
+
+        return response()->file($fullPath, $record->mime_type ? ['Content-Type' => $record->mime_type] : []);
+    }
+
+    /**
+     * Download a project file (with its original name).
+     */
+    public function downloadProjectFile(Request $request, $project, $file): BinaryFileResponse
+    {
+        $project = $this->resolveProject($project);
+        $record = $this->resolveProjectFile($project->id, $file);
+
+        if ($record->is_folder || ! $record->storage_path) {
+            abort(404);
+        }
+
+        $fullPath = storage_path('app/private/' . $record->storage_path);
+        if (! is_file($fullPath)) {
+            abort(404);
+        }
+
+        return response()->download($fullPath, $record->name, $record->mime_type ? ['Content-Type' => $record->mime_type] : []);
+    }
+
+    /**
+     * Delete a file (removes the stored blob) or folder (cascades to every
+     * descendant). Wired to the sidebar + viewer UI.
+     */
+    public function deleteProjectFile(Request $request, $project, $file): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        $record = $this->resolveProjectFile($project->id, $file);
+
+        $blobsToDelete = collect();
+
+        if ($record->is_folder) {
+            // Gather every descendant file row (recursively) so their stored
+            // blobs are removed too — the DB cascade only kills the rows.
+            $blobsToDelete = \App\Models\AiProjectFile::where('project_id', $project->id)
+                ->where('is_folder', false)
+                ->whereNotNull('storage_path')
+                ->get()
+                ->filter(function ($f) use ($record) {
+                    $node = $f;
+                    $depth = 0;
+                    while ($node && $node->parent_id && $depth < 1000) {
+                        if ((int) $node->parent_id === (int) $record->id) {
+                            return true;
+                        }
+                        $node = $node->parent()->first();
+                        $depth++;
+                    }
+                    return false;
+                });
+
+            if ($blobsToDelete->isNotEmpty()) {
+                foreach ($blobsToDelete as $f) {
+                    \Illuminate\Support\Facades\Storage::disk('local')->delete($f->storage_path);
+                }
+            }
+        } elseif ($record->storage_path) {
+            \Illuminate\Support\Facades\Storage::disk('local')->delete($record->storage_path);
+        }
+
+        $record->delete();
+        $project->touch();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Deleted successfully.',
         ]);
     }
 
@@ -184,8 +644,11 @@ class AiAssistantController extends Controller
         $request->validate([
             'message' => 'required_without:attachments|string|max:200000',
             'session_id' => 'nullable|exists:ai_sessions,id',
+            'project_id' => 'nullable|exists:ai_projects,id',
             'attachments' => 'nullable|array',
             'attachments.*' => 'integer',
+            'project_file_ids' => 'nullable|array',
+            'project_file_ids.*' => 'integer',
             'model' => 'nullable|string|max:100',
         ]);
 
@@ -200,13 +663,29 @@ class AiAssistantController extends Controller
         $userText = trim($request->input('message') ?? '');
         $sessionId = $request->input('session_id');
         $attachmentIds = array_values(array_filter(array_map('intval', (array)$request->input('attachments', []))));
+        $projectFileIds = array_values(array_filter(array_map('intval', (array)$request->input('project_file_ids', []))));
 
         $attachments = \App\Models\AiChatAttachment::where('user_id', $user->id)
             ->whereIn('id', $attachmentIds)
             ->get();
 
-        if ($userText === '' && $attachments->isNotEmpty()) {
-            $userText = '📎 ' . $attachments->pluck('original_name')->join(', ');
+        // Resolve project files referenced with @-mentions / the file picker so
+        // their extracted text can be injected into the model context alongside
+        // ordinary uploaded attachments. They stay in the project tree (they are
+        // not "consumed" or moved by a message).
+        $projectFiles = collect();
+        if ($projectFileIds !== []) {
+            $projectFiles = \App\Models\AiProjectFile::where('user_id', $user->id)
+                ->whereIn('id', $projectFileIds)
+                ->where('is_folder', false)
+                ->whereNotNull('storage_path')
+                ->get();
+        }
+
+        if ($userText === '' && ($attachments->isNotEmpty() || $projectFiles->isNotEmpty())) {
+            $userText = '📎 ' . $attachments->pluck('original_name')
+                ->merge($projectFiles->pluck('name'))
+                ->join(', ');
         }
 
         // If no session provided, find or create one
@@ -285,7 +764,7 @@ class AiAssistantController extends Controller
         // Resolve the per-session model override once, before streaming starts.
         $requestedModel = $request->input('model') ?: null;
 
-        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $requestedModel, $sessionSummary) {
+        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $projectFiles, $requestedModel, $sessionSummary) {
             $startTime = microtime(true);
             $run = [
                 'user_id' => $user->id,
@@ -437,8 +916,11 @@ class AiAssistantController extends Controller
                     \Illuminate\Support\Facades\Log::warning('Node stats notice failed: ' . $e->getMessage());
                 }
 
-                // 3. Send to Gemini with full session memory & custom session rules/training
-                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $attachments,
+                // 3. Send to Gemini with full session memory & custom session rules/training.
+                // Project @-referenced files are folded in together with ordinary
+                // uploads so the model sees their extracted text in the same block.
+                $contextFiles = $attachments->concat($projectFiles);
+                $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $contextFiles,
                     function (string $delta) use ($emit) {
                         $emit(['type' => 'chunk', 'text' => $delta]);
                     },

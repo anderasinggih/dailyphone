@@ -1,7 +1,0 @@
-import{c as u}from"./app-Bo3ed7ge.js";/**
- * @license lucide-react v1.21.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const f=[["rect",{x:"16",y:"16",width:"6",height:"6",rx:"1",key:"4q2zg0"}],["rect",{x:"2",y:"16",width:"6",height:"6",rx:"1",key:"8cvhb9"}],["rect",{x:"9",y:"2",width:"6",height:"6",rx:"1",key:"1egb70"}],["path",{d:"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3",key:"1jsf9p"}],["path",{d:"M12 12V8",key:"2874zd"}]],g=u("network",f);async function k(s,t){if(!s.body)return null;const y=s.body.getReader(),d=new TextDecoder;let r="",c=null;const a=i=>{const o=i.trim();if(!o)return;let e=null;try{e=JSON.parse(o)}catch{return}!e||typeof e!="object"||(e.type==="neurons"&&t.onNeurons&&t.onNeurons(Array.isArray(e.nodes)?e.nodes:[],Array.isArray(e.edges)?e.edges:[]),e.type==="stage"&&t.onStage&&typeof e.stage=="string"&&Array.isArray(e.nodes)&&t.onStage(e.stage,e.nodes),e.type==="chunk"&&t.onToken&&typeof e.text=="string"&&t.onToken(e.text),e.type==="trace"&&t.onTrace&&Array.isArray(e.used)&&t.onTrace(e.used.map(Number).filter(n=>Number.isFinite(n)&&n>0)),e.type==="learned"&&t.onLearned&&t.onLearned(e),(e.type==="done"||e.type==="error")&&(c=e))};for(;;){const{done:i,value:o}=await y.read();if(i)break;r+=d.decode(o,{stream:!0});const e=r.split(`
-`);r=e.pop()||"";for(const n of e)a(n)}return r.trim()&&a(r),c}export{g as N,k as c};
