@@ -25,7 +25,7 @@ import {
 import type { PageProps } from '@/types';
 import NeuralMindMap from '@/Components/NeuralMindMap';
 import { consumeNdjson, type StreamEdge, type StreamNeuron } from '@/lib/ndjson';
-import { echo } from '@/lib/echo';
+import { echo, echoStatus, type SocketStatus } from '@/lib/echo';
 import { relationName } from '@/lib/relations';
 import { kindOf, kindMeta, kindList, type Kind } from '@/lib/kinds';
 
@@ -182,6 +182,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
     const [liveNote, setLiveNote] = useState<string | null>(null);
     const [socketActive, setSocketActive] = useState(false);
     const [socketQuery, setSocketQuery] = useState<string | null>(null);
+    const [socketStatus, setSocketStatus] = useState<SocketStatus>('unavailable');
     const liveAutoClear = useRef<number | null>(null);
     const liveRunningRef = useRef(false);
 
@@ -211,6 +212,13 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
         };
     }, []);
 
+    // Realtime transport health: lights up whether the Reverb socket actually
+    // connected, so "why isn't it lighting" is never a guessing game again.
+    useEffect(() => {
+        const unsubscribe = echoStatus(status => setSocketStatus(status));
+        return () => unsubscribe?.();
+    }, []);
+
     // Real-time cross-tab mirror: the superadmin starts a chat in the
     // Assistant (or anywhere else), and every stage the retrieval emits is
     // pushed to the `superadmin.live` private channel over Reverb. This page
@@ -234,7 +242,10 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
         };
 
         const conn = echo();
-        if (!conn) return;
+        if (!conn) {
+            setSocketStatus('unavailable');
+            return;
+        }
 
         const channel = conn.private('superadmin.live');
         const onProgress = (data: any) => {
@@ -417,6 +428,29 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                 <Sparkles className="h-3.5 w-3.5" />
                                 Superadmin
                             </span>
+                            {socketStatus !== 'unavailable' && (
+                                <span
+                                    title={
+                                        socketStatus === 'connected'
+                                            ? 'Realtime channel connected — a chat in any tab lights this map live.'
+                                            : socketStatus === 'failed' || socketStatus === 'disconnected'
+                                              ? 'Realtime channel offline. Start it in the project terminal with: php artisan reverb:start'
+                                              : 'Connecting to the realtime channel…'
+                                    }
+                                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                                        socketStatus === 'connected'
+                                            ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                                            : socketStatus === 'connecting'
+                                              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+                                              : 'bg-destructive/10 text-destructive border-destructive/30'
+                                    }`}
+                                >
+                                    <span
+                                        className={`h-2 w-2 rounded-full ${socketStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : socketStatus === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-destructive/70'}`}
+                                    />
+                                    Realtime {socketStatus === 'connected' ? 'on' : socketStatus === 'connecting' ? 'connecting…' : 'offline'}
+                                </span>
+                            )}
                         </div>
                     </div>
 

@@ -24,7 +24,7 @@ export function echo(): Echo<any> | null {
     if (instance) return instance;
 
     const scheme = import.meta.env.VITE_REVERB_SCHEME || 'http';
-    const key = (import.meta.env.VITE_REVERB_APP_KEY as string) || '';
+    const key = import.meta.env.VITE_REVERB_APP_KEY as string | undefined;
     if (!key) return null;
 
     instance = new Echo({
@@ -47,4 +47,22 @@ export function echo(): Echo<any> | null {
 
     window.Echo = instance;
     return instance;
+}
+
+export type SocketStatus = 'connected' | 'connecting' | 'disconnected' | 'failed' | 'unavailable';
+
+/**
+ * Subscribe to realtime connection changes. Returns an unsubscribe function.
+ * `null` means the Reverb transport is not configured (no VITE_REVERB_APP_KEY).
+ */
+export function echoStatus(onChange: (status: SocketStatus) => void): (() => void) | undefined {
+    if (typeof window === 'undefined') return undefined;
+
+    const conn = echo();
+    if (!conn) {
+        onChange('unavailable');
+        return undefined;
+    }
+
+    return conn.onConnectionChange(status => onChange(status as SocketStatus));
 }

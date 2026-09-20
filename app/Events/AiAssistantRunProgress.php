@@ -4,7 +4,7 @@ namespace App\Events;
 
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
@@ -13,8 +13,12 @@ use Illuminate\Queue\SerializesModels;
  * stage, the final neuron set, the cited ids and the outcome. Mirrors the
  * NDJSON stream so any open tab (assistant page, memory map) can pulse its
  * brain map live without being the tab that started the chat.
+ *
+ * Broadcasts synchronously (ShouldBroadcastNow) on purpose: a live mirror is
+ * useless if it waits in the queue — without a `queue:work` worker the events
+ * would pile up in `jobs` and the map in other tabs would never light up.
  */
-class AiAssistantRunProgress implements ShouldBroadcast
+class AiAssistantRunProgress implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
