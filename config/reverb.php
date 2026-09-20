@@ -34,7 +34,13 @@ return [
             'path' => env('REVERB_SERVER_PATH', ''),
             'hostname' => env('REVERB_HOST'),
             'options' => [
-                'tls' => [],
+                // Serve wss:// (TLS) when REVERB_TLS_CERT/KEY are set in the
+                // environment (self-hosted / cPanel). Left empty locally so the
+                // dev server keeps speaking plain ws://.
+                'tls' => [
+                    'local_cert' => env('REVERB_TLS_CERT'),
+                    'local_pk' => env('REVERB_TLS_KEY'),
+                ],
             ],
             'max_request_size' => env('REVERB_MAX_REQUEST_SIZE', 10_000),
             'scaling' => [
