@@ -195,6 +195,43 @@ class GeminiAssistantService
     }
 
     /**
+     * Decide whether a chat query actually benefits from Google Search
+     * grounding. Grounding performs a live web search, which adds real latency
+     * to every reply — so it is reserved for queries that reference external,
+     * current or world information (news, market prices, kurs, trends, web
+     * lookups). Plain store operations / memory questions skip it, keeping the
+     * common case a single fast model round-trip.
+     */
+    protected function wantsWebGrounding(string $query): bool
+    {
+        $q = mb_strtolower(trim($query));
+        if ($q === '' || $q === ' ' || $q === '...') {
+            return false;
+        }
+
+        $webIntents = [
+            // Explicit web search.
+            '/\b(?:google|search(?:ing)?\b|internet|web\b|website|online|brows(?:e|ing))\b/i',
+            // News / current events / freshly released info.
+            '/\b(?:berita|news|terkini|terbaru|perkembangan|baru rilis|rilis\b|launch(?:ed|es)?\b|keluaran baru|info (?:terbaru|terkini))\b/i',
+            // External market / finance signals.
+            '/\b(?:pasaran|di pasar|market(?:place)?\b|harga (?:pasar|pasaran|terkini|terbaru|dunia|luar negeri|internasional)|kurs\b|rate\b|usd|dollar|dolar)\b/i',
+            // World / generic daily-life or trend topics.
+            '/\b(?:cuaca|weather|liga\b|skor pertandingan|viral|fyp\b|tiktok|tren\b|trend\b|berita olahraga|jadwal (?:lig|tim))(?:\s|$)/i',
+            // English phrasings.
+            '/\b(?:who is|what is the latest|how much is|current (?:price|rate) of|latest news|breaking news)\b/i',
+        ];
+
+        foreach ($webIntents as $pattern) {
+            if ((bool) preg_match($pattern, $q)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Persist a base64 inline image returned by an image-capable model into the
      * ai_generated store and return its download metadata (or null on failure).
      */
@@ -554,6 +591,10 @@ CONTEXT;
         // the plain prompt when disabled or unsupported by the selected model
         // (image-capable Nano Banana models skip tools/grounding).
         //
+        // Grounding is applied smartly per-query: Google Search only runs when
+        // the message wants external/current info (see wantsWebGrounding), so
+        // store operations never pay the web-search round-trip latency.
+        //
         // On Gemini 3 the two can run TOGETHER via tool combos (Preview): the
         // model grounds itself in real-time web data first, then calls the
         // store tools. This needs toolConfig.includeServerSideToolInvocations
@@ -563,8 +604,14 @@ CONTEXT;
         $isImageModel = $this->isImageModel($useModel);
         $toolsEnabled = ! $isImageModel && (bool) ($settings?->ai_tools_enabled ?? true);
         $groundingRequested = ! $isImageModel && (bool) ($settings?->ai_grounding_enabled ?? true);
+        // Web grounding is ONLY worth its latency when the query actually needs
+        // live/external info (news, market prices, world facts). Plain store/ops
+        // questions ("stok iphone 13?", "omset hari ini?", "siapa pelanggan ini")
+        // skip Google Search entirely, so most replies are a single fast model
+        // round-trip instead of a web-search + multi-tool detour.
+        $groundingWanted = $groundingRequested && $this->wantsWebGrounding($queryText);
         $comboWanted = $toolsEnabled
-            && $groundingRequested
+            && $groundingWanted
             && (bool) ($settings?->ai_tool_combo ?? true);
         $comboSupported = $comboWanted && $this->isGemini3Model($useModel);
 
@@ -573,7 +620,7 @@ CONTEXT;
         if ($toolsEnabled) {
             $tools = $toolService->declarations();
         }
-        if ($groundingRequested && ($tools === [] || $comboSupported)) {
+        if ($groundingWanted && ($tools === [] || $comboSupported)) {
             $tools[] = ['googleSearch' => new \stdClass];
         }
         $toolCombo = $comboSupported && $tools !== [];
