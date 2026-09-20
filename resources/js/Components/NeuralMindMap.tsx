@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import {
     ZoomIn,
     ZoomOut,
@@ -12,7 +12,8 @@ import {
     Power,
     ShieldCheck,
     Sparkles,
-    Palette
+    Palette,
+    Loader2
 } from 'lucide-react';
 import { RELATION_LABEL } from '@/lib/relations';
 import { kindOf, kindMeta, KIND_META, kindList, type Kind } from '@/lib/kinds';
@@ -731,10 +732,11 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
         return { x: clientX - rect.left, y: clientY - rect.top };
     };
 
-    const matches = useMemo(() => {
+    // Local substring hits for the current query.
+    const substringMatches = useMemo(() => {
         const q = searchQuery.trim().toLowerCase();
-        if (!q) return new Set<number>();
         const set = new Set<number>();
+        if (!q) return set;
         nodes.forEach(node => {
             if (node.title.toLowerCase().includes(q) || node.content.toLowerCase().includes(q)) {
                 set.add(node.id);
@@ -742,6 +744,32 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
         });
         return set;
     }, [searchQuery, nodes]);
+
+    // Server-side semantic hits (embedding) — nodes that match by meaning even
+    // when they share no words with the query.
+    const semanticMatches = useMemo(() => {
+        const set = new Set<number>();
+        (semanticHits ?? []).forEach(hit => {
+            if (hit && typeof hit.id === 'number' && nodeById[hit.id]) set.add(hit.id);
+        });
+        return set;
+    }, [semanticHits, nodeById]);
+
+    const matches = useMemo(() => {
+        const merged = new Set(substringMatches);
+        semanticMatches.forEach(id => merged.add(id));
+        return merged;
+    }, [substringMatches, semanticMatches]);
+
+    // Nodes the embeddings found that the literal query missed — they get a
+    // distinct "lit by meaning" glow so you can see the semantic reach.
+    const semanticOnly = useMemo(() => {
+        const set = new Set<number>();
+        semanticMatches.forEach(id => {
+            if (!substringMatches.has(id)) set.add(id);
+        });
+        return set;
+    }, [semanticMatches, substringMatches]);
 
     const handleWheel = (e: React.WheelEvent) => {
         const local = toLocal(e.clientX, e.clientY);
@@ -823,7 +851,7 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
     };
 
     const selectedNode = selectedId !== null ? nodeById[selectedId] : null;
-    const selectedNeighbors = selectedNode ? Array.from(neighbors[selectedNode.id] || []) : [];
+    const selectedDetail = selectedId !== null ? detailById[selectedId] : undefined;
 
     const detailRef = useRef<HTMLDivElement>(null);
 
@@ -846,6 +874,32 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
         }
         return map;
     }, [links, selectedId]);
+
+    // Unified synapse rows for the detail panel: once the on-demand body is
+    // loaded it lists every connection server-side; until then it falls back
+    // to the neighbours already present in the graph payload.
+    const synapseRows = useMemo(() => {
+        if (selectedId === null) return [];
+        const detail = detailById[selectedId];
+        if (detail && Array.isArray(detail.links) && detail.links.length > 0) {
+            return detail.links.map(l => ({
+                id: l.id,
+                title: l.title || `Memory #${l.id}`,
+                rel: l.relation ? (RELATION_LABEL[l.relation] ?? l.relation) : (l.label ?? 'Related'),
+                reason: l.reason ?? l.label ?? null,
+                weight: l.weight ?? null,
+            }));
+        }
+        return Array.from(neighbors[selectedId] || []).flatMap(nid => {
+            const nb = nodeById[nid];
+            if (!nb) return [];
+            const link = linkInfoTo[nid];
+            const relName = link?.relation
+                ? RELATION_LABEL[link.relation] ?? link.relation
+                : link?.label ?? 'Related';
+            return [{ id: nid, title: nb.title, rel: relName, reason: link?.reason ?? link?.label ?? null, weight: link?.weight ?? null }];
+        });
+    }, [selectedId, detailById, neighbors, nodeById, linkInfoTo]);
 
     const searching = searchQuery.trim().length > 0;
 
@@ -874,9 +928,17 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                         autoComplete="off"
                         className="w-full min-w-0 h-full bg-transparent appearance-none text-xs text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
                     />
+                    {semanticSearching && (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 text-primary animate-spin" />
+                    )}
                     {searching && matches.size > 0 && (
                         <span className="shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/10 text-primary text-[9px] font-bold flex items-center justify-center">
                             {matches.size}
+                        </span>
+                    )}
+                    {searching && semanticMatches.size > 0 && (
+                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold text-primary" title="Semantic matches — found by meaning, not just words">
+                            <Sparkles className="h-3 w-3" />
                         </span>
                     )}
                     {searchQuery && (
@@ -1083,6 +1145,7 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                 const w = nodeWidth(nodeById[node.id]);
                                 const isSelected = selectedId === node.id;
                                 const isMatch = matches.size > 0 && matches.has(node.id);
+                                const litSemantic = searching && semanticOnly.has(node.id);
                                 const livePulse = liveActive ? liveById.get(node.id) : undefined;
                                 const liveNow = liveActive && livePulse !== undefined && revealed.has(node.id);
                                 const livePending = liveActive && livePulse !== undefined && !revealed.has(node.id);
@@ -1106,8 +1169,8 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                                 } ${!node.is_active ? 'opacity-55' : ''} ${
                                                     isSelected ? 'ring-2 ring-primary' : ''
                                                 } ${isMatch ? 'ring-2 ring-primary/60' : ''} ${
-                                                    dimmed ? 'opacity-25' : ''
-                                                } ${
+                                                    litSemantic ? 'ring-2 ring-primary shadow-[0_0_12px_rgba(0,122,255,0.35)]' : ''
+                                                } ${dimmed ? 'opacity-25' : ''} ${
                                                     livePending ? 'ring-1 ring-primary/40' : ''
                                                 } ${
                                                     liveNow ? 'ring-2 ring-primary shadow-[0_0_14px_rgba(0,122,255,0.4)]' : ''
@@ -1218,6 +1281,12 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                             {selectedNode.title}
                         </h4>
                     </div>
+                    {detailLoading && !selectedDetail && (
+                        <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary shrink-0">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Loading memory…
+                        </span>
+                    )}
                     <div className="flex items-center gap-1.5 shrink-0">
                         {onReclassify && (
                             <select
@@ -1256,7 +1325,7 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                 </div>
 
                 <p className="px-4 py-3 text-xs text-foreground/95 leading-relaxed whitespace-pre-wrap max-h-[38vh] overflow-y-auto bg-background/40 border-y border-border/40">
-                    {selectedNode.content}
+                    {selectedDetail?.content ?? selectedNode.content}
                 </p>
 
                 <div className="px-4 py-3 space-y-3">
@@ -1284,39 +1353,30 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                         </span>
                     </div>
 
-                    {selectedNeighbors.length > 0 && (
+                    {synapseRows.length > 0 && (
                         <div className="border-t border-border/40 pt-3 space-y-2">
                             <p className="text-[10px] font-bold tracking-wider text-muted-foreground uppercase">
-                                Synapses ({selectedNeighbors.length})
+                                Synapses ({synapseRows.length})
                             </p>
                             <div className="flex flex-wrap gap-1.5">
-                                {selectedNeighbors.map(nid => {
-                                    const nb = nodeById[nid];
-                                    if (!nb) return null;
-                                    const link = linkInfoTo[nid];
-                                    const relName = link?.relation
-                                        ? RELATION_LABEL[link.relation] ?? link.relation
-                                        : link?.label ?? 'Related';
-                                    const w = link?.weight;
-                                    return (
-                                        <button
-                                            key={nid}
-                                            onClick={() => focusNode(nid)}
-                                            title={link?.reason ?? link?.label ?? relName}
-                                            className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground hover:border-primary/50 hover:text-primary transition"
-                                        >
-                                            {nb.title}
-                                            <span className="ml-1.5 inline-flex items-center gap-1 text-[9px] font-semibold text-primary uppercase">
-                                                {relName}
-                                                {w !== null && w !== undefined && (
-                                                    <span className="font-mono text-muted-foreground">
-                                                        {Math.round(w * 100)}%
-                                                    </span>
-                                                )}
-                                            </span>
-                                        </button>
-                                    );
-                                })}
+                                {synapseRows.map(link => (
+                                    <button
+                                        key={link.id}
+                                        onClick={() => focusNode(link.id)}
+                                        title={link.reason ?? link.rel}
+                                        className="px-2 py-1 rounded-lg border border-border/60 bg-background/70 text-[10.5px] font-medium text-foreground hover:border-primary/50 hover:text-primary transition"
+                                    >
+                                        {link.title}
+                                        <span className="ml-1.5 inline-flex items-center gap-1 text-[9px] font-semibold text-primary uppercase">
+                                            {link.rel}
+                                            {link.weight !== null && link.weight !== undefined && (
+                                                <span className="font-mono text-muted-foreground">
+                                                    {Math.round(link.weight * 100)}%
+                                                </span>
+                                            )}
+                                        </span>
+                                    </button>
+                                ))}
                             </div>
                         </div>
                     )}
