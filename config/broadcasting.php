@@ -42,7 +42,9 @@ return [
                 'useTLS' => env('REVERB_SCHEME', 'https') === 'https',
             ],
             'client_options' => [
-                // Guzzle client options: https://docs.guzzlephp.org/en/stable/request-options.html
+                // Reverb publish happens host-to-host; when it serves a
+                // self-signed certificate, skip peer verification.
+                'verify' => false,
             ],
         ],
 
