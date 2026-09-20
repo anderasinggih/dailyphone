@@ -40,6 +40,28 @@ class GeminiAssistantService
     // the prompt tight — like a human only recalling *strong* associations.
     protected const MIN_ACTIVATION_WEIGHT = 0.10;
 
+    // Activation = synapse × recency_decay × emotion_boost × usage_boost. A
+    // memory's strength is lived, not static: recently touched nodes fire
+    // strongest (half-life ~60 days, never fully annihilated), emotionally
+    // loaded ones hit harder, and frequently cited ones are reinforced — the
+    // closer a recall feels to human attention.
+    protected const RECENCY_HALF_LIFE_DAYS = 60.0;
+
+    protected const RECENCY_FLOOR = 0.30;
+
+    protected const EMOTION_BOOST = 1.4;
+
+    protected const USAGE_BOOST_PER_LOG = 0.20;
+
+    protected const USAGE_BOOST_CAP = 2.0;
+
+    // Tight ceiling for dream-hopping: only the strongest first-hop neurons
+    // are allowed to pull their own neighbours (bounded fan-out), so the
+    // second hop stays small and the prompt stays tight.
+    protected const SECOND_HOP_SOURCES = 3;
+
+    protected const SECOND_HOP_PER_SOURCE = 2;
+
     public function __construct()
     {
         $this->reloadSettings();
@@ -1914,6 +1936,31 @@ SYSTEM;
         return $score;
     }
 
+    /**
+     * Lived-memory strengthening for a node: how strongly an activated memory
+     * should fire TODAY. Newer nodes decay slowly (half-life), emotionally
+     * tagged nodes are punchier, and nodes the user keeps coming back to
+     * (used_count) become proportionally louder — the human qualities SQL alone
+     * can never model.
+     */
+    protected function memoryBoost($node): float
+    {
+        $ageDays = 0.0;
+        $updated = $node->updated_at ?? null;
+        if ($updated) {
+            $ageDays = max(0.0, (now()->timestamp - $updated->timestamp) / 86400.0);
+        }
+
+        $recency = max(self::RECENCY_FLOOR, pow(0.5, $ageDays / self::RECENCY_HALF_LIFE_DAYS));
+
+        $emotion = (string)($node->kind ?? '') === 'emotions' ? self::EMOTION_BOOST : 1.0;
+
+        $usage = 1.0 + self::USAGE_BOOST_PER_LOG * log(max(1, (int)($node->used_count ?? 0)) + 1);
+        $usage = min($usage, self::USAGE_BOOST_CAP);
+
+        return $recency * $emotion * $usage;
+    }
+
     protected function neuronLabel($note): string
     {
         $title = trim((string)($note->title ?? ''));
@@ -2010,60 +2057,117 @@ SYSTEM;
             return $line;
         })->values();
 
-        // ── Path expansion: pull the CONTENT of the most-related neighbours ──
+        // ── Path expansion: pull the CONTENT of related neighbours ──
         // Spreading activation: associations travel strongest-first along the
-        // synapse weights (deeper / weaker edges are dropped), and neighbours
-        // are ranked by connection strength — exactly how human memory recalls
-        // related facts — not by surface token overlap.
-        $expansion = [];
-
-        foreach ($synapses as $sourceId => $links) {
-            if (!isset($selectedIds[$sourceId])) {
-                continue;
-            }
-            $links = array_values(array_filter($links, fn($l) => (float)($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT));
+        // synapse weights, modulated by how "alive" each memory feels today
+        // (recency × emotion × usage). Strong first-hop neurons may then pull
+        // their own best neighbours (a tight, capped second hop), so recall can
+        // wander two jumps the way human memory chains do — never blindly.
+        $strongEdges = function (array $links): array {
+            $links = array_values(array_filter(
+                $links,
+                fn($l) => (float)($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT
+            ));
             usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
-            foreach (array_slice($links, 0, 3) as $l) {
-                if (isset($selectedIds[$l['id']]) || $l['id'] <= 0) {
+            return $links;
+        };
+
+        $candidates = [];
+
+        // Hop 1: strongest synapses out of every selected seed neuron.
+        foreach ($selectedIds->keys() as $sourceId) {
+            foreach (array_slice($strongEdges($synapses[(int)$sourceId] ?? []), 0, 3) as $l) {
+                $target = (int)$l['id'];
+                if ($target <= 0 || isset($selectedIds[$target])) {
                     continue;
                 }
-                $expansion[$l['id']] = [
-                    'id' => $l['id'],
-                    'from' => (int)$sourceId,
-                    'rel' => $l['rel'],
-                    'w' => (float)$l['w'],
+                $w = (float)$l['w'];
+                $existing = $candidates[$target] ?? null;
+                if ($existing && $existing['weight'] >= $w) {
+                    continue;
+                }
+                $candidates[$target] = [
+                    'id' => $target,
+                    'weight' => $w,
+                    'path' => [(int)$sourceId, $target],
+                    'via' => (string)$l['rel'],
                 ];
             }
         }
 
-        if ($expansion !== []) {
-            $neighbourNodes = \App\Models\AiTrainingNote::whereIn('id', array_keys($expansion))
-                ->where('is_active', true)
-                ->get()
-                ->keyBy('id');
+        if ($candidates === []) {
+            return $main->implode("\n");
+        }
 
-            $paths = collect(array_values($expansion))->map(function ($e) use ($neighbourNodes) {
-                $node = $neighbourNodes[$e['id']] ?? null;
-                if (!$node) {
-                    return null;
+        $hopNodes = \App\Models\AiTrainingNote::whereIn('id', array_keys($candidates))
+            ->where('is_active', true)
+            ->get()
+            ->keyBy('id');
+
+        foreach ($candidates as $id => $c) {
+            $node = $hopNodes[$id] ?? null;
+            $candidates[$id]['activation'] = $node
+                ? $c['weight'] * $this->memoryBoost($node)
+                : 0.0;
+        }
+
+        // Hop 2: only the loudest first-hop neurons fire again, and only along
+        // their own strong edges — hard caps keep the dream small.
+        $hopOneRanked = collect($candidates)
+            ->filter(fn($c) => $c['activation'] > 0)
+            ->sortByDesc('activation')
+            ->take(self::SECOND_HOP_SOURCES);
+
+        foreach ($hopOneRanked as $c) {
+            foreach (array_slice($strongEdges($synapses[$c['id']] ?? []), 0, self::SECOND_HOP_PER_SOURCE) as $l) {
+                $target = (int)$l['id'];
+                if ($target <= 0 || isset($selectedIds[$target]) || isset($candidates[$target])) {
+                    continue;
                 }
-                return [
-                    'id' => $e['id'],
-                    'kind' => $node->kind,
-                    'from' => $e['from'],
-                    'rel' => $e['rel'],
-                    'activation' => $e['w'],
-                    'content' => mb_strimwidth((string)$node->content, 0, 130, '…'),
+                $candidates[$target] = [
+                    'id' => $target,
+                    'weight' => $c['weight'] * (float)$l['w'],
+                    'path' => array_merge($c['path'], [$target]),
+                    'via' => (string)$l['rel'],
                 ];
-            })->filter()
-                ->sortByDesc('activation')
-                ->take(8)
-                ->values();
+            }
+        }
 
+        // Load whatever was dreamt into reachable nodes, then rank by final
+        // activation = synapse product × lived memory strength.
+        $expandedNodes = \App\Models\AiTrainingNote::whereIn('id', array_keys($candidates))
+            ->where('is_active', true)
+            ->get()
+            ->keyBy('id');
+
+        $paths = collect(array_values($candidates))->map(function ($c) use ($expandedNodes) {
+            $node = $expandedNodes[$c['id']] ?? null;
+            if (!$node) {
+                return null;
+            }
+            $activation = $c['weight'] * $this->memoryBoost($node);
+            $hop = count($c['path']) - 1;
+            return [
+                'id' => $c['id'],
+                'kind' => $node->kind,
+                'path' => $c['path'],
+                'via' => $c['via'],
+                'hop' => $hop,
+                'activation' => $activation,
+                'content' => mb_strimwidth((string)$node->content, 0, 130, '…'),
+            ];
+        })->filter()
+            ->sortByDesc('activation')
+            ->take(8)
+            ->values();
+
+        if ($paths->isNotEmpty()) {
             $lines = $paths->map(function ($p) {
                 $tag = self::kindTag($p['kind']);
-                $via = mb_strimwidth((string)$p['rel'], 0, 24, '');
-                return "- {$tag} node #{$p['id']}: {$p['content']} (jalur dari node #{$p['from']} via {$via})";
+                $via = mb_strimwidth((string)$p['via'], 0, 24, '');
+                $chain = implode(' → #', $p['path']);
+                $hopNote = $p['hop'] > 1 ? ', hop 2' : '';
+                return "- {$tag} node #{$p['id']}: {$p['content']} (jalur: #{$chain} via {$via}{$hopNote})";
             })->implode("\n");
 
             $main[] = "\nNODE TERKAIT DI JALUR RELASI (konten node sebelah yang paling relevan dengan konteks):\n{$lines}";
