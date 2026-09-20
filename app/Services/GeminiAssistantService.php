@@ -30,6 +30,21 @@ class GeminiAssistantService
     // the abstention floor (item 13) and for the per-chat observability log.
     protected ?array $retrievalState = null;
 
+    // Cross-turn momentum (inter-turn spread): the recent conversation of the
+    // active session, folded into retrieval so follow-up messages prime the
+    // same neurons a human holds on to mid-conversation — a store topic keeps
+    // surfacing store memories even when the next query doesn't name them.
+    protected ?string $conversationContextText = null;
+
+    // How far back the momentum window reaches. Recent windows are tight so a
+    // memory consulted minutes ago stays loud, while a node last touched a
+    // week ago no longer leaks into unrelated queries.
+    protected const MOMENTUM_WINDOW_HOURS = 3;
+
+    // Bounded share of the prompt reserved for context/spreading seeds
+    // (momentum + situational episode tags) on top of the semantic matches.
+    protected const CONTEXT_SEED_SLOTS = 4;
+
     // Accumulated Gemini usage metadata while tools/grounding land multiple
     // round-trips under one chat() call.
     protected array $usageTotals = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
@@ -508,6 +523,12 @@ CONTEXT;
 
         $settings = GeneralSetting::first();
         $queryText = $query !== null ? trim($query) : $this->lastUserText($messages);
+
+        // Inter-turn momentum: hand the recent conversation to retrieval so the
+        // seed set blends semantic query matches with whatever is still "alive"
+        // in the talk (situational episode tags + just-used/talked-about nodes).
+        $this->setConversationContext($messages);
+
         $neurons = $this->resolveNeurons($queryText);
         $trainingNotesStr = $this->generateTrainingNotesContext($queryText);
 
@@ -798,7 +819,11 @@ CRITICAL: Only emit ```action_proposal when the user role is 'superadmin'. For n
 
 PROMPT;
 
-        $tailStatic = <<<PROMPT
+        // The model resolves relative dates ("kemarin", "lusa", "tadi") into
+        // real "when" episode tags for episodic memory — it needs today's date
+        // to do that correctly.
+        $tailStatic = "TANGGAL HARI INI: " . now()->format('d M Y (l)') . ". Gunakan tanggal ini untuk mengubah kata waktu relatif menjadi tanggal nyata.\n" .
+            <<<PROMPT
 
 READING LINKS & ARTICLES (otomatis oleh sistem):
 - Saat pengguna berbagi sebuah tautan (artikel, Wikipedia, berita, blog, dokumen PDF) dan memintamu membacanya / mempelajarinya / meringkasnya / mencatatnya ("baca ini ...", "pelajari https://...", "ringkas link ini", "simpan ke node ..."), BACKEND SECARA OTOMATIS mengambil isi halaman tersebut dan menyimpannya sebagai node neuron memory BARU dalam request yang sama — SEBELUM kamu menjawab.
@@ -837,6 +862,7 @@ PERSISTENT TRAINING MEMORY — THE AI'S NEURON NETWORK (ATURAN PENYIMPANAN WAJIB
   * "warning"    = PERINGATAN/risiko yang harus diingatkan kembali (jangan percaya garansi palsu, hindari supplier X).
 - "kind" harus "rule" HANYA jika pengguna SUPERADMIN (lihat ACCESS RULES). Untuk pengguna lain pilih kind non-rule di atas (decode kependekan pun diterima, contoh "memory"/"memori"/"validation").
 - "title" boleh dihilangkan (otomatis dibuat dari content). "related" sangat dianjurkan: 2-4 kata kunci spesifik yang menentukan relasi node ini di neuron map.
+- EPISODE TAG (opsional, dianjurkan untuk kind "memory"/"emotions" saat ingatannya melekat ke kejadian spesifik): tambahkan kunci "when", "where", "who" di JSON blok. "when" = "YYYY-MM-DD" — UBAH kata relatif ("kemarin", "tadi", "lusa", "beberapa hari lalu", "baru saja") menjadi tanggal nyata berdasarkan tanggal hari ini yang disebut di prompt. "where" = lokasi singkat kejadian ("di Juanda", "Cabang Gatot"). "who" = orang yang terlibat ("bersama Dewi"). Contoh: {"kind": "memory", "content": "Penjemputan Kakak di bandara Juanda", "when": "2026-09-18", "where": "Juanda", "who": "Kakak"}. Sistem menyimpan tag ini sebagai bingkai episodik ingatan, sehingga kamu bisa memanggilnya dari konteks waktu/tempat/orang — bukan hanya teks.
 - Tulis content padat & actionable, hanya aturan/fakta yang belum tercatat.
 - DILARANG menulis "📝 Node baru: ..." atau konfirmasi pencatatan apa pun di teks yang terlihat — biarkan sistem menangani penyimpanan senyap lewat blok ```ai_memo.
 - INISIATIF MENYIMPAN (OTONOM): Kamu bebas mencatat apa pun yang kamu nilai layak menurut penilaianmu sendiri — pengalaman, fakta, preferensi, kebijakan, detail pribadi — tanpa diminta dan tanpa izin, persis seperti manusia yang otaknya menyerap percakapan. Cukup satu blok ```ai_memo per balasan, dan jangan mengulang node yang sudah tercatat di GLOBAL AI TRAINING MEMORY.
@@ -1783,11 +1809,16 @@ SYSTEM;
         $notes = $this->selectTrainingNotes($query);
 
         $nodes = $notes->map(function ($n) {
-            return [
+            $node = [
                 'id' => (int)$n->id,
                 'title' => $this->neuronLabel($n),
                 'kind' => $n->kind,
             ];
+            $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
+            if ($sources !== []) {
+                $node['sources'] = $sources;
+            }
+            return $node;
         })->values()->all();
 
         $idSet = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
@@ -1818,6 +1849,24 @@ SYSTEM;
     }
 
     /**
+     * Feed the recent conversation of the active session into retrieval so
+     * seeds are drawn from BOTH the current query and what was just discussed
+     * (inter-turn spreading activation). Accepts the same message list the
+     * model sees; only the last few turns are kept, user + assistant alike.
+     */
+    public function setConversationContext(array $messages): void
+    {
+        $turns = collect($messages)
+            ->pluck('content')
+            ->filter(fn($t) => trim((string)$t) !== '')
+            ->map(fn($t) => mb_substr(trim((string)$t), 0, 600))
+            ->slice(-8)
+            ->values();
+
+        $this->conversationContextText = $turns->isEmpty() ? null : $turns->implode("\n");
+    }
+
+    /**
      * Choose which training notes reach the model: rules are always loaded
      * (they are directives), knowledge notes are ranked by semantic similarity
      * to the current query via the embedding index so the prompt stays tight
@@ -1831,7 +1880,8 @@ SYSTEM;
     protected function selectTrainingNotes(?string $query): \Illuminate\Support\Collection
     {
         $key = trim((string)$query);
-        if ($this->notesCache !== null && $this->notesCacheKey === $key) {
+        $cacheKey = $key . '::' . md5((string)$this->conversationContextText);
+        if ($this->notesCache !== null && $this->notesCacheKey === $cacheKey) {
             return $this->notesCache;
         }
 
@@ -1862,6 +1912,26 @@ SYSTEM;
             $method = 'token';
         }
 
+        // Mixed seeds (situational + inter-turn momentum): on top of the
+        // semantic matches, the notes that are "alive right now" in this
+        // conversation also reach the model — the episode frame a query refers
+        // to (time / place / person) plus whatever was just discussed or used
+        // moments ago. Bounded so the prompt stays tight.
+        $contextual = $this->contextSeedNotes($key);
+        $selectedIds = $selected->map(fn($n) => (int)$n->id)->filter()->flip();
+        $addedContext = 0;
+        foreach ($contextual as $note) {
+            if ($addedContext >= self::CONTEXT_SEED_SLOTS) {
+                break;
+            }
+            if (isset($selectedIds[$note->id])) {
+                continue;
+            }
+            $selectedIds[$note->id] = true;
+            $selected->push($note);
+            $addedContext++;
+        }
+
         // Remember the confidence signal for the abstention floor + telemetry.
         $this->retrievalState = [
             'query' => $key,
@@ -1869,21 +1939,233 @@ SYSTEM;
             'method' => $method,
             'top_k' => $topK,
             'notes_count' => $selected->count(),
+            'context_seeds' => $addedContext,
         ];
 
         $notes = $rules->merge($selected);
 
-        $this->notesCacheKey = $key;
+        $this->notesCacheKey = $cacheKey;
         $this->notesCache = $notes;
 
         return $notes;
     }
 
     /**
-     * Retrieval telemetry for the latest query: best cosine similarity, how the
-     * pool was built, and how many knowledge notes were selected.
+     * Situational + momentum seeds: nodes that should resurface because of the
+     * CONVERSATION, not just the current query's text. Four signals blend:
      *
-     * @return array{query: string, best_score: ?float, method: string, top_k: int, notes_count: int}
+     * 1. Relative-time recall ("lusa", "kemarin lusa", "2 hari lalu", a bare
+     *    date) — episodic nodes whose occurred_at falls on/near that day.
+     * 2. Place recall — nodes tagged with an occurred_place matching a word in
+     *    the conversation ("di Juanda").
+     * 3. Person recall — nodes whose involved_with matches a name in the text.
+     * 4. Momentum — nodes consulted within the last hours, plus nodes sharing
+     *    real tokens with the last turns (continuity across the discussion).
+     *
+     * Each returned note carries a seed_sources attribute so the UI and prompt
+     * can show WHY it resurfaced.
+     *
+     * @return \Illuminate\Support\Collection<int, \App\Models\AiTrainingNote>
+     */
+    protected function contextSeedNotes(string $query): \Illuminate\Support\Collection
+    {
+        $graph = app(\App\Services\AiMemoryGraphService::class);
+        $contextText = $query . "\n" . (string)$this->conversationContextText;
+        $lower = mb_strtolower($contextText);
+
+        $seeds = [];
+        $addSeed = function (int $id, string $reason) use (&$seeds) {
+            if (isset($seeds[$id])) {
+                $seeds[$id]['reasons'][] = $reason;
+                return;
+            }
+            $seeds[$id] = ['reasons' => [$reason]];
+        };
+
+        // ── 1. Temporal recall ──
+        foreach ($this->resolveEpisodeDates($lower) as $day) {
+            $from = $day->copy()->startOfDay()->subDay();
+            $to = $day->copy()->endOfDay()->addDay();
+            \App\Models\AiTrainingNote::where('is_active', true)
+                ->whereNotNull('occurred_at')
+                ->whereBetween('occurred_at', [$from, $to])
+                ->get(['id', 'occurred_at', 'occurred_place', 'involved_with'])
+                ->each(function ($n) use ($addSeed, $day) {
+                    $addSeed((int)$n->id, 'waktu ' . $day->format('Y-m-d'));
+                });
+        }
+
+        // ── 2 + 3. Place & person recall ──
+        $templated = \App\Models\AiTrainingNote::where('is_active', true)
+            ->where(function ($q) {
+                $q->whereNotNull('occurred_place')->where('occurred_place', '!=', '')
+                    ->orWhereNotNull('involved_with')->where('involved_with', '!=', '');
+            })
+            ->limit(800)
+            ->get(['id', 'occurred_place', 'involved_with']);
+
+        $wordInText = function (string $word) use ($lower): bool {
+            $word = mb_strtolower(trim($word));
+            if (mb_strlen($word) < 3 || preg_match('/^\d+$/', $word)) {
+                return false;
+            }
+            return preg_match('/(^|[^a-z0-9])' . preg_quote($word, '/') . '([^a-z0-9]|$)/u', $lower);
+        };
+
+        foreach ($templated as $note) {
+            $place = trim((string)$note->occurred_place);
+            if ($place !== '') {
+                foreach (preg_split('/[\s,\/\-]+/', $place) ?: [] as $word) {
+                    if ($wordInText($word)) {
+                        $addSeed((int)$note->id, 'di ' . mb_strimwidth($place, 0, 40, '…'));
+                        break;
+                    }
+                }
+            }
+            $person = trim((string)$note->involved_with);
+            if ($person !== '') {
+                foreach (preg_split('/[\s,\/\-]+/', $person) ?: [] as $word) {
+                    if ($wordInText($word)) {
+                        $addSeed((int)$note->id, 'bersama ' . mb_strimwidth($person, 0, 40, '…'));
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── 4. Momentum: just-used + just-discussed ──
+        \App\Models\AiTrainingNote::where('is_active', true)
+            ->whereNotNull('last_used_at')
+            ->where('last_used_at', '>=', now()->subHours(self::MOMENTUM_WINDOW_HOURS))
+            ->orderByDesc('last_used_at')
+            ->limit(6)
+            ->get(['id'])
+            ->each(fn($n) => $addSeed((int)$n->id, 'momentum percakapan'));
+
+        if ($this->conversationContextText !== null) {
+            foreach ($graph->candidateNoteIds($graph->tokenize($this->conversationContextText), 120) as $id) {
+                $addSeed((int)$id, 'topik yang sedang dibahas');
+            }
+        }
+
+        if ($seeds === []) {
+            return collect();
+        }
+
+        $notes = \App\Models\AiTrainingNote::whereIn('id', array_keys($seeds))
+            ->where('is_active', true)
+            ->get()
+            ->keyBy('id');
+
+        $out = collect();
+        foreach ($seeds as $id => $meta) {
+            $note = $notes[$id] ?? null;
+            if ($note === null) {
+                continue;
+            }
+            $note->setAttribute('seed_sources', array_values(array_unique($meta['reasons'])));
+            $out->push($note);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Resolve Indonesian relative-time expressions (and bare dates) into the
+     * actual ≈dates a human would mean, so episodic recall can seed a memory
+     * from context instead of keywords.
+     *
+     * @return \Illuminate\Support\Carbon[]  Unique calendar days (with time: 12:00).
+     */
+    protected function resolveEpisodeDates(string $lower): array
+    {
+        $days = [];
+        $today = now()->startOfDay();
+
+        // Absolute dates (dd/mm, dd/mm/yy, dd month [yyyy]) — Indonesian months.
+        $monthNames = 'januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember';
+        $monthList = explode('|', $monthNames);
+        if (preg_match('/(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?/u', $lower, $m)) {
+            $day = \Illuminate\Support\Carbon::createFromDate(
+                !empty($m[3]) ? (int)$m[3] : (int)$today->format('Y'),
+                max(1, min(12, (int)$m[2])),
+                max(1, min(31, (int)$m[1])),
+            );
+            $days[$day->format('Y-m-d')] = $day->copy()->startOfDay()->addHours(12);
+        }
+        if (preg_match('/(\d{1,2})\s*(?:hari\s*)?(?:bulan\s*)?(' . $monthNames . ')\s*(?:tahun\s*)?(\d{2,4})?/u', $lower, $m)) {
+            $monthNo = array_search($m[2], $monthList) + 1;
+            $year = !empty($m[3]) ? (int)$m[3] : (int)$today->format('Y');
+            $day = \Illuminate\Support\Carbon::createFromDate($year, $monthNo, max(1, min(31, (int)$m[1])));
+            $days[$day->format('Y-m-d')] = $day->copy()->startOfDay()->addHours(12);
+        }
+
+        // Relative words → target calendar days against today.
+        $wordMap = [
+            'hari ini' => [0],
+            'hariini' => [0],
+            'sekarang' => [0],
+            'barusan' => [0],
+            'tadi malam' => [0, -1],
+            'tadi pagi' => [0],
+            'tadi siang' => [0],
+            'tadi sore' => [0],
+            'tadi' => [0],
+            'kemarin lusa' => [-2],
+            'kemarin' => [-1],
+            'besok' => [1],
+            'lusa' => [2],
+            'minggu lalu' => [-7],
+            'pekan lalu' => [-7],
+            'minggu depan' => [7],
+            'pekan depan' => [7],
+            'seminggu yang lalu' => [-7],
+            'sebulan yang lalu' => [-30],
+            'setahun yang lalu' => [-365],
+            'sehari yang lalu' => [-1],
+        ];
+        foreach ($wordMap as $phrase => $offs) {
+            if (str_contains($lower, $phrase)) {
+                foreach ($offs as $off) {
+                    $d = $today->copy()->addDays($off);
+                    $days[$d->format('Y-m-d')] = $d->copy()->addHours(12);
+                }
+            }
+        }
+
+        // "tiga/dua/empat... hari (yang) lalu" (worded counts).
+        $wordNo = ['satu' => 1, 'dua' => 2, 'tiga' => 3, 'empat' => 4, 'lima' => 5,
+            'enam' => 6, 'tujuh' => 7, 'delapan' => 8, 'sembilan' => 9, 'sepuluh' => 10];
+        if (preg_match('/\b(' . implode('|', array_keys($wordNo)) . ')\s+hari\s+(?:yang\s+)?(?:(?:yang\s+)?lalu|lagi)/u', $lower, $m)) {
+            $off = $wordNo[$m[1]] ?? 0;
+            $sign = str_contains($m[0], 'lalu') ? 1 : -1;
+            $d = $today->copy()->subDays($off * $sign);
+            $days[$d->format('Y-m-d')] = $d->copy()->addHours(12);
+        }
+
+        // Numeric offsets: "N hari/minggu/bulan/tahun (yang) lalu" and "lagi".
+        foreach (['hari' => 1, 'minggu' => 7, 'bulan' => 30, 'tahun' => 365] as $unit => $mult) {
+            if (preg_match('/(\d{1,3})\s*' . $unit . '\s+(?:yang\s+)?lalu/u', $lower, $m)) {
+                $off = (int)$m[1] * $mult;
+                $d = $today->copy()->subDays($off);
+                $days[$d->format('Y-m-d')] = $d->copy()->addHours(12);
+            }
+            if (preg_match('/(\d{1,3})\s*' . $unit . '\s+(?:yang\s+)?(?:lagi|ke depan)/u', $lower, $m)) {
+                $off = (int)$m[1] * $mult;
+                $d = $today->copy()->addDays($off);
+                $days[$d->format('Y-m-d')] = $d->copy()->addHours(12);
+            }
+        }
+
+        return array_values($days);
+    }
+
+    /**
+     * Retrieval telemetry for the latest query: best cosine similarity, how the
+     * pool was built, how many knowledge notes were selected, and how many of
+     * those were context/spreading seeds on top of the semantic matches.
+     *
+     * @return array{query: string, best_score: ?float, method: string, top_k: int, notes_count: int, context_seeds: int}
      */
     public function lastRetrieval(): array
     {
@@ -1893,6 +2175,7 @@ SYSTEM;
             'method' => 'none',
             'top_k' => 0,
             'notes_count' => 0,
+            'context_seeds' => 0,
         ];
     }
 
@@ -2106,6 +2389,29 @@ SYSTEM;
             $content = mb_strimwidth((string)$n->content, 0, 170, '…');
             $author = $n->author_name ?? 'System';
             $line = "- {$tag} node #{$n->id}: {$content} (oleh: {$author})";
+
+            // Episode frame: the when/where/with-whom anchors of an episodic
+            // memory, so the model sees it was recalled by context, not text.
+            $episode = [];
+            if (!empty($n->occurred_at)) {
+                $episode[] = $n->occurred_at->format('d M Y');
+            }
+            if (trim((string)($n->occurred_place ?? '')) !== '') {
+                $episode[] = trim((string)$n->occurred_place);
+            }
+            if (trim((string)($n->involved_with ?? '')) !== '') {
+                $episode[] = 'bersama ' . trim((string)$n->involved_with);
+            }
+            if ($episode !== []) {
+                $line .= " [episode: " . implode(' · ', $episode) . ']';
+            }
+
+            // Why this node resurfaced (situational / momentum seed) — makes
+            // the recall legible: "muncul dari: waktu … / topik yang dibahas".
+            $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
+            if ($sources !== []) {
+                $line .= ' (muncul: ' . implode(', ', $sources) . ')';
+            }
 
             $links = array_values(array_filter(
                 $synapses[$n->id] ?? [],

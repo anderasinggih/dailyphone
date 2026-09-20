@@ -14,7 +14,10 @@ import {
     Check,
     List,
     Network,
-    Activity
+    Activity,
+    CalendarDays,
+    MapPin,
+    Users
 } from 'lucide-react';
 import type { PageProps } from '@/types';
 import NeuralMindMap from '@/Components/NeuralMindMap';
@@ -41,6 +44,9 @@ interface TrainingNote {
     author_name: string | null;
     author_role: string | null;
     updated_at: string;
+    occurred_at?: string | null;
+    occurred_place?: string | null;
+    involved_with?: string | null;
     links: SynapseRef[];
 }
 
@@ -449,6 +455,33 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                                                     <>
                                                                         <span>•</span>
                                                                         <span>last {note.last_used_at}</span>
+                                                                    </>
+                                                                )}
+                                                                {note.occurred_at && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="inline-flex items-center gap-1 text-primary font-semibold" title={`Episode frame: ${note.occurred_at} — retrieval can recall this memory by when, not just text`}>
+                                                                            <CalendarDays className="h-3 w-3 shrink-0" />
+                                                                            {note.occurred_at}
+                                                                        </span>
+                                                                    </>
+                                                                )}
+                                                                {note.occurred_place && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="inline-flex items-center gap-1 text-primary font-semibold" title="Episode frame: where this memory happened">
+                                                                            <MapPin className="h-3 w-3 shrink-0" />
+                                                                            {note.occurred_place}
+                                                                        </span>
+                                                                    </>
+                                                                )}
+                                                                {note.involved_with && (
+                                                                    <>
+                                                                        <span>•</span>
+                                                                        <span className="inline-flex items-center gap-1 text-primary font-semibold" title="Episode frame: with whom this memory happened">
+                                                                            <Users className="h-3 w-3 shrink-0" />
+                                                                            {note.involved_with}
+                                                                        </span>
                                                                     </>
                                                                 )}
                                                                 {!note.is_active && (

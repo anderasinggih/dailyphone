@@ -63,6 +63,9 @@ class AiTrainingNoteController extends Controller
             'is_active' => $n->is_active,
             'used_count' => (int)$n->used_count,
             'last_used_at' => $n->last_used_at ? $n->last_used_at->diffForHumans() : null,
+            'occurred_at' => $n->occurred_at ? $n->occurred_at->format('d M Y') : null,
+            'occurred_place' => $n->occurred_place,
+            'involved_with' => $n->involved_with,
             'author_name' => $n->author_name,
             'author_role' => $n->author_role,
             'updated_at' => $n->updated_at->diffForHumans(),
@@ -86,6 +89,9 @@ class AiTrainingNoteController extends Controller
         $request->validate([
             'content' => 'required|string|max:1000',
             'kind' => 'required|in:' . implode(',', $graph->kinds()),
+            'occurred_at' => 'nullable|date',
+            'occurred_place' => 'nullable|string|max:120',
+            'involved_with' => 'nullable|string|max:120',
         ]);
 
         $content = trim($request->input('content'));
@@ -101,6 +107,9 @@ class AiTrainingNoteController extends Controller
                 'content_hash' => md5($content),
                 'kind' => $kind,
                 'is_active' => true,
+                'occurred_at' => $request->filled('occurred_at') ? $request->input('occurred_at') : null,
+                'occurred_place' => mb_substr(trim((string)$request->input('occurred_place', '')), 0, 120) ?: null,
+                'involved_with' => mb_substr(trim((string)$request->input('involved_with', '')), 0, 120) ?: null,
             ]);
         }
 

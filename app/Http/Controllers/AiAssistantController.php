@@ -341,6 +341,12 @@ class AiAssistantController extends Controller
                     }
                 }
 
+                // Inter-turn momentum & situational recall: give retrieval the
+                // recent conversation BEFORE the live neuron map is resolved, so
+                // the map, the model context and the telemetry all share the
+                // same blended seed set (semantic + conversation + episode).
+                $this->geminiService->setConversationContext($messagesForModel);
+
                 $network = $this->geminiService->resolveNeuronNetwork($userText);
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
@@ -1403,6 +1409,49 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Resolve the episode date from a memo payload ("occurred_at" / "when").
+     * Accepts ISO dates ("2026-09-18"), full datetimes and "now"; anything
+     * unparseable quietly becomes null so a sloppy model tag never breaks a
+     * save. Relative words ("kemarin", "lusa") are NOT resolved here on
+     * purpose — the model is told today's date and is expected to convert
+     * them itself while writing the memo.
+     */
+    protected function episodeDate(array $decoded): ?\Illuminate\Support\Carbon
+    {
+        $raw = trim((string)($decoded['occurred_at'] ?? $decoded['when'] ?? ''));
+        if ($raw === '') {
+            return null;
+        }
+
+        if (strtolower($raw) === 'now' || strtolower($raw) === 'sekarang') {
+            return now();
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse($raw);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Normalize one episode label (place or person) to a bounded string, or
+     * null when it carries nothing (or is a sloppy punctuation fragment).
+     */
+    protected function episodeLabel($value): ?string
+    {
+        $label = trim((string)$value);
+        $label = trim($label, " \t\n\r.,;:!?\"'—-");
+        $label = (string)preg_replace('/\s+/u', ' ', $label);
+
+        if ($label === '' || mb_strlen($label) < 2 || mb_strlen($label) > 120) {
+            return null;
+        }
+
+        return mb_substr($label, 0, 120);
+    }
+
+    /**
      * Extract and persist AI-written training memos from a reply.
      * Kind 'rule' is preserved only when the author is superadmin;
      * everyone else's notes are stored as 'knowledge'.
@@ -1458,6 +1507,19 @@ class AiAssistantController extends Controller
         }, (array)($decoded['related'] ?? [])), fn($r) => $r !== '')));
         $related = array_slice($related, 0, 8);
 
+        // Episode frame (item: situational memory): the AI can tag a memory with
+        // when / where / with-whom, turning text into an episodic record that
+        // retrieval can later seed from context ("lusa", "di Juanda", a name).
+        $occurredAt = $this->episodeDate($decoded);
+        $occurredPlace = $this->episodeLabel($decoded['occurred_place'] ?? $decoded['where'] ?? null);
+        $involvedWith = $this->episodeLabel($decoded['involved_with'] ?? $decoded['who'] ?? null);
+
+        // Real experience memories without an explicit date happened "in the
+        // telling" — pin them to now so they are retrievable by time context.
+        if ($occurredAt === null && $kind === 'memory') {
+            $occurredAt = now();
+        }
+
         $hash = md5($content);
         if (\App\Models\AiTrainingNote::where('content_hash', $hash)->exists()
             || $graph->isDuplicateContent($content)) {
@@ -1475,6 +1537,9 @@ class AiAssistantController extends Controller
                 'content_hash' => $hash,
                 'kind' => $kind,
                 'is_active' => true,
+                'occurred_at' => $occurredAt,
+                'occurred_place' => $occurredPlace,
+                'involved_with' => $involvedWith,
             ]);
             return true;
         } catch (\Throwable $e) {

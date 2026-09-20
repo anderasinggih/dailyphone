@@ -23,12 +23,16 @@ class AiTrainingNote extends Model
         'last_used_at',
         'source_url',
         'source_label',
+        'occurred_at',
+        'occurred_place',
+        'involved_with',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
         'used_count' => 'integer',
         'last_used_at' => 'datetime',
+        'occurred_at' => 'datetime',
         'related_keywords' => 'array',
     ];
 

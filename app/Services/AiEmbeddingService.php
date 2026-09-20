@@ -259,6 +259,8 @@ class AiEmbeddingService
 
     /**
      * The text a note is embedded from: title + content + relation keywords.
+     * Episode tags (when/where/who) are folded in so semantic retrieval can
+     * match a memory by its situational frame, not only its wording.
      */
     public function noteText(AiTrainingNote $note): string
     {
@@ -268,7 +270,18 @@ class AiEmbeddingService
             ? trim(implode(' ', $note->related_keywords))
             : '';
 
-        return trim($title . ' ' . $related . ' ' . $content);
+        $episode = [];
+        if (!empty($note->occurred_at)) {
+            $episode[] = $note->occurred_at->format('Y-m-d');
+        }
+        if (trim((string)($note->occurred_place ?? '')) !== '') {
+            $episode[] = trim((string)$note->occurred_place);
+        }
+        if (trim((string)($note->involved_with ?? '')) !== '') {
+            $episode[] = trim((string)$note->involved_with);
+        }
+
+        return trim($title . ' ' . $related . ' ' . implode(' ', $episode) . ' ' . $content);
     }
 
     /**
