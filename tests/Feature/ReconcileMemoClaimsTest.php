@@ -25,6 +25,7 @@ class ReconcileMemoClaimsTest extends TestCase
         string $userText,
         string $ingestNotice = '',
         ?User $user = null,
+        string $priorUserText = '',
     ): array {
         $controller = app(AiAssistantController::class, [
             'geminiService' => app(GeminiAssistantService::class),
@@ -34,7 +35,7 @@ class ReconcileMemoClaimsTest extends TestCase
         $method->setAccessible(true);
 
         $owner = $user ?? User::factory()->create();
-        $method->invokeArgs($controller, [&$result, $owner, $userText, $ingestNotice]);
+        $method->invokeArgs($controller, [&$result, $owner, $userText, $ingestNotice, $priorUserText]);
 
         return $result;
     }
@@ -151,5 +152,46 @@ class ReconcileMemoClaimsTest extends TestCase
         ], 'simpan');
 
         $this->assertSame('Maaf, sistem mengalami kendala.', $result['reply']);
+    }
+
+    public function test_stores_the_value_not_the_acknowledgment_for_lone_value_claims(): void
+    {
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => 'NIM Dewi berhasil dicatat.',
+            'raw_reply' => 'NIM Dewi berhasil dicatat.',
+        ], '052870905', '', null, 'emang udah aku sebutin niminya?');
+
+        // The memory must contain the real fact, never the chat reply text.
+        $note = AiTrainingNote::where('content', 'NIM Dewi: 052870905')->first();
+        $this->assertNotNull($note, 'reconstructed memo must persist the value');
+        $this->assertSame(0, AiTrainingNote::where('content', 'like', '%berhasil dicatat%')->count());
+        $this->assertStringContainsString('```ai_memo', $result['raw_reply']);
+    }
+
+    public function test_does_not_store_node_naming_acknowledgments_as_memory(): void
+    {
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => 'Node baru tersebut saya beri nama "NIM Dewi".',
+            'raw_reply' => 'Node baru tersebut saya beri nama "NIM Dewi".',
+        ], 'apa nama nodenya');
+
+        // No factual memory is recoverable → the claim is corrected, no junk node.
+        $this->assertSame(0, AiTrainingNote::count());
+        $this->assertStringNotContainsString('```ai_memo', $result['raw_reply']);
+        $this->assertStringContainsString('gagal', $result['reply']);
+    }
+
+    public function test_does_not_store_repair_acknowledgments_without_a_user_value(): void
+    {
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => 'Sekarang saya perbarui dengan memasukkan nomor NIM 052870905 ke dalam catatan memorinya supaya tersimpan lengkap dan akurat di jaringan neuron.',
+            'raw_reply' => 'Sekarang saya perbarui dengan memasukkan nomor NIM 052870905 ke dalam catatan memorinya supaya tersimpan lengkap dan akurat di jaringan neuron.',
+        ], 'kok aku liat di description nodenya gaada nomer nimnya', '', null, 'berapa nimnya');
+
+        $this->assertSame(0, AiTrainingNote::count());
+        $this->assertStringNotContainsString('```ai_memo', $result['raw_reply']);
     }
 }

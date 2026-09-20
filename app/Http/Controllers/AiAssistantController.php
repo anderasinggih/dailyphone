@@ -373,7 +373,13 @@ class AiAssistantController extends Controller
                     // deterministic recovery call to actually save the memory;
                     // if that fails, correct the visible reply so the claim no
                     // longer deceives the user.
-                    $this->reconcileMemoClaims($result, $user, $userText, $ingestNotice);
+                    $this->reconcileMemoClaims(
+                        $result,
+                        $user,
+                        $userText,
+                        $ingestNotice,
+                        $this->previousUserText($messagesForModel, $userText)
+                    );
 
                     // Persist any training memos the AI wrote. The visible reply
                     // is already stripped client-side; the RAW text (which still
@@ -936,8 +942,10 @@ class AiAssistantController extends Controller
      * 1. If the raw reply already holds a parsable, content-bearing ```ai_memo
      *    block, the claim is backed by a real node → nothing to do.
      * 2. Otherwise try ONE deterministic reconstruction of the missed block,
-     *    built from the claim sentence itself (no extra LLM cost and no
-     *    invented facts — the model's own wording is the source material).
+     *    built from REAL FACTS — the named node from the claim marker, the
+     *    user's own message(s), or a value the user just handed over — never
+     *    from the model's acknowledgment wording ("NIM Dewi berhasil dicatat"),
+     *    which would store the chat reply itself as if it were a memory.
      *    On success the block is appended to raw_reply so the subsequent
      *    persistTrainingMemos() call really stores the memory.
      * 3. If reconstruction yields nothing usable (ambiguous, duplicate or a DB
@@ -947,7 +955,7 @@ class AiAssistantController extends Controller
      * any "node baru" phrase in the reply refers to that genuine server-side
      * storage — reconciliation must not second-guess it.
      */
-    protected function reconcileMemoClaims(array &$result, $user, string $userText, string $ingestNotice = ''): void
+    protected function reconcileMemoClaims(array &$result, $user, string $userText, string $ingestNotice = '', string $priorUserText = ''): void
     {
         if (($result['success'] ?? true) === false) {
             return;
@@ -975,12 +983,20 @@ class AiAssistantController extends Controller
             return;
         }
 
-        // Reconstruct one ```ai_memo block from the model's own claim wording.
+        // Reconstruct one ```ai_memo block from the claim's REAL subject:
+        // never store the model's own acknowledgment as the memory content.
+        $content = $this->reconstructClaimContent($claim, $userText, $priorUserText);
+        if ($content === null || $content === '') {
+            // Nothing factual to honour the claim with → stop the false claim.
+            $result['reply'] = $this->correctFalseClaim($visible);
+            return;
+        }
+
         $payload = [
-            'kind' => $this->claimKind((string)($claim['content'] ?? '')),
-            'title' => $claim['title'] ?? null,
-            'related' => $this->relatedForClaim($userText, (string)($claim['content'] ?? '')),
-            'content' => $claim['content'] ?? null,
+            'kind' => $this->claimKind($content),
+            'title' => $this->shortClaimTitle($content),
+            'related' => $this->relatedForClaim($userText, $content),
+            'content' => $content,
         ];
         $payload = array_filter($payload, fn($v) => $v !== null && $v !== '' && $v !== []);
 
@@ -995,7 +1011,8 @@ class AiAssistantController extends Controller
             }
         }
 
-        // Reconstruction failed → correct the lying claim instead of shipping it.
+        // Reconstruction or save failed → correct the lying claim instead of
+        // shipping it (nothing factual could back the model's words).
         $result['reply'] = $this->correctFalseClaim($visible);
     }
 
@@ -1024,7 +1041,7 @@ class AiAssistantController extends Controller
      * references to storage that happened earlier are ignored, so honest
      * statements about pre-existing or system-made nodes are left untouched.
      *
-     * @return array{title: string, content: string}|null
+     * @return array{title: string, content: string, named: bool}|null
      */
     protected function findStorageClaim(string $text): ?array
     {
@@ -1045,7 +1062,7 @@ class AiAssistantController extends Controller
             // together with a real ```ai_memo block, so it is the strongest lie
             // and names the exact entity: prefer it over a vague verb claim.
             if (preg_match('/📝\s*node\s+baru\s*[:：\-]?\s*(.+?)$/iu', $s, $m)) {
-                return $this->claimFrom($s, $m[1]);
+                return $this->claimFrom($s, $m[1]) + ['named' => true];
             }
 
             if ($verbClaim === null && $this->matchesStorageVerbClaim($s)) {
@@ -1053,7 +1070,111 @@ class AiAssistantController extends Controller
             }
         }
 
-        return $verbClaim !== null ? $this->claimFrom($verbClaim, '') : null;
+        return $verbClaim !== null ? $this->claimFrom($verbClaim, '') + ['named' => false] : null;
+    }
+
+    /**
+     * Decide what a storage claim should actually persist. The model's
+     * acknowledgment wording is never the memory — it only signals that a fact
+     * was learned. Source material, in priority order:
+     *
+     * 1. The named node from the explicit "📝 Node baru: X" marker (a genuine
+     *    fact the model wrote as the node itself).
+     * 2. A clearly memory-worthy fact from the user's own current message.
+     * 3. The same for the previous user message (what the claim just recorded).
+     * 4. A lone value ("052870905") the user just handed over, paired with the
+     *    label the claim attached to it ("NIM Dewi berhasil dicatat").
+     *
+     * Returns null when no real fact is recoverable, so the caller can correct
+     * the false claim instead of polluting memory with chat reply text.
+     *
+     * @param array{title: string, content: string, named: bool} $claim
+     */
+    protected function reconstructClaimContent(array $claim, string $userText, string $priorUserText = ''): ?string
+    {
+        if (($claim['named'] ?? false) && trim((string)($claim['content'] ?? '')) !== '') {
+            return $claim['content'];
+        }
+
+        foreach ([$userText, $priorUserText] as $text) {
+            $fact = $this->extractUserFact((string)$text);
+            if ($fact !== null && trim((string)($fact['content'] ?? '')) !== '') {
+                return $fact['content'];
+            }
+        }
+
+        $label = $this->claimLabel((string)($claim['content'] ?? ''));
+        $value = $this->loneValue((string)$userText) ?: $this->loneValue((string)$priorUserText);
+        if ($label !== null && $value !== null) {
+            return $label . ': ' . $value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Short noun phrase a claim attached its value to: the words before the
+     * storage verb ("NIM Dewi" in "NIM Dewi berhasil dicatat"). Requires at
+     * least two meaningful words and rejects generic filler, so "Sekarang saya
+     * perbarui…" style acknowledgments produce no label.
+     */
+    protected function claimLabel(string $sentence): ?string
+    {
+        $cut = preg_split(
+            '/\s+(?:berhasil|sudah|telah|gagal|tersimp[ae]n|tercatat|di|ke|untuk|dengan|supaya|saya|kamu|sekarang|oke|mohon|maaf)\b/iu',
+            $sentence,
+            2
+        )[0] ?? '';
+
+        $label = trim((string) preg_replace('/[^0-9\p{L}\s]+/u', '', $cut));
+        $label = trim((string) preg_replace('/\s+/u', ' ', $label));
+        $words = preg_split('/\s+/u', $label) ?: [];
+
+        if (count($words) < 2 || mb_strlen($label) < 4) {
+            return null;
+        }
+
+        return mb_strimwidth(implode(' ', array_slice($words, 0, 5)), 0, 120, '');
+    }
+
+    /**
+     * A bare value the user just typed (an ID, a code, a number) — one compact
+     * token containing at least one digit. Used to honour claims like
+     * "NIM Dewi berhasil dicatat" when the user simply sent "052870905".
+     */
+    protected function loneValue(string $text): ?string
+    {
+        $value = trim(trim((string)$text), " \t\n\r,.;:!?\"'");
+        if ($value === '' || mb_strlen($value) < 4 || mb_strlen($value) > 30) {
+            return null;
+        }
+        if (preg_match('/^[\p{L}\p{N}.\-:\/]+$/u', $value) && preg_match('/\d/', $value)) {
+            return $value;
+        }
+        return null;
+    }
+
+    /**
+     * The last user message BEFORE the current one, so reconciliation can mine
+     * the fact a claim just acknowledged even when the current message isn't
+     * the data itself.
+     */
+    protected function previousUserText(array $messagesForModel, string $currentUserText): string
+    {
+        $texts = [];
+        foreach ($messagesForModel as $m) {
+            if (($m['role'] ?? '') === 'user') {
+                $texts[] = trim((string)($m['content'] ?? ''));
+            }
+        }
+
+        for ($i = count($texts) - 1; $i >= 0; $i--) {
+            if ($texts[$i] !== trim($currentUserText)) {
+                return $texts[$i];
+            }
+        }
+
+        return '';
     }
 
     /**

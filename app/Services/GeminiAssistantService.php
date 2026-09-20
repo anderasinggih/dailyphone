@@ -1647,7 +1647,7 @@ SYSTEM;
             // Inside a memo: discard everything up to and including the closing
             // fence. If the closing fence has not arrived yet, drop the buffer
             // and keep waiting for more chunks.
-            $close = strpos($pending, '```', 4);
+            $close = strpos($pending, '```', min(4, strlen($pending)));
             if ($close === false) {
                 $pending = '';
                 return;
