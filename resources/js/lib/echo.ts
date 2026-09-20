@@ -64,5 +64,13 @@ export function echoStatus(onChange: (status: SocketStatus) => void): (() => voi
         return undefined;
     }
 
-    return conn.onConnectionChange(status => onChange(status as SocketStatus));
+    const connector = conn.connector;
+    if (!connector || typeof (connector as any).onConnectionChange !== 'function') {
+        onChange('unavailable');
+        return undefined;
+    }
+
+    return (connector as any).onConnectionChange((status: string) =>
+        onChange(status as SocketStatus),
+    );
 }
