@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Services\GeminiAssistantService;
 use App\Services\AiActionService;
+use App\Events\AiAssistantRunProgress;
 use App\Models\GeneralSetting;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -285,6 +286,22 @@ class AiAssistantController extends Controller
                 @flush();
             };
 
+            // Live brain map across tabs: mirror the NDJSON events to the
+            // superadmin's private Reverb channel so a chat in one tab pulses
+            // the map in any other (memory map, second assistant tab). Never
+            // fatal — the stream must keep flowing even if the socket pushes.
+            $broadcast = function (array $payload): void {
+                try {
+                    broadcast(new AiAssistantRunProgress($payload));
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::debug('AI live broadcast failed: ' . $e->getMessage());
+                }
+            };
+
+            // Durable per-stage snapshot persisted when the run completes.
+            $accumulatedStages = [];
+            $accumulatedUsedIds = [];
+
             try {
                 // If the user asked to "learn / study / remember" an uploaded
                 // document (PDF book, DOCX, ...), the system indexes it into real
@@ -353,12 +370,20 @@ class AiAssistantController extends Controller
                     // the live brain map lights up in real time: rules → the
                     // embedding index answering → situational seeds. The final
                     // 'neurons' event below carries the whole set + synapses.
-                    function (string $stage, array $nodes) use ($emit) {
+                    function (string $stage, array $nodes) use ($emit, $broadcast, &$accumulatedStages, $userText) {
                         $emit(['type' => 'stage', 'stage' => $stage, 'nodes' => $nodes]);
+                        $accumulatedStages[] = ['stage' => $stage, 'nodes' => $nodes];
+                        $broadcast([
+                            'kind' => 'stage',
+                            'query' => mb_substr($userText, 0, 200),
+                            'stage' => $stage,
+                            'nodes' => $nodes,
+                        ]);
                     }
                 );
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
+                $broadcast(['kind' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 
                 // Feedback loop (item 3): when the superadmin rejected the last
                 // proposal and now writes a corrective instruction, fold the
@@ -422,6 +447,8 @@ class AiAssistantController extends Controller
                         // answer are the ones it really leaned on — pulse them
                         // as a final white confirmation after the token stream.
                         $emit(['type' => 'trace', 'used' => array_values(array_map('intval', $usedNodeIds))]);
+                        $accumulatedUsedIds = array_values(array_unique(array_merge($accumulatedUsedIds, array_map('intval', $usedNodeIds))));
+                        $broadcast(['kind' => 'trace', 'used' => array_values(array_map('intval', $usedNodeIds))]);
                     }
                     $replyText = $this->stripCitedNodeFooter($result['reply']);
                     $result['reply'] = $replyText;
@@ -449,6 +476,8 @@ class AiAssistantController extends Controller
                             'latency_ms' => (int)round((microtime(true) - $startTime) * 1000),
                             'usage' => $result['usage'] ?? null,
                             'neurons_retrieved' => isset($neurons) ? array_column($neurons, 'id') : null,
+                            'stages' => $accumulatedStages ?: null,
+                            'used_ids' => $accumulatedUsedIds ?: null,
                             'tools_called' => $result['tools_called'] ?? null,
                             'citations' => collect($result['grounding']['sources'] ?? [])->values()->all(),
                             'retrieval_confidence' => $result['retrieval']['best_score'] ?? null,
@@ -487,6 +516,14 @@ class AiAssistantController extends Controller
                 unset($result['raw_reply']);
 
                 $emit(['type' => 'done'] + $result);
+
+                $broadcast([
+                    'kind' => 'done',
+                    'query' => mb_substr($userText, 0, 200),
+                    'status' => 'success',
+                    'latency_ms' => (int)round((microtime(true) - $startTime) * 1000),
+                    'used' => $accumulatedUsedIds,
+                ]);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error('AI Chat Error: ' . $e->getMessage(), [
                     'exception' => $e
@@ -496,6 +533,13 @@ class AiAssistantController extends Controller
                     'type' => 'error',
                     'success' => false,
                     'reply' => 'Maaf, sistem mengalami kendala: ' . $e->getMessage()
+                ]);
+
+                $broadcast([
+                    'kind' => 'error',
+                    'status' => 'error',
+                    'query' => mb_substr($userText, 0, 200),
+                    'message' => $e->getMessage(),
                 ]);
             }
         };
@@ -876,8 +920,10 @@ class AiAssistantController extends Controller
         $run->prompt_tokens = (int)($usage['prompt_tokens'] ?? 0);
         $run->completion_tokens = (int)($usage['completion_tokens'] ?? 0);
         $run->total_tokens = (int)($usage['total_tokens'] ?? 0);
-        $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
-        $run->tools_called = $data['tools_called'] ?? null;
+$run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
+    $run->stages = $data['stages'] ?? null;
+    $run->used_ids = $data['used_ids'] ?? null;
+    $run->tools_called = $data['tools_called'] ?? null;
         $run->citations = $data['citations'] ?? null;
         $run->retrieval_confidence = $data['retrieval_confidence'] ?? null;
 

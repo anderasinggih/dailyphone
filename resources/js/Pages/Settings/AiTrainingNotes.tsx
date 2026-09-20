@@ -25,6 +25,7 @@ import {
 import type { PageProps } from '@/types';
 import NeuralMindMap from '@/Components/NeuralMindMap';
 import { consumeNdjson, type StreamEdge, type StreamNeuron } from '@/lib/ndjson';
+import { echo } from '@/lib/echo';
 import { relationName } from '@/lib/relations';
 import { kindOf, kindMeta, kindList, type Kind } from '@/lib/kinds';
 
@@ -179,7 +180,10 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
     const [liveUsedIds, setLiveUsedIds] = useState<number[]>([]);
     const [liveError, setLiveError] = useState<string | null>(null);
     const [liveNote, setLiveNote] = useState<string | null>(null);
+    const [socketActive, setSocketActive] = useState(false);
+    const [socketQuery, setSocketQuery] = useState<string | null>(null);
     const liveAutoClear = useRef<number | null>(null);
+    const liveRunningRef = useRef(false);
 
     const clearLive = () => {
         setLiveNodes([]);
@@ -187,6 +191,8 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
         setLiveUsedIds([]);
         setLiveError(null);
         setLiveNote(null);
+        setSocketActive(false);
+        setSocketQuery(null);
     };
 
     const scheduleLiveClear = () => {
@@ -205,11 +211,91 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
         };
     }, []);
 
+    // Real-time cross-tab mirror: the superadmin starts a chat in the
+    // Assistant (or anywhere else), and every stage the retrieval emits is
+    // pushed to the `superadmin.live` private channel over Reverb. This page
+    // subscribes so the map lights up even when the run started elsewhere.
+    const socketClearTimer = useRef<number | null>(null);
+    useEffect(() => {
+        const resetSocketInactive = (afterMs = 8000) => {
+            if (socketClearTimer.current) window.clearTimeout(socketClearTimer.current);
+            socketClearTimer.current = window.setTimeout(() => {
+                setSocketActive(false);
+                setSocketQuery(null);
+            }, afterMs);
+        };
+
+        const applyPulses = (nodes: StreamNeuron[]) => {
+            setLiveNodes(prev => {
+                const seen = new Set(prev.map(n => n.id));
+                const fresh = nodes.filter(n => !seen.has(n.id));
+                return fresh.length > 0 ? [...prev, ...fresh] : prev;
+            });
+        };
+
+        const conn = echo();
+        if (!conn) return;
+
+        const channel = conn.private('superadmin.live');
+        const onProgress = (data: any) => {
+            // This tab is already watching its own run over NDJSON — the socket
+            // would only echo the same events back at it.
+            if (liveRunningRef.current) return;
+
+            const payload = data && typeof data.payload === 'object' ? data.payload : data;
+            if (!payload || typeof payload !== 'object') return;
+
+            setSocketActive(true);
+            if (typeof payload.query === 'string' && payload.query) {
+                setSocketQuery(payload.query);
+            }
+
+            if (payload.kind === 'stage' && Array.isArray(payload.nodes)) {
+                applyPulses(payload.nodes);
+                resetSocketInactive();
+            } else if (payload.kind === 'neurons' && Array.isArray(payload.nodes)) {
+                setLiveNodes(payload.nodes);
+                setLiveEdges(Array.isArray(payload.edges) ? payload.edges : []);
+                resetSocketInactive();
+            } else if (payload.kind === 'trace' && Array.isArray(payload.used)) {
+                setLiveUsedIds(prev =>
+                    Array.from(new Set([
+                        ...prev,
+                        ...payload.used.map(Number).filter((n: number) => Number.isFinite(n) && n > 0),
+                    ]))
+                );
+                resetSocketInactive();
+            } else if (payload.kind === 'done') {
+                if (Array.isArray(payload.used)) {
+                    setLiveUsedIds(payload.used.map(Number).filter((n: number) => Number.isFinite(n) && n > 0));
+                }
+                setSocketActive(false);
+                setSocketQuery(null);
+                scheduleLiveClear();
+            } else if (payload.kind === 'error') {
+                setLiveError(payload.message || 'The remote run failed.');
+                setSocketActive(false);
+                setSocketQuery(null);
+                scheduleLiveClear();
+            }
+        };
+
+        channel.listen('.ai.progress', onProgress);
+
+        return () => {
+            channel.stopListening('.ai.progress');
+            conn.leaveChannel('private-superadmin.live');
+            if (socketClearTimer.current) window.clearTimeout(socketClearTimer.current);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const runLive = async () => {
         const q = liveQuery.trim();
         if (!q || liveRunning) return;
         if (liveAutoClear.current) window.clearTimeout(liveAutoClear.current);
 
+        liveRunningRef.current = true;
         setLiveRunning(true);
         setLiveError(null);
         setLiveNote(null);
@@ -268,6 +354,7 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
         } catch (e: any) {
             setLiveError(e?.message || 'Live watch failed.');
         } finally {
+            liveRunningRef.current = false;
             setLiveRunning(false);
         }
     };
@@ -473,6 +560,13 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                                         {liveNote}
                                                     </>
                                                 )}
+                                            </span>
+                                        )}
+                                        {socketActive && !liveRunning && (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary border border-primary/20 px-2.5 py-0.5 text-[10.5px] font-semibold">
+                                                <Radio className="h-3 w-3 animate-pulse" />
+                                                Live elsewhere
+                                                {socketQuery ? `: ${socketQuery.length > 44 ? socketQuery.slice(0, 44) + '…' : socketQuery}` : ''}
                                             </span>
                                         )}
                                         {liveNodes.length > 0 && (
