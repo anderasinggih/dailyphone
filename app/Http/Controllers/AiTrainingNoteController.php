@@ -4,77 +4,182 @@ namespace App\Http\Controllers;
 
 use App\Models\AiTrainingNote;
 use App\Models\AiTrainingNoteLink;
+use App\Services\AiEmbeddingService;
 use App\Services\AiMemoryGraphService;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\JsonResponse;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class AiTrainingNoteController extends Controller
 {
+    /** Upper bound on how many neurons the mind map renders at once. */
+    protected const MAP_MAX_NODES = 300;
+
+    /** Graph nodes carry a snippet instead of the full body to keep the payload light. */
+    protected const GRAPH_CONTENT_SNIPPET = 220;
+
+    /** Rows shown per page in the Training Notes List view. */
+    protected const LIST_PER_PAGE = 25;
+
     public function index(Request $request): Response
     {
         if ($request->user()->role !== 'superadmin') {
             abort(403, 'Unauthorized action.');
         }
 
-        $notes = AiTrainingNote::query()
-            ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
-            ->orderBy('updated_at', 'desc')
-            ->get();
+        [$pageNotes, $pagination, $filters] = $this->resolveList($request);
 
-        $notesById = $notes->keyBy('id');
-
-        // Resolve each note's live synapses (relation kind, label, strength and
-        // reason) so the List view can show why this memory is connected to
-        // others — in the same way the mind map does.
-        $synapses = [];
-        AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason'])
-            ->each(function ($l) use (&$synapses, $notesById) {
-                if (!isset($notesById[$l->linked_note_id])) {
-                    return;
-                }
-                $synapses[$l->note_id][] = [
-                    'id' => (int)$l->linked_note_id,
-                    'title' => $notesById[$l->linked_note_id]->title,
-                    'label' => $l->label,
-                    'relation' => $l->relation,
-                    'weight' => $l->weight !== null ? (float)$l->weight : null,
-                    'reason' => $l->reason,
-                ];
-                if (!isset($notesById[$l->note_id])) {
-                    return;
-                }
-                $synapses[$l->linked_note_id][] = [
-                    'id' => (int)$l->note_id,
-                    'title' => $notesById[$l->note_id]->title,
-                    'label' => $l->label,
-                    'relation' => $l->relation,
-                    'weight' => $l->weight !== null ? (float)$l->weight : null,
-                    'reason' => $l->reason,
-                ];
-            });
-
-        $notes = $notes->map(fn($n) => [
-            'id' => $n->id,
-            'kind' => $n->kind,
-            'title' => $n->title,
-            'content' => $n->content,
-            'is_active' => $n->is_active,
-            'used_count' => (int)$n->used_count,
-            'last_used_at' => $n->last_used_at ? $n->last_used_at->diffForHumans() : null,
-            'occurred_at' => $n->occurred_at ? $n->occurred_at->format('d M Y') : null,
-            'occurred_place' => $n->occurred_place,
-            'involved_with' => $n->involved_with,
-            'author_name' => $n->author_name,
-            'author_role' => $n->author_role,
-            'updated_at' => $n->updated_at->diffForHumans(),
-            'links' => $synapses[$n->id] ?? [],
-        ]);
+        $notes = $this->mapWithSynapses($pageNotes);
 
         return Inertia::render('Settings/AiTrainingNotes', [
             'notes' => $notes,
-            'graph' => app(AiMemoryGraphService::class)->graphData(),
+            'pagination' => $pagination,
+            'filters' => $filters,
+            'stats' => $this->stats(),
+            'graph' => $this->mapGraphData(),
+        ]);
+    }
+
+    /**
+     * Semantic "find a memory" lookup used by the mind-map search and any
+     * quick search control. Embedding matches first (when the index is warm),
+     * then literal token hits for rules & paused nodes are merged on top.
+     */
+    public function searchApi(Request $request): JsonResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $q = trim((string) $request->input('q', ''));
+        $limit = min(30, max(1, (int) $request->input('limit', 12)));
+
+        if ($q === '') {
+            return response()->json(['query' => $q, 'method' => 'keyword', 'results' => []]);
+        }
+
+        $embedder = app(AiEmbeddingService::class);
+        $results = collect();
+        $method = 'keyword';
+
+        if ($embedder->isConfigured()) {
+            $semantic = $embedder->search($q, $limit * 2, 0.18, null);
+            if ($semantic['notes']->isNotEmpty()) {
+                $results = $semantic['notes'];
+                $method = 'semantic';
+            }
+        }
+
+        // Literal matches widen the net: rules (excluded from embedding search)
+        // plus paused nodes so a hidden memory is still discoverable.
+        $like = '%' . $q . '%';
+        $have = $results->pluck('id')->flip();
+        $literal = AiTrainingNote::query()
+            ->where(function ($b) use ($like) {
+                $b->where('title', 'like', $like)
+                    ->orWhere('content', 'like', $like)
+                    ->orWhere('related_keywords', 'like', $like);
+            })
+            ->limit(60)
+            ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
+            ->orderBy('updated_at', 'desc')
+            ->get()
+            ->reject(fn ($n) => isset($have[$n->id]));
+
+        // Rank: rules first (behavioral directives are always load-bearing),
+        // then semantic score, then recency.
+        $items = $results
+            ->map(fn ($n) => ['note' => $n, 'score' => $n->retrieval_score])
+            ->values()
+            ->all();
+        foreach ($literal as $n) {
+            $items[] = ['note' => $n, 'score' => null];
+        }
+
+        usort($items, function ($a, $b) {
+            $r = strcmp($a['note']->kind === 'rule' ? '0' : '1', $b['note']->kind === 'rule' ? '0' : '1');
+            if ($r !== 0) {
+                return $r;
+            }
+            $sa = $a['score'] ?? -1.0;
+            $sb = $b['score'] ?? -1.0;
+            if ($sa !== $sb) {
+                return $sb <=> $sa;
+            }
+            return $b['note']->updated_at->timestamp <=> $a['note']->updated_at->timestamp;
+        });
+
+        $items = array_slice($items, 0, $limit);
+
+        $results = [];
+        foreach ($items as $entry) {
+            $n = $entry['note'];
+            $results[] = [
+                'id' => (int) $n->id,
+                'title' => $n->title ?: app(AiMemoryGraphService::class)->titleFromContent((string) $n->content),
+                'kind' => $n->kind,
+                'is_active' => (bool) $n->is_active,
+                'score' => $entry['score'] !== null ? round((float) $entry['score'], 3) : null,
+                'snippet' => mb_strimwidth(strip_tags((string) $n->content), 0, 160, '…'),
+                'used_count' => (int) ($n->used_count ?? 0),
+                'author_name' => $n->author_name ?? 'System',
+            ];
+        }
+
+        return response()->json(['query' => $q, 'method' => $method, 'results' => $results]);
+    }
+
+    /**
+     * Full node detail (content + complete synapse list) for the mind-map detail
+     * panel, loaded on demand so the graph payload stays trim.
+     */
+    public function showApi(Request $request, $id): JsonResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $note = AiTrainingNote::findOrFail((int) $id);
+
+        $ids = [(int) $note->id];
+        $linkRows = AiTrainingNoteLink::where('note_id', $note->id)
+            ->orWhere('linked_note_id', $note->id)
+            ->get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason']);
+
+        $neighborIds = $linkRows->map(fn ($l) => $l->getOtherId((int) $note->id))->map('intval')->all();
+        $titleById = [];
+        if ($neighborIds !== []) {
+            $titleById = AiTrainingNote::whereIn('id', $neighborIds)
+                ->pluck('title', 'id')
+                ->map(fn ($t) => $t ?: 'Memory')
+                ->all();
+        }
+
+        $links = $linkRows->map(fn ($l) => [
+            'id' => (int) $l->getOtherId((int) $note->id),
+            'title' => $titleById[(int) $l->getOtherId((int) $note->id)] ?? 'Memory',
+            'label' => $l->label,
+            'relation' => $l->relation,
+            'weight' => $l->weight !== null ? (float) $l->weight : null,
+            'reason' => $l->reason,
+        ])->sortByDesc(fn ($l) => $l['weight'] ?? 0)->values()->all();
+
+        return response()->json([
+            'note' => [
+                'id' => (int) $note->id,
+                'kind' => $note->kind,
+                'title' => $note->title ?: app(AiMemoryGraphService::class)->titleFromContent((string) $note->content),
+                'content' => (string) $note->content,
+                'is_active' => (bool) $note->is_active,
+                'author_name' => $note->author_name ?? 'System',
+                'occurred_at' => $note->occurred_at ? $note->occurred_at->format('d M Y') : null,
+                'occurred_place' => $note->occurred_place,
+                'involved_with' => $note->involved_with,
+                'used_count' => (int) ($note->used_count ?? 0),
+            ],
+            'links' => $links,
         ]);
     }
 
@@ -108,8 +213,8 @@ class AiTrainingNoteController extends Controller
                 'kind' => $kind,
                 'is_active' => true,
                 'occurred_at' => $request->filled('occurred_at') ? $request->input('occurred_at') : null,
-                'occurred_place' => mb_substr(trim((string)$request->input('occurred_place', '')), 0, 120) ?: null,
-                'involved_with' => mb_substr(trim((string)$request->input('involved_with', '')), 0, 120) ?: null,
+                'occurred_place' => mb_substr(trim((string) $request->input('occurred_place', '')), 0, 120) ?: null,
+                'involved_with' => mb_substr(trim((string) $request->input('involved_with', '')), 0, 120) ?: null,
             ]);
         }
 
@@ -134,9 +239,9 @@ class AiTrainingNoteController extends Controller
             'kind' => 'required|in:' . implode(',', $graph->kinds()),
         ]);
 
-        $result = $graph->reclassifyNode((int)$id, $request->input('kind'));
+        $result = $graph->reclassifyNode((int) $id, $request->input('kind'));
 
-        $snippet = mb_strimwidth((string)AiTrainingNote::find($id)?->title ?: 'node', 0, 50, '…');
+        $snippet = mb_strimwidth((string) AiTrainingNote::find($id)?->title ?: 'node', 0, 50, '…');
 
         return redirect()->back()
             ->with('success', $result['changed']
@@ -186,7 +291,7 @@ class AiTrainingNoteController extends Controller
                 'title' => $n->title,
                 'content' => $n->content,
                 'is_active' => $n->is_active,
-                'used_count' => (int)$n->used_count,
+                'used_count' => (int) $n->used_count,
                 'author_name' => $n->author_name,
                 'updated_at' => $n->updated_at->diffForHumans(),
                 'source_label' => $n->source_label,
@@ -281,7 +386,7 @@ class AiTrainingNoteController extends Controller
         $note = AiTrainingNote::findOrFail($id);
         $note->update(['is_active' => !$note->is_active]);
 
-        $snippet = mb_strimwidth((string)$note->content, 0, 60, '…');
+        $snippet = mb_strimwidth((string) $note->content, 0, 60, '…');
 
         return redirect()->back()
             ->with('success', $note->is_active
@@ -299,5 +404,260 @@ class AiTrainingNoteController extends Controller
 
         return redirect()->back()
             ->with('success', 'Training note deleted from AI memory.');
+    }
+
+    /* ───────────────────────────────────────────────────────────
+       Internals — list resolution, stats & the capped map payload
+       ─────────────────────────────────────────────────────────── */
+
+    /**
+     * Branch note: filters & pagination. A query triggers semantic retrieval
+     * (embedding index) merged with literal token hits; otherwise the plain
+     * store stays ordered rules-first-by-recency and simply paginates.
+     *
+     * @return array{0: \Illuminate\Support\Collection, 1: array, 2: array}
+     */
+    protected function resolveList(Request $request): array
+    {
+        $q = trim((string) $request->input('q', ''));
+        $kind = in_array($request->input('kind'), (new AiMemoryGraphService)->kinds(), true)
+            ? (string) $request->input('kind')
+            : null;
+        $status = in_array($request->input('status'), ['active', 'paused'], true)
+            ? (string) $request->input('status')
+            : null;
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = self::LIST_PER_PAGE;
+
+        $query = AiTrainingNote::query()
+            ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 ELSE 1 END")
+            ->orderBy('updated_at', 'desc');
+
+        if ($kind !== null) {
+            $query->where('kind', $kind);
+        }
+        if ($status === 'active') {
+            $query->where('is_active', true);
+        } elseif ($status === 'paused') {
+            $query->where('is_active', false);
+        }
+
+        $method = 'keyword';
+        if ($q !== '') {
+            $merged = $this->searchIds($q, $query, $method);
+
+            if ($merged === []) {
+                $total = 0;
+                $pageNotes = collect();
+            } else {
+                $query->whereIn('id', $merged);
+                $total = (clone $query)->count();
+                $pageNotes = $query->forPage($page, $perPage)->get();
+            }
+        } else {
+            $total = (clone $query)->count();
+            $pageNotes = $query->forPage($page, $perPage)->get();
+        }
+
+        $pagination = [
+            'total' => $total,
+            'per_page' => $perPage,
+            'current_page' => $page,
+            'last_page' => max(1, (int) ceil($total / $perPage)),
+        ];
+
+        $filters = ['q' => $q, 'kind' => $kind, 'status' => $status, 'method' => $method];
+
+        return [$pageNotes, $pagination, $filters];
+    }
+
+    /**
+     * Merge ranked ids for a free-text query: embedding hits first, literal
+     * token matches (title/content/related_keywords) second. $method flips to
+     * 'semantic' when the embedding index really answered the query.
+     *
+     * @return int[]
+     */
+    protected function searchIds(string $q, $query, string &$method): array
+    {
+        $embedder = app(AiEmbeddingService::class);
+        $ids = [];
+
+        if ($embedder->isConfigured()) {
+            $semantic = $embedder->search($q, 120, 0.18, null);
+            $ids = $semantic['notes']->pluck('id')->map('intval')->all();
+            if ($ids !== []) {
+                $method = 'semantic';
+            }
+        }
+
+        $like = '%' . $q . '%';
+        $literalIds = (clone $query)
+            ->where(function ($b) use ($like) {
+                $b->where('title', 'like', $like)
+                    ->orWhere('content', 'like', $like)
+                    ->orWhere('related_keywords', 'like', $like);
+            })
+            ->limit(300)
+            ->pluck('id')
+            ->all();
+
+        return array_values(array_unique(array_merge($ids, array_map('intval', $literalIds))));
+    }
+
+    /**
+     * Resolve each note's live synapses (relation kind, label, strength and
+     * reason) so the List view can show why this memory is connected to others.
+     * Neighbour titles are fetched in one extra query, not per row.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function mapWithSynapses($pageNotes): array
+    {
+        $pageNotes = $pageNotes->values();
+        $ids = $pageNotes->pluck('id')->map('intval')->all();
+        $synapses = [];
+
+        if ($ids !== []) {
+            $linkRows = AiTrainingNoteLink::where(function ($w) use ($ids) {
+                $w->whereIn('note_id', $ids)->orWhereIn('linked_note_id', $ids);
+            })->get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason']);
+
+            $neighborIds = $linkRows->flatMap(fn ($l) => [$l->note_id, $l->linked_note_id])
+                ->map('intval')
+                ->unique()
+                ->reject(fn ($id) => in_array($id, $ids, true))
+                ->values()
+                ->all();
+
+            $titles = $neighborIds === []
+                ? collect()
+                : AiTrainingNote::whereIn('id', $neighborIds)->pluck('title', 'id');
+            $titleOf = function ($id) use ($titles) {
+                return $titles[$id] ?: 'Memory';
+            };
+
+            $idSet = array_flip($ids);
+            foreach ($linkRows as $l) {
+                $left = (int) $l->note_id;
+                $right = (int) $l->linked_note_id;
+                if (isset($idSet[$left])) {
+                    $synapses[$left][] = [
+                        'id' => $right,
+                        'title' => $titleOf($right),
+                        'label' => $l->label,
+                        'relation' => $l->relation,
+                        'weight' => $l->weight !== null ? (float) $l->weight : null,
+                        'reason' => $l->reason,
+                    ];
+                }
+                if (isset($idSet[$right])) {
+                    $synapses[$right][] = [
+                        'id' => $left,
+                        'title' => $titleOf($left),
+                        'label' => $l->label,
+                        'relation' => $l->relation,
+                        'weight' => $l->weight !== null ? (float) $l->weight : null,
+                        'reason' => $l->reason,
+                    ];
+                }
+            }
+        }
+
+        return $pageNotes->map(fn ($n) => [
+            'id' => $n->id,
+            'kind' => $n->kind,
+            'title' => $n->title,
+            'content' => $n->content,
+            'is_active' => $n->is_active,
+            'used_count' => (int) $n->used_count,
+            'last_used_at' => $n->last_used_at ? $n->last_used_at->diffForHumans() : null,
+            'occurred_at' => $n->occurred_at ? $n->occurred_at->format('d M Y') : null,
+            'occurred_place' => $n->occurred_place,
+            'involved_with' => $n->involved_with,
+            'author_name' => $n->author_name,
+            'author_role' => $n->author_role,
+            'updated_at' => $n->updated_at->diffForHumans(),
+            'links' => $synapses[$n->id] ?? [],
+        ])->values()->all();
+    }
+
+    /**
+     * Brain statistics for the four stat cards, computed server-side so the
+     * page does not need every node shipped to the browser to count them.
+     *
+     * @return array{total: int, active: int, rules: int, uses: int, topNote: array|null}
+     */
+    protected function stats(): array
+    {
+        $top = AiTrainingNote::orderByDesc('used_count')->first();
+
+        return [
+            'total' => (int) AiTrainingNote::count(),
+            'active' => (int) AiTrainingNote::where('is_active', true)->count(),
+            'rules' => (int) AiTrainingNote::where('kind', 'rule')->where('is_active', true)->count(),
+            'uses' => (int) AiTrainingNote::sum('used_count'),
+            'topNote' => ($top && (int) $top->used_count > 0)
+                ? [
+                    'title' => $top->title ?: app(AiMemoryGraphService::class)->titleFromContent((string) $top->content),
+                    'used' => (int) $top->used_count,
+                ]
+                : null,
+        ];
+    }
+
+    /**
+     * The mind-map payload, bounded so the force graph stays fast. Rules are
+     * always inside; the remaining slots go to the most load-bearing neurons
+     * (active, consulted, recent). Edges are limited to included nodes.
+     *
+     * @return array{nodes: array<int, array<string, mixed>>, links: array<int, array<string, mixed>>}
+     */
+    protected function mapGraphData(): array
+    {
+        $graph = app(AiMemoryGraphService::class);
+
+        $notes = AiTrainingNote::query()
+            ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 WHEN is_active = 1 THEN 1 ELSE 2 END")
+            ->orderByDesc('used_count')
+            ->orderByDesc('updated_at')
+            ->limit(self::MAP_MAX_NODES)
+            ->get(['id', 'title', 'content', 'kind', 'is_active', 'used_count', 'author_name']);
+
+        $ids = $notes->pluck('id')->map('intval')->all();
+        $idSet = collect($ids)->flip();
+
+        $linkRows = AiTrainingNoteLink::whereIn('note_id', $ids)
+            ->whereIn('linked_note_id', $ids)
+            ->get(['id', 'note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason']);
+
+        $degree = [];
+        foreach ($linkRows as $l) {
+            $degree[$l->note_id] = ($degree[$l->note_id] ?? 0) + 1;
+            $degree[$l->linked_note_id] = ($degree[$l->linked_note_id] ?? 0) + 1;
+        }
+
+        $nodes = $notes->map(fn ($n) => [
+            'id' => (int) $n->id,
+            'title' => $n->title ?: $graph->titleFromContent((string) $n->content),
+            'content' => mb_strimwidth(strip_tags((string) $n->content), 0, self::GRAPH_CONTENT_SNIPPET, '…'),
+            'kind' => $n->kind,
+            'is_active' => $n->is_active,
+            'author_name' => $n->author_name ?? 'System',
+            'degree' => $degree[$n->id] ?? 0,
+            'used_count' => (int) ($n->used_count ?? 0),
+        ])->values()->all();
+
+        $links = $linkRows->map(fn ($l) => [
+            'id' => (int) $l->id,
+            'source' => (int) $l->note_id,
+            'target' => (int) $l->linked_note_id,
+            'label' => $l->label,
+            'relation' => $l->relation,
+            'weight' => $l->weight !== null ? (float) $l->weight : null,
+            'reason' => $l->reason,
+        ])->values()->all();
+
+        return ['nodes' => $nodes, 'links' => $links];
     }
 }

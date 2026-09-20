@@ -124,6 +124,8 @@ Route::prefix('application/dp')->group(function () {
         // AI Training Notes / Persistent Memory (superadmin)
         Route::get('/settings/ai/training-notes', [\App\Http\Controllers\AiTrainingNoteController::class, 'index'])->name('settings.ai.training-notes');
         Route::post('/settings/ai/training-notes', [\App\Http\Controllers\AiTrainingNoteController::class, 'store'])->name('settings.ai.training-notes.store');
+        Route::get('/settings/ai/training-notes/search', [\App\Http\Controllers\AiTrainingNoteController::class, 'searchApi'])->name('settings.ai.training-notes.search');
+        Route::get('/settings/ai/training-notes/{id}', [\App\Http\Controllers\AiTrainingNoteController::class, 'showApi'])->name('settings.ai.training-notes.show');
         Route::post('/settings/ai/training-notes/tidy', [\App\Http\Controllers\AiTrainingNoteController::class, 'tidy'])->name('settings.ai.training-notes.tidy');
         Route::post('/settings/ai/training-notes/{id}/toggle', [\App\Http\Controllers\AiTrainingNoteController::class, 'toggle'])->name('settings.ai.training-notes.toggle');
         Route::post('/settings/ai/training-notes/{id}/kind', [\App\Http\Controllers\AiTrainingNoteController::class, 'reclassify'])->name('settings.ai.training-notes.kind');

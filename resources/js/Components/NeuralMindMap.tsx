@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { memo, useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import {
     ZoomIn,
     ZoomOut,
@@ -45,6 +45,27 @@ export interface LiveNeuronPulse {
     sources?: string[];
 }
 
+export interface MindNodeDetail {
+    content: string;
+    links: Array<{
+        id: number;
+        title: string | null;
+        label: string | null;
+        relation: string | null;
+        weight: number | null;
+        reason: string | null;
+    }>;
+}
+
+export interface SemanticHit {
+    id: number;
+    title?: string | null;
+    kind?: string;
+    is_active?: boolean;
+    score?: number | null;
+    snippet?: string;
+}
+
 interface NeuralMindMapProps {
     nodes: MindMapNode[];
     links: MindMapLink[];
@@ -53,6 +74,8 @@ interface NeuralMindMapProps {
     onTidy?: () => void | Promise<void>;
     liveNodes?: LiveNeuronPulse[];
     liveUsedIds?: number[];
+    loadNode?: (id: number) => Promise<MindNodeDetail | null>;
+    semanticSearch?: (q: string) => Promise<SemanticHit[]>;
 }
 
 interface Point {
@@ -434,7 +457,7 @@ function loadSavedPositions(): Record<number, Point> | null {
     }
 }
 
-export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassify, onTidy, liveNodes, liveUsedIds }: NeuralMindMapProps) {
+export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassify, onTidy, liveNodes, liveUsedIds, loadNode, semanticSearch }: NeuralMindMapProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerSize, setContainerSize] = useState({ w: 900, h: 600 });
 
@@ -447,6 +470,10 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
     const [selectedId, setSelectedId] = useState<number | null>(null);
     const [hoveredLink, setHoveredLink] = useState<number | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
+    const [semanticHits, setSemanticHits] = useState<SemanticHit[]>([]);
+    const [semanticSearching, setSemanticSearching] = useState(false);
+    const [detailById, setDetailById] = useState<Record<number, MindNodeDetail>>({});
+    const [detailLoading, setDetailLoading] = useState(false);
     const [showLabels, setShowLabels] = useState(false);
     const [showLegend, setShowLegend] = useState(true);
     const [tidying, setTidying] = useState(false);
@@ -488,6 +515,49 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
         const t = window.setTimeout(() => setUsedFlash(new Set()), 1700);
         return () => window.clearTimeout(t);
     }, [liveUsedIds]);
+
+    // Semantic "find a memory": debounced server lookup; its hits join the
+    // local substring matches so a node can light up even when it shares no
+    // words with the query (e.g. "aturan garansi" ↔ a "water damage" node).
+    useEffect(() => {
+        const q = searchQuery.trim();
+        if (!q) {
+            setSemanticHits([]);
+            setSemanticSearching(false);
+            return;
+        }
+        if (!semanticSearch) return;
+        const t = window.setTimeout(async () => {
+            setSemanticSearching(true);
+            try {
+                const hits = await semanticSearch(q);
+                setSemanticHits(Array.isArray(hits) ? hits : []);
+            } catch {
+                setSemanticHits([]);
+            } finally {
+                setSemanticSearching(false);
+            }
+        }, 420);
+        return () => window.clearTimeout(t);
+    }, [searchQuery, semanticSearch]);
+
+    // Load the full memory body + complete synapse list on demand when a node
+    // is picked, so the graph payload never carries every note's full text.
+    useEffect(() => {
+        if (selectedId === null) return;
+        if (!loadNode || detailById[selectedId]) return;
+        setDetailLoading(true);
+        loadNode(selectedId)
+            .then(detail => {
+                if (detail) {
+                    setDetailById(prev => ({ ...prev, [selectedId]: detail }));
+                }
+            })
+            .catch(() => {
+                // keep the trimmed snippet fallback
+            })
+            .finally(() => setDetailLoading(false));
+    }, [selectedId, loadNode, detailById]);
 
     useEffect(() => {
         const el = containerRef.current;
@@ -643,7 +713,10 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
 
     const focusNode = (id: number) => {
         const p = positions[id];
-        if (!p) return;
+        if (!p) {
+            setSelectedId(id);
+            return;
+        }
         setSelectedId(id);
         setView({
             k: clampZoom(1.25),
