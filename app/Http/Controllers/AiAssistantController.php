@@ -35,9 +35,28 @@ class AiAssistantController extends Controller
     }
 
     /**
-     * Render the Assistant chat page with sessions list and active session.
+     * Render the full Assistant page (sessions sidebar + chat) inside the app shell.
      */
     public function index(Request $request): Response
+    {
+        return $this->renderAssistant($request, false);
+    }
+
+    /**
+     * Render a focused, chat-only page with no main navigation shell, so a user
+     * can concentrate on the AI assistant without touching any other page.
+     * Keeps the exact same auth + verified authorization rules as every app page.
+     */
+    public function chatOnly(Request $request): Response
+    {
+        return $this->renderAssistant($request, true);
+    }
+
+    /**
+     * Shared renderer for the Assistant page. When $chatOnly is true the client
+     * renders the bare chat room (no app nav bars and no links leaving the chat).
+     */
+    protected function renderAssistant(Request $request, bool $chatOnly): Response
     {
         $settings = GeneralSetting::first();
         $isConfigured = $this->geminiService->isConfigured();
@@ -86,6 +105,7 @@ class AiAssistantController extends Controller
                 'model' => $model,
             ],
             'userRole' => $user->role,
+            'chatOnly' => $chatOnly,
             'sessions' => $sessions,
             'activeSessionId' => $activeSession ? $activeSession->id : null,
             'initialMessages' => $messages,

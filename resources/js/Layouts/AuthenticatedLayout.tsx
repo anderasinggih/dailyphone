@@ -29,7 +29,8 @@ export default function Authenticated({
     header,
     children,
     hideMobileNav = false,
-}: PropsWithChildren<{ header?: ReactNode; hideMobileNav?: boolean }>) {
+    hideNavbar = false,
+}: PropsWithChildren<{ header?: ReactNode; hideMobileNav?: boolean; hideNavbar?: boolean }>) {
     const user = usePage().props.auth.user;
 
     const [showMobileMore, setShowMobileMore] = useState(false);
@@ -142,6 +143,7 @@ export default function Authenticated({
     return (
         <div className="min-h-screen bg-background text-foreground transition-colors duration-300 font-sans">
 
+            {!hideNavbar && (
             <nav className={`hidden sm:block sticky top-0 z-50 transition-all duration-300 backdrop-blur-2xl border-b ${statusBg}`}>
                 <div className="mx-auto max-w-none px-5 lg:px-8">
                     <div className="flex h-[52px] items-center justify-between gap-4">
@@ -318,6 +320,7 @@ export default function Authenticated({
                     </div>
                 </div>
             </nav>
+            )}
 
             {!hideMobileNav && (
                 <div className="sm:hidden fixed bottom-3 left-4 right-4 z-50 transition-all duration-300 pointer-events-none"

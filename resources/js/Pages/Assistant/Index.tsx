@@ -32,7 +32,8 @@ import {
     Image as ImageIcon,
     FileText,
     FileArchive,
-    FileSpreadsheet
+    FileSpreadsheet,
+    Upload
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
@@ -89,6 +90,7 @@ interface AssistantProps {
         model: string;
     };
     userRole: string;
+    chatOnly?: boolean;
     sessions: Session[];
     activeSessionId: number | null;
     initialMessages: Message[];
@@ -120,6 +122,7 @@ const QUICK_PROMPTS = [
 export default function Assistant({
     aiConfig,
     userRole,
+    chatOnly = false,
     sessions = [],
     activeSessionId = null,
     initialMessages = []
@@ -155,6 +158,9 @@ export default function Assistant({
     const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // Drag & drop file attach state for the chat panel.
+    const [isDragOver, setIsDragOver] = useState(false);
+    const dragCounterRef = useRef(0);
     // Live token-by-token draft rendered while Gemini streams its answer.
     const [draftStream, setDraftStream] = useState<string>('');
     // Collapsible "AI is thinking" panel — arrow toggles, like opencode's thought.
@@ -609,10 +615,12 @@ function playCompletionChime(soundEnabled: boolean): void {
     const csrfToken = (): string =>
         (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '';
 
-    const handlePickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = Array.from(e.target.files || []);
-        e.target.value = '';
+    const uploadFiles = (files: File[]) => {
         if (files.length === 0) return;
+        if (!aiConfig.is_configured) {
+            alert('AI Assistant has not been configured yet. Set the API key in Settings first.');
+            return;
+        }
 
         setIsUploading(true);
         Promise.all(files.map(async (file) => {
@@ -636,6 +644,44 @@ function playCompletionChime(soundEnabled: boolean): void {
         }).finally(() => {
             setIsUploading(false);
         });
+    };
+
+    const handlePickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files || []);
+        e.target.value = '';
+        uploadFiles(files);
+    };
+
+    // --- Drag & drop file attach ---
+    const handleDragEnter = (e: React.DragEvent) => {
+        e.preventDefault();
+        if (isLoading || isUploading) return;
+        dragCounterRef.current += 1;
+        setIsDragOver(true);
+    };
+
+    const handleDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+    };
+
+    const handleDragLeave = (e: React.DragEvent) => {
+        e.preventDefault();
+        dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+        if (dragCounterRef.current === 0) {
+            setIsDragOver(false);
+        }
+    };
+
+    const handleDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        dragCounterRef.current = 0;
+        setIsDragOver(false);
+        if (isLoading || isUploading) return;
+        const files = Array.from(e.dataTransfer.files || []);
+        if (files.length > 0) {
+            uploadFiles(files);
+        }
     };
 
     const removeAttachment = (id: number) => {
@@ -716,11 +762,22 @@ function playCompletionChime(soundEnabled: boolean): void {
     };
 
     return (
-        <AuthenticatedLayout hideMobileNav={true}>
-            <Head title="Assistant - Daily Phone Intelligence" />
+        <AuthenticatedLayout hideMobileNav={true} hideNavbar={chatOnly}>
+            <Head title={chatOnly ? 'Chat - Daily Phone Intelligence' : 'Assistant - Daily Phone Intelligence'} />
 
-            {/* Container: Fullscreen on mobile/tablet, wide & spacious on desktop (w-full max-w-7xl) */}
-            <div className="p-0 sm:p-0 md:py-4 md:px-4 lg:px-6 w-full max-w-7xl mx-auto h-[100dvh] sm:h-[100dvh] md:h-[calc(100vh-80px)] flex flex-col">
+            {/* Container: Fullscreen on mobile/tablet, wide & spacious on desktop (w-full max-w-7xl).
+                Chat-only mode drops the app nav shell, so it always fills the full viewport height. */}
+            <div
+                className={
+                    chatOnly
+                        ? 'p-0 sm:p-0 w-full max-w-7xl mx-auto h-[100dvh] sm:h-[100dvh] md:h-[100dvh] flex flex-col relative'
+                        : 'p-0 sm:p-0 md:py-4 md:px-4 lg:px-6 w-full max-w-7xl mx-auto h-[100dvh] sm:h-[100dvh] md:h-[calc(100vh-80px)] flex flex-col relative'
+                }
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+            >
 
                 {/* Main Container with Sidebar + Chat Area */}
                 <div className="flex-1 flex overflow-hidden bg-card relative md:border md:border-border/50 md:rounded-2xl md:shadow-sm">
@@ -824,7 +881,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                             <div className="text-[10px] text-muted-foreground flex items-center justify-between">
                                 <span className="truncate">{sessionList.length} Sessions saved</span>
                             </div>
-                            {userRole === 'superadmin' && (
+                            {userRole === 'superadmin' && !chatOnly && (
                                 <div className="grid grid-cols-2 gap-1.5">
                                     <Link
                                         href={route('settings.ai.training-notes')}
@@ -862,13 +919,22 @@ function playCompletionChime(soundEnabled: boolean): void {
                         <div className="absolute top-3 left-3 right-3 z-15 pointer-events-none flex justify-center">
                             <div className="pointer-events-auto w-full max-w-3xl flex items-center justify-between px-3.5 py-2 rounded-2xl bg-background/80 dark:bg-card/75 backdrop-blur-2xl border border-border/50 shadow-lg shadow-black/5 dark:shadow-black/20">
                                 <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
-                                    <Link
-                                        href={route('dashboard')}
-                                        title="Back to Dashboard"
-                                        className="p-1.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/70 active:scale-95 transition shrink-0"
-                                    >
-                                        <ChevronLeft className="h-4 w-4" />
-                                    </Link>
+                                    {chatOnly ? (
+                                        <span
+                                            className="p-1.5 rounded-xl text-primary shrink-0"
+                                            title="Daily Phone Intelligence"
+                                        >
+                                            <GeminiStar className="h-4 w-4" />
+                                        </span>
+                                    ) : (
+                                        <Link
+                                            href={route('dashboard')}
+                                            title="Back to Dashboard"
+                                            className="p-1.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/70 active:scale-95 transition shrink-0"
+                                        >
+                                            <ChevronLeft className="h-4 w-4" />
+                                        </Link>
+                                    )}
                                     <button
                                         onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                                         className="p-1.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/70 active:scale-95 transition shrink-0"
@@ -1313,6 +1379,19 @@ function playCompletionChime(soundEnabled: boolean): void {
                     </div>
 
                 </div>
+
+                {/* Drag & drop file attach overlay */}
+                {isDragOver && (
+                    <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center p-6">
+                        <div className="flex flex-col items-center gap-2.5 rounded-3xl border-2 border-dashed border-primary/60 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-8 sm:px-12 py-8 text-primary shadow-2xl">
+                            <Upload className="h-7 w-7" />
+                            <span className="text-sm font-semibold text-foreground">Drop files to attach</span>
+                            <span className="text-[11px] text-muted-foreground">
+                                Images, Excel, CSV, ZIP, PDF, DOCX — up to 20 MB each
+                            </span>
+                        </div>
+                    </div>
+                )}
 
             </div>
 
