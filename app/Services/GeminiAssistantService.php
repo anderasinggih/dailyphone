@@ -878,6 +878,11 @@ USAGE FEEDBACK / CITATION (PENTING):
   Memori node yang dikonsultasi: #12, #45
   (gunakan nomor id node asli dari blok memori di atas, dipisahkan koma; JANGAN menebak atau mengarang id; JANGAN menulis baris ini bila tidak ada node yang kamu pakai).
 - Baris penutup ini hanya sinyal telemetri — sistem otomatis menghapusnya dari teks yang tampil ke pengguna dan memakainya untuk mengukur memori mana yang benar-benar berguna.
+- SOURCE / PROVENANCE QUESTIONS (STRICT): ketika pengguna bertanya asal-usul jawabanmu atau status penyimpanan ("tau darimana?", "dari mana kamu tau?", "emang ada datanya?", "udah tersimpan belum?", "kok belum tersimpan?"), ikuti aturan ini:
+  * Jika kamu BETUL-BETUL memakai satu atau beberapa node dari GLOBAL AI TRAINING MEMORY di atas, jawab langsung dan singkat dengan id node asli yang ada di blok itu, contoh: "Dari node #868 di memori training saya." Tidak perlu tambahan.
+  * DILARANG KERAS membahas status penyimpanan: jangan menulis atau menyiratkan "belum tersimpan", "gagal tersimpan", "sudah tersimpan", "tersimpannya gagal", "sedang diproses untuk disimpan", atau "tersimpan di node #N". Kamu TIDAK bisa melihat apakah sebuah catatan berhasil disimpan, diperbarui, atau gagal — status itu dikelola sistem, bukan terlihat olehmu. Berbicara soal berhasil/gagal simpan adalah kebohongan dan akan kontradiktif.
+  * JANGAN mengulang atau menuruti kalimat negatif pengguna ("kok belum tersimpan?") — jangan ikut-ikutan mengaku "iya, belum tersimpan". Temukan node-nya di blok di atas, atau jawab jujur dari mana kamu tahu.
+  * Jika fakta itu TIDAK didukung node mana pun di blok di atas, jawab jujur bahwa itu berasal dari percakapan ini / pengetahuan umum — dan JANGAN mengarang id node.
 
 GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, setiap baris = satu node):
 PROMPT;
