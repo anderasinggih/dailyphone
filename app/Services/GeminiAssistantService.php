@@ -685,42 +685,8 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
        12. `Harga Jual` (`sell_price`): Realistic catalogue sell price e.g. Rp 7.299.000
        13. `Lokasi Cabang` (`store_name` / `store_id`): Branch store name e.g. "PERENG STORE" (ID: 1)
        14. `Status Unit` (`status`): e.g. "Available (Ready)" / "available"
-     * RULE (SANGAT PENTING): JANGAN PERNAH kirim `brand_id`, `color_id`, `memory_id`, atau `license_id` berupa angka ID mentah di payload. Angka seperti 128 seringkali berarti "128GB", bukan ID, dan memicu error database (foreign key). SELALU kirim nilai teks yang bisa dibaca manusia (contoh: `"memory": "128GB"`, `"brand": "Apple"`, `"color": "Midnight"`, `"license": "iBox (Resmi)"`). Backend yang bertugas mencocokkan teks ke ID parameter.
-     * Example `changes` for `add_stock`:
-       [
-         { "field": "Nama Unit", "old": "-", "new": "iPhone 13 128GB" },
-         { "field": "Brand", "old": "-", "new": "Apple" },
-         { "field": "Kapasitas Memori", "old": "-", "new": "128GB" },
-         { "field": "Warna", "old": "-", "new": "Midnight" },
-         { "field": "Tipe Lisensi", "old": "-", "new": "iBox (Resmi)" },
-         { "field": "Kondisi", "old": "-", "new": "Second" },
-         { "field": "Supplier / Distributor", "old": "-", "new": "Distributor Utama Jakarta" },
-         { "field": "Serial Number (SN)", "old": "-", "new": "DP-IP-782190" },
-         { "field": "Nomor IMEI", "old": "-", "new": "358729104829104" },
-         { "field": "Garansi Toko (Hari)", "old": "-", "new": "30 Hari" },
-         { "field": "Harga Beli (HPP)", "old": "-", "new": "Rp 6.200.000" },
-         { "field": "Harga Jual", "old": "-", "new": "Rp 7.299.000" },
-         { "field": "Lokasi Cabang", "old": "-", "new": "PERENG STORE" },
-         { "field": "Status Unit", "old": "-", "new": "Available (Ready)" }
-       ]
-     * Example `payload` for `add_stock`:
-       {
-         "name": "iPhone 13 128GB",
-         "brand": "Apple",
-         "category": "iphone",
-         "type": "second",
-         "color": "Midnight",
-         "memory": "128GB",
-         "license": "iBox (Resmi)",
-         "supplier": "Distributor Utama Jakarta",
-         "serial_number": "DP-IP-782190",
-         "imei_1": "358729104829104",
-         "warranty_duration_days": 30,
-         "buy_price": 6200000,
-         "sell_price": 7299000,
-         "store_id": 1,
-         "status": "available"
-       }
+* RULE (SANGAT PENTING): JANGAN PERNAH kirim `brand_id`, `color_id`, `memory_id`, atau `license_id` berupa angka ID mentah di payload. Angka seperti 128 seringkali berarti "128GB", bukan ID, dan memicu error database (foreign key). SELALU kirim nilai teks yang bisa dibaca manusia (contoh: `"memory": "128GB"`, `"brand": "Apple"`, `"color": "Midnight"`, `"license": "iBox (Resmi)"`). Backend yang bertugas mencocokkan teks ke ID parameter.
+      * `changes` field names & `payload` keys follow the 14 fields listed above, verbatim.
     - "add_bulk_stock": When the user asks to add multiple units, generate dummy inventory, or bulk import stocks (e.g. "buatkan data dummy 5 unit", "tambah 10 stok sekaligus", "bikin 100 data dummy"):
       * CRITICAL FOR LARGE QUANTITIES (>= 5 units): DO NOT write out dozens or hundreds of items in JSON! It will exceed token limits and break the JSON parser. Instead, simply specify `"count": <number>` in payload, and the backend engine will automatically generate diverse realistic phone specs (iPhone 11-15, Samsung S20-S24, Xiaomi, OPPO, Vivo, etc.)!
       * Payload structure for dummy / bulk generation:
@@ -991,7 +957,11 @@ PROMPT;
         $rawText = '';
         $images = [];
         $lastErrorMsg = '';
-        $maxTurns = 6;
+        // Never let a single chat fan out into more than 3 Gemini round-trips.
+        // Every tool turn is a full request before visible text arrives, so an
+        // unbounded loop turns a 1-second answer into 6× latency. Three turns
+        // still cover dispatch-a-few-reads → follow-up → final text.
+        $maxTurns = 3;
 
         for ($turn = 0; $turn < $maxTurns; $turn++) {
             $payload['contents'] = $conversation;
