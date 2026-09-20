@@ -33,6 +33,7 @@ class AiConsolidateMemoryCommand extends Command
                 ['Deduped (merged into survivor)', $result['deduped']],
                 ['Repeated patterns promoted', $result['promoted']],
                 ['Stale neurons retired', $result['retired']],
+                ['Synapses remodeled (Hebbian)', $result['remodeled_synapses'] ?? 0],
             ]
         );
 

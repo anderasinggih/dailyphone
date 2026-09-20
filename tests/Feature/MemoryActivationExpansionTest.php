@@ -139,4 +139,61 @@ class MemoryActivationExpansionTest extends TestCase
             strpos($ctx, 'Pelanggan kesal selalu diminta tenang dan diberi minuman dingin.')
         );
     }
+
+    public function test_situational_priming_prefers_memories_from_the_same_time_of_day(): void
+    {
+        $seed = $this->note('Sambal pecel Mbok Ginem resep turun temurun otentik.');
+
+        $sameHour = $this->note('Dewi membeli cabai rawit di pasar pagi.', 'note');
+        $sameHour->update(['updated_at' => now()->startOfHour()]);
+
+        $otherHour = $this->note('Komunitas menari Singgih berlatih setiap kamis malam.', 'note');
+        $otherHour->update(['updated_at' => now()->startOfHour()->subHours(12)]);
+
+        $this->link($seed->id, $sameHour->id, 0.5, 'closely_related');
+        $this->link($seed->id, $otherHour->id, 0.5, 'closely_related');
+
+        // Same synapse weight, same freshness, no emotional charge — the ONLY
+        // difference is the clock, and the memory formed "this time of day"
+        // must resurface first (deterministic: 12h apart is never within ±6h).
+        $ctx = $this->contextFor('sambal pecel');
+
+        $this->assertStringContainsString('Dewi membeli cabai rawit di pasar pagi.', $ctx);
+        $this->assertStringContainsString('Komunitas menari Singgih berlatih setiap kamis malam.', $ctx);
+        $this->assertLessThan(
+            strpos($ctx, 'Komunitas menari Singgih berlatih setiap kamis malam.'),
+            strpos($ctx, 'Dewi membeli cabai rawit di pasar pagi.')
+        );
+    }
+
+    public function test_emotional_message_resonates_with_emotion_tagged_memories_only(): void
+    {
+        $seed = $this->note('Sambal pecel Mbok Ginem resep turun temurun otentik.');
+
+        // Identical synapse weight; the differentiator is the query's mood.
+        $moodNote = $this->note('Pelanggan ditangani sabar dan tenang sepanjang hari.', 'emotions');
+        $plainNote = $this->note('Cabai rawit segar masuk setiap pagi di toko.', 'note');
+
+        $this->link($seed->id, $moodNote->id, 0.5, 'closely_related');
+        $this->link($seed->id, $plainNote->id, 0.5, 'closely_related');
+
+        // "kesal" = emotionally charged query → emotion nodes resonate harder.
+        $ctx = $this->contextFor('sambal pecel kesal');
+
+        $this->assertStringContainsString('Pelanggan ditangani sabar dan tenang sepanjang hari.', $ctx);
+        $this->assertStringContainsString('Cabai rawit segar masuk setiap pagi di toko.', $ctx);
+        $this->assertLessThan(
+            strpos($ctx, 'Cabai rawit segar masuk setiap pagi di toko.'),
+            strpos($ctx, 'Pelanggan ditangani sabar dan tenang sepanjang hari.')
+        );
+    }
+
+    public function test_affect_lexicon_detects_emotional_charge(): void
+    {
+        $service = app(GeminiAssistantService::class);
+
+        $this->assertArrayHasKey('negative', $service->detectAffect('pelanggan kesal dengan layanan'));
+        $this->assertArrayHasKey('urgent', $service->detectAffect('tolong segera panggil teknisi'));
+        $this->assertSame([], $service->detectAffect('berapa harga iphone 15'));
+    }
 }

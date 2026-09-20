@@ -350,8 +350,11 @@ USER;
      *  3. RETIRE — active knowledge nodes that were never consulted and are
      *     older than the cutoff are soft-deactivated (recoverable), keeping the
      *     index clean as the brain grows.
+     *  4. PLASTICITY — synapses between co-activated (frequently used) neurons
+     *     are strengthened and dead pairs decay, so consolidation actually
+     *     remodels the memory graph like sleep does for a human brain.
      *
-     * @return array{deduped: int, promoted: int, retired: int, scanned: int}
+     * @return array{deduped: int, promoted: int, retired: int, scanned: int, remodeled_synapses: int}
      */
     public function consolidate(float $dedupeThreshold = 0.92, int $retireAfterDays = 120): array
     {
@@ -518,7 +521,74 @@ USER;
             $result['retired'] = (int)$stale;
         }
 
+        // ── 4. Synapse plasticity ────────────────────────────────────────
+        // "Neurons that fire together wire together": synapses whose BOTH ends
+        // are frequently re-activated get stronger, while pairs that never
+        // fire together decay. This ties the weekly sleep-consolidation to the
+        // actual synaptic strength of the graph — the memory literally reshapes
+        // itself around what the user keeps coming back to.
+        $vitality = AiTrainingNote::where('is_active', true)
+            ->get(['id', 'used_count', 'last_used_at', 'updated_at'])
+            ->mapWithKeys(fn ($n) => [(int)$n->id => $this->vitality($n)])
+            ->all();
+        $result['remodeled_synapses'] = $this->applySynapsePlasticity($vitality);
+
         return $result;
+    }
+
+    /**
+     * How "alive" a neuron is right now, in usage-equivalents: repeated use
+     * dominates, tempered by how recently it fired (a memory used 10× last
+     * week is stronger than one used 10× a year ago).
+     */
+    protected function vitality($n): float
+    {
+        $uses = max(0, (int)($n->used_count ?? 0));
+        $last = $n->last_used_at ?? $n->updated_at;
+        $recency = $last
+            ? pow(0.5, max(0, (now()->timestamp - $last->timestamp) / 86400) / 60)
+            : 0.0;
+
+        return $uses * (0.5 + 0.5 * $recency) + $recency;
+    }
+
+    /**
+     * Deterministic Hebbian remodelling of the synapse network. A synapse is
+     * strengthened when both endpoints are vital (co-activation), and decays
+     * toward the noise floor when neither end has fired. Weights stay bounded
+     * so the graph never drifts dead or saturates.
+     *
+     * @return int number of synapses whose strength changed
+     */
+    protected function applySynapsePlasticity(array $vitality): int
+    {
+        $adjusted = 0;
+
+        AiTrainingNoteLink::get(['id', 'note_id', 'linked_note_id', 'weight'])->each(function ($link) use ($vitality, &$adjusted) {
+            $pair = min(
+                $vitality[(int)$link->note_id] ?? 0.0,
+                $vitality[(int)$link->linked_note_id] ?? 0.0
+            );
+
+            $w = $link->weight !== null ? (float)$link->weight : 0.0;
+            $next = $w;
+            if ($pair >= 1.0) {
+                $next = $w * 1.10;
+            } elseif ($pair <= 0.5) {
+                // At or below half-liveliness the bond never fires in practice —
+                // let it fade instead of holding dead weight.
+                $next = $w * 0.80;
+            }
+            $next = round(min(1.0, max(0.03, $next)), 3);
+
+            if ($next !== $w) {
+                $link->weight = $next;
+                $link->saveQuietly();
+                $adjusted++;
+            }
+        });
+
+        return $adjusted;
     }
 
     /**

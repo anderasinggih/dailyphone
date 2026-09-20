@@ -62,6 +62,30 @@ class GeminiAssistantService
 
     protected const SECOND_HOP_PER_SOURCE = 2;
 
+    // Situational priming: a memory formed at the same time of day fires a
+    // little harder — the clock nudges recall the way physical context does
+    // for a human mid-conversation.
+    protected const SITUATION_PROXIMITY_HOURS = 3;
+
+    protected const SITUATION_BOOST = 1.15;
+
+    protected const SITUATION_MILD_HOURS = 6;
+
+    protected const SITUATION_MILD_BOOST = 1.05;
+
+    // Mood resonance: when the incoming message carries emotional charge,
+    // emotionally-tagged memories resurface louder — mood gates which
+    // feelings come back, exactly like a human in a good/bad mood.
+    protected const EMOTION_RESONANCE_BOOST = 1.3;
+
+    // Tiny affect lexicon (lowercased substrings). Kept deliberately minimal:
+    // it only needs to flag that a query is emotionally charged, not do NLP.
+    protected const AFFECT_LEXICON = [
+        'positive' => ['senang', 'gembira', 'bahagia', 'mantap', 'suka'],
+        'negative' => ['kesal', 'marah', 'kecewa', 'sedih', 'benci', 'frustrasi'],
+        'urgent' => ['segera', 'buru', 'darurat', 'mendesak', 'cepet'],
+    ];
+
     public function __construct()
     {
         $this->reloadSettings();
@@ -1937,28 +1961,69 @@ SYSTEM;
     }
 
     /**
+     * Flag whether free text carries emotional charge (positive / negative /
+     * urgent), using a deliberately minimal lexicon — enough to gate mood
+     * priming on retrieval without pretending to do NLP.
+     *
+     * @return array<string, string[]> valences => matched words
+     */
+    public function detectAffect(string $text): array
+    {
+        $text = strtolower($text);
+        $found = [];
+        foreach (self::AFFECT_LEXICON as $valence => $words) {
+            foreach ($words as $word) {
+                if ($word !== '' && str_contains($text, $word)) {
+                    $found[$valence][] = $word;
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
      * Lived-memory strengthening for a node: how strongly an activated memory
      * should fire TODAY. Newer nodes decay slowly (half-life), emotionally
      * tagged nodes are punchier, and nodes the user keeps coming back to
-     * (used_count) become proportionally louder — the human qualities SQL alone
-     * can never model.
+     * (used_count) become proportionally louder. Two human extras: memories
+     * formed at the current time of day resurface more easily (situation),
+     * and a section about the user's life clicks in harder when the message
+     * itself is emotional (mood resonance).
      */
-    protected function memoryBoost($node): float
+    protected function memoryBoost($node, array $affectWords = []): float
     {
         $ageDays = 0.0;
+        $hour = -1;
         $updated = $node->updated_at ?? null;
         if ($updated) {
             $ageDays = max(0.0, (now()->timestamp - $updated->timestamp) / 86400.0);
+            $hour = (int)$updated->format('G');
         }
 
         $recency = max(self::RECENCY_FLOOR, pow(0.5, $ageDays / self::RECENCY_HALF_LIFE_DAYS));
 
         $emotion = (string)($node->kind ?? '') === 'emotions' ? self::EMOTION_BOOST : 1.0;
 
+        if ($affectWords !== [] && (string)($node->kind ?? '') === 'emotions') {
+            $emotion *= self::EMOTION_RESONANCE_BOOST;
+        }
+
         $usage = 1.0 + self::USAGE_BOOST_PER_LOG * log(max(1, (int)($node->used_count ?? 0)) + 1);
         $usage = min($usage, self::USAGE_BOOST_CAP);
 
-        return $recency * $emotion * $usage;
+        $situation = 1.0;
+        if ($hour >= 0) {
+            $delta = abs((int)now()->format('G') - $hour);
+            $delta = min($delta, 24 - $delta);
+            if ($delta <= self::SITUATION_PROXIMITY_HOURS) {
+                $situation = self::SITUATION_BOOST;
+            } elseif ($delta <= self::SITUATION_MILD_HOURS) {
+                $situation = self::SITUATION_MILD_BOOST;
+            }
+        }
+
+        return $recency * $emotion * $usage * $situation;
     }
 
     protected function neuronLabel($note): string
@@ -2072,6 +2137,10 @@ SYSTEM;
             return $links;
         };
 
+        // Mood priming signal: how emotionally charged is the message? Emotion
+        // nodes resonate louder when the conversation itself is emotional.
+        $affectWords = collect($this->detectAffect((string)$query))->flatten()->values()->all();
+
         $candidates = [];
 
         // Hop 1: strongest synapses out of every selected seed neuron.
@@ -2107,7 +2176,7 @@ SYSTEM;
         foreach ($candidates as $id => $c) {
             $node = $hopNodes[$id] ?? null;
             $candidates[$id]['activation'] = $node
-                ? $c['weight'] * $this->memoryBoost($node)
+                ? $c['weight'] * $this->memoryBoost($node, $affectWords)
                 : 0.0;
         }
 
@@ -2140,12 +2209,12 @@ SYSTEM;
             ->get()
             ->keyBy('id');
 
-        $paths = collect(array_values($candidates))->map(function ($c) use ($expandedNodes) {
+        $paths = collect(array_values($candidates))->map(function ($c) use ($expandedNodes, $affectWords) {
             $node = $expandedNodes[$c['id']] ?? null;
             if (!$node) {
                 return null;
             }
-            $activation = $c['weight'] * $this->memoryBoost($node);
+            $activation = $c['weight'] * $this->memoryBoost($node, $affectWords);
             $hop = count($c['path']) - 1;
             return [
                 'id' => $c['id'],
