@@ -1581,7 +1581,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                     {isSidebarOpen && (
                         <div
                             onClick={() => setIsSidebarOpen(false)}
-                            className="absolute inset-0 bg-black/40 z-25 md:hidden backdrop-blur-xs"
+                            className="absolute inset-0 bg-black/40 z-[25] md:hidden backdrop-blur-xs"
                         />
                     )}
 
@@ -1589,7 +1589,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background md:bg-card relative">
 
                         {/* Floating Top Header - Liquid Glass Capsule (like mobile ChatGPT app) */}
-                        <div className="absolute top-3 left-3 right-3 z-15 pointer-events-none flex justify-center">
+                        <div className="absolute top-3 left-3 right-3 z-[15] pointer-events-none flex justify-center">
                             <div className="pointer-events-auto w-full max-w-3xl flex items-center justify-between px-3.5 py-2 rounded-2xl bg-background/80 dark:bg-card/75 backdrop-blur-2xl border border-border/50 shadow-lg shadow-black/5 dark:shadow-black/20">
                                 <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
                                     {chatOnly ? (
