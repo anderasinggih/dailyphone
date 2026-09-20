@@ -1550,7 +1550,7 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         $q = mb_strtolower($userText);
         $isCountQuery = (bool) preg_match(
             '/\b(?:berapa|how\s+many|jumlah|count|banyaknya|total)\b.*\b(?:node|neuron|memor\w+)\b'
-            . '|\b(?:node|neuron|memor\w+)\b.*\b(?:bertambah|ditambah|dibuat|tersimpan|tercatat|jumlah|count|total|ditulis|dibikin)\b',
+            . '|\b(?:node|neuron|memor\w+)\b.*\b(?:bertambah|ditambah|dibuat|tersimpan|tercatat|jumlah|count|total|ditulis|dibikin)\b/',
             $q
         );
         $explicit = (bool) preg_match('/\b(?:nambah|tambah|buat|bikin)\b.*\b(?:node|neuron|memor\w+)\b.*\?*$/iu', $userText);
