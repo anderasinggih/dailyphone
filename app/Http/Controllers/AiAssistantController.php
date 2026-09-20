@@ -18,6 +18,11 @@ class AiAssistantController extends Controller
     protected GeminiAssistantService $geminiService;
     protected AiActionService $aiActionService;
 
+    // Real node counts computed for the current request when the user asks
+    // "how many nodes", so the guard can tell a backed-up count from a made-up
+    // one instead of trusting the model's own arithmetic.
+    protected ?array $nodeStatsForGuard = null;
+
     public function __construct(GeminiAssistantService $geminiService, AiActionService $aiActionService)
     {
         $this->geminiService = $geminiService;
@@ -393,6 +398,18 @@ class AiAssistantController extends Controller
                     $this->learnFromProposalRejection($sessionId, $userText, $user);
                 } catch (\Throwable $e) {
                     \Illuminate\Support\Facades\Log::warning('Proposal feedback learning failed: ' . $e->getMessage());
+                }
+
+                // Real, verifiable node counts: when the user asks how many
+                // nodes/memories exist or were added, hand the model the true
+                // numbers from the database instead of letting it invent them.
+                try {
+                    $nodeNotice = $this->nodeStatsNotice($userText, $session);
+                    if ($nodeNotice !== '') {
+                        $ingestNotice .= "\n" . $nodeNotice;
+                    }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Node stats notice failed: ' . $e->getMessage());
                 }
 
                 // 3. Send to Gemini with full session memory & custom session rules/training
@@ -998,6 +1015,44 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     }
 
     /**
+     * When the user asks about node/memory counts, return a factual one-line
+     * notice built from the real database numbers (and remember them for the
+     * guard). Returns '' for any other query so ordinary chats stay untouched.
+     */
+    protected function nodeStatsNotice(string $userText, $session): string
+    {
+        $q = mb_strtolower($userText);
+        $isCountQuery = (bool) preg_match(
+            '/\b(?:berapa|how\s+many|jumlah|count|banyaknya|total)\b.*\b(?:node|neuron|memor\w+)\b'
+            . '|\b(?:node|neuron|memor\w+)\b.*\b(?:bertambah|ditambah|dibuat|tersimpan|tercatat|jumlah|count|total|ditulis|dibikin)\b',
+            $q
+        );
+        $explicit = (bool) preg_match('/\b(?:nambah|tambah|buat|bikin)\b.*\b(?:node|neuron|memor\w+)\b.*\?*$/iu', $userText);
+
+        if (!$isCountQuery && !$explicit) {
+            return '';
+        }
+
+        $today = now()->toDateString();
+        $stats = [
+            'total' => (int)\App\Models\AiTrainingNote::count(),
+            'active' => (int)\App\Models\AiTrainingNote::where('is_active', true)->count(),
+            'today' => (int)\App\Models\AiTrainingNote::whereDate('created_at', $today)->count(),
+            'since_session' => $session && $session->created_at
+                ? (int)\App\Models\AiTrainingNote::where('created_at', '>=', $session->created_at)->count()
+                : null,
+        ];
+        $this->nodeStatsForGuard = $stats;
+
+        $parts = "total node = {$stats['total']}; node aktif = {$stats['active']}; node dibuat hari ini = {$stats['today']}";
+        if ($stats['since_session'] !== null) {
+            $parts .= "; node dibuat sejak sesi ini dimulai = {$stats['since_session']}";
+        }
+
+        return "NODE STATISTICS (FAKTUAL dari database — jawab pertanyaan jumlah node HANYA dari angka ini, JANGAN mengarang, JANGAN menyebut angka lain): {$parts}. Jika angka yang diminta tidak tersedia, katakan jujur kamu tidak bisa memastikannya.";
+    }
+
+    /**
      * Reconcile storage claims so the model's words stay truthful (honest
      * persistence). The model sometimes writes a confirmation in the visible
      * reply ("📝 Node baru: ...", "sudah tersimpan", "berhasil dicatat", ...)
@@ -1045,6 +1100,14 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         // Already backed by a real, persistable memo block → the claim is honest.
         $rawReply = (string)($result['raw_reply'] ?? $visible);
         if ($this->hasPersistableMemo($rawReply)) {
+            return;
+        }
+
+        // Invented node/memory counts ("4 node berhasil ditambahkan") can never
+        // be honoured — there is no real subject to store. Neutralise straight
+        // away instead of trying to reconstruct a memory from a bare number.
+        if ($this->countIsFabricated($claim['sentence'] ?? (string)($claim['content'] ?? ''))) {
+            $result['reply'] = $this->correctFalseClaim($visible);
             return;
         }
 
@@ -1112,14 +1175,11 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     {
         $sentences = preg_split('/(?<=[.!?])\s+|\n+/u', trim($text)) ?: [trim($text)];
         $verbClaim = null;
+        $countClaim = null;
 
         foreach ($sentences as $sentence) {
             $s = trim($sentence);
             if ($s === '') {
-                continue;
-            }
-            if (preg_match('/\b(?:belum|tidak|gagal|batal|jangan|bukan|tanpa|jika|kalau|sebaiknya|seharusnya)\b/iu', $s)
-                || preg_match('/\b(?:sebelumnya|sebelum|pernah|sejak|sudah\s+tadi)\b/iu', $s)) {
                 continue;
             }
 
@@ -1130,9 +1190,41 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
                 return $this->claimFrom($s, $m[1]) + ['named' => true];
             }
 
-            if ($verbClaim === null && $this->matchesStorageVerbClaim($s)) {
-                $verbClaim = $s;
+            $isPast = (bool) preg_match('/\b(?:sebelumnya|sebelum|pernah|sejak|sudah\s+tadi)\b/iu', $s);
+            $isOpen = (bool) preg_match('/^\s*(?:apakah|berapa|kenapa|mengapa|bisakah|kapan|di\s+mana|where|why|when|how|tolong|mohon|silakan|silahkan)\b/iu', $s)
+                || (bool) preg_match('/\b(?:jika|kalau|seandainya|sebaiknya|seharusnya)\b/iu', $s);
+            if ($isPast || $isOpen) {
+                continue;
             }
+
+            // A count claim ("4 node berhasil ditambahkan", "sebanyak 3 node
+            // tersimpan") is the exact hallucination pattern to kill: numbers
+            // the model cannot possibly know unless backed by the database.
+            if ($this->matchesNodeCountClaim($s)) {
+                if ($this->countIsFabricated($s)) {
+                    $countClaim = $countClaim ?? $s;
+                    continue;
+                }
+                // The count matches real database statistics (the model was
+                // handed NODE STATISTICS this request) → an honest statement,
+                // so don't let the verb matcher below second-guess it either.
+                continue;
+            }
+
+            // Positive completion ("berhasil/sudah/telah ... mencatat/menambah/
+            // membuat") is a claim even when the same sentence carries negation
+            // words, because "belum tersimpan ... yang berhasil ditambahkan" is
+            // a contradiction, not an honest negative.
+            if ($this->isPositiveCompletionClaim($s)
+                || (!$this->isNegatedClaim($s) && $this->matchesStorageVerbClaim($s))) {
+                $verbClaim = $verbClaim ?? $s;
+            }
+        }
+
+        // An unverifiable node count beats a vague verb claim: it is the most
+        // damaging fabrication and must be neutralised no matter what.
+        if ($countClaim !== null) {
+            return $this->claimFrom($countClaim, '') + ['named' => false];
         }
 
         return $verbClaim !== null ? $this->claimFrom($verbClaim, '') + ['named' => false] : null;
@@ -1245,21 +1337,119 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     /**
      * Compact first-person/perfected markers of "a memory was just saved".
      * No rigid phrase list — the model itself decides what deserves a node;
-     * this only catches when it forgot to emit the block.
+     * this only catches when it forgot to emit the block. Completions
+     * ("berhasil menyimpan") are handled by isPositiveCompletionClaim();
+     * this matcher covers the leftover first-person and state markers.
      */
     protected function matchesStorageVerbClaim(string $sentence): bool
     {
-        // No rigid phrase list — just first-person save verbs, completion
-        // markers, or an explicitly persisted state. The model decides what
-        // deserves a node; this only catches when it forgot the block.
         return (bool) preg_match(
-            '/\b(?:kucatat|kusimpan|kuingat|kurekam)\b'
-            . '|(?:berhasil|sudah|telah)\s+(?:di|ter|ku|saya\s+)?(?:catat|simp[ae]n|ingat|rekam)\b'
-            . '|\b(?:tersimp[ae]n|tercatat)\b'
-            . '|\bnode\s+baru\b'
+            '/\b(?:kucatat|kusimpan|kuingat|kurekam|kutambah|kubuat|kubikin)\b'
+            . '|\b(?:tersimp[ae]n|tercatat|disimp[ae]n|terekam)\b'
+            . '|\bnode\s+(?:baru|dibuat|ditambahkan|diproses|tersimpan|tercatat)\b'
             . '/iu',
             $sentence
         );
+    }
+
+    /**
+     * An explicit completion marker ("berhasil / sudah / telah ... menyimpan /
+     * mencatat / menambahkan / membuat") right before a storage verb. Detected
+     * independently of surrounding negation so contradictory sentences like
+     * "belum tersimpan ... yang berhasil ditambahkan" are still flagged.
+     */
+    protected function isPositiveCompletionClaim(string $sentence): bool
+    {
+        return (bool) preg_match(
+            '/\b(?:berhasil|sudah|telah|sukses|baru\s+saja)\s+'
+            . '(?:di|ter|ku|saya\s+)?(?:me|men|meng|mem)?'
+            . '(?:catat|catet|simp[ae]n|ingat|rekam|tambah|buat|bikin|simpan|simpen|store|save|create|belajar|pelajari|learn)\w*\b'
+            . '/iu',
+            $sentence
+        );
+    }
+
+    /**
+     * A clearly negated storage sentence ("belum / tidak / gagal ..."). Honest
+     * negatives are left alone; only positive completions above can override.
+     */
+    protected function isNegatedClaim(string $sentence): bool
+    {
+        return (bool) preg_match('/\b(?:belum|tidak|gagal|batal|jangan|bukan|tanpa|tak\s+(?:pernah|ada))\b/iu', $sentence);
+    }
+
+    /**
+     * True when a sentence carries an invented node/Memory count ("4 node
+     * berhasil ditambahkan", "sebanyak 3 node tersimpan") that cannot be
+     * backed by any statistic the system handed it this request. Only fired
+     * when the count coexists with storage/save context, so descriptive prose
+     * ("saya merangkum dari 3 node") is never touched.
+     */
+    protected function matchesNodeCountClaim(string $sentence): bool
+    {
+        if (!preg_match(
+            '/\b(?:berhasil|sudah|telah|sukses|baru\s+saja)\b'
+            . '|tersimp|disimp|tercatat|terekam|bertambah|ditam?bah|dibuat|diproses'
+            . '|\bnode\s+baru\b'
+            . '/iu',
+            $sentence
+        )) {
+            return false;
+        }
+
+        return $this->countCandidates($sentence) !== [];
+    }
+
+    /**
+     * The literal numbers a count claim points at: adjacent to a node token
+     * ("4 node") or reached through storage context just after it ("node
+     * tersimpan = 11", "node yang berhasil ditambahkan sebanyak 4").
+     */
+    protected function countCandidates(string $sentence): array
+    {
+        $candidates = [];
+        preg_match_all('/\b([0-9]+)\s*(?:node|neuron|memori|memory|catatan)\b/iu', $sentence, $m);
+        foreach ($m[1] as $n) {
+            if ($n !== '') {
+                $candidates[(int)$n] = true;
+            }
+        }
+        preg_match_all('/\b(?:node|neuron|memori|memory)\s+(?:yang\s+)?(?:berhasil|sudah|telah|sebanyak|ditambahkan|tersimpan|tercatat|dibuat|bertambah|ditambah|disimpan|diproses)?[^.\n\d]{0,14}([0-9]+)/iu', $sentence, $m2);
+        foreach ($m2[1] as $n) {
+            if ($n !== '') {
+                $candidates[(int)$n] = true;
+            }
+        }
+
+        return array_keys($candidates);
+    }
+
+    /**
+     * A count claim is fabricated when none of its numbers match the real
+     * database statistics for this request (or when no statistics were
+     * handed to the model at all, so the number had no possible source).
+     */
+    protected function countIsFabricated(string $sentence): bool
+    {
+        $candidates = $this->countCandidates($sentence);
+        if ($candidates === []) {
+            return false;
+        }
+
+        $stats = $this->nodeStatsForGuard;
+        if ($stats === null) {
+            return true;
+        }
+
+        foreach ($candidates as $candidate) {
+            foreach ($stats as $value) {
+                if ($value !== null && (int)$value === $candidate) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -1277,6 +1467,7 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         $content = trim((string) preg_replace('/\s+/u', ' ', $content));
 
         return [
+            'sentence' => $sentence,
             'title' => $this->shortClaimTitle($entity !== '' ? $entity : $sentence),
             'content' => $content,
         ];
@@ -1451,16 +1642,20 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
             // Ordered so earlier insertions never get re-matched later: the
             // broad "tersimpan/tercatat" rewrite runs last.
             '/📝\s*node\s+baru\s*[:：\-]?[^\n]*/iu' => 'gagal menyimpan catatan ke node memori',
-            '/\b(?:kucatat|kusimpan|kuingat|kurekam)\b/iu' => 'tidak sempat menyimpan',
-            '/\b(?:berhasil|sudah|telah)\s+(?:di|ter|ku|saya\s+)?(?:catat|simp[ae]n|ingat|rekam)\b/iu' => 'gagal disimpan',
-            '/\bnode\s+baru\b/iu' => 'node gagal dibuat',
-            '/\b(?:tersimp[ae]n|tercatat)\b/iu' => 'belum tersimpan',
+            '/\b(?:kucatat|kusimpan|kuingat|kurekam|kutambah|kubuat|kubikin)\b/iu' => 'tidak sempat menyimpan',
+            // Invented counts: "4 node berhasil ditambahkan" → neutralize the
+            // whole number the model could not possibly know.
+            '/\b[0-9]+\s*(?:node|neuron|memori|memory|catatan)\b/iu' => 'jumlah node tidak dapat dipastikan',
+            '/\b(?:node|neuron|memori|memory)\s*(?:berhasil|sudah|telah|sebanyak|ditambahkan|tersimpan|tercatat|dibuat|bertambah|ditambah|disimpan)\s*(?:sebanyak\s*)?[0-9]+/iu' => 'node tidak dapat dipastikan jumlahnya',
+            '/\b(?:berhasil|sudah|telah|sukses)\s+(?:di|ter|ku|saya\s+)?(?:me|men|meng|mem)?(?:catat|catet|simp[ae]n|ingat|rekam|tambah|buat|bikin|simpan|simpen|store|save|create|belajar|pelajari|learn)\w*\b/iu' => 'gagal disimpan',
+            '/\bnode\s+(?:baru|dibuat|ditambahkan|diproses|tersimpan|tercatat)\b/iu' => 'node gagal dibuat',
+            '/\b(?:tersimp[ae]n|tercatat|disimp[ae]n|terekam)\b/iu' => 'belum tersimpan',
         ];
 
         $corrected = trim((string) preg_replace(array_keys($replacements), array_values($replacements), $visible));
         $corrected = preg_replace('/\n{3,}/', "\n\n", $corrected) ?: $corrected;
 
-        if (!preg_match('/\b(?:gagal|tidak berhasil|belum tersimpan|tidak sempat)\b/i', $corrected)) {
+        if (!preg_match('/\b(?:gagal|tidak berhasil|belum tersimpan|tidak sempat|tidak dapat dipastikan)\b/i', $corrected)) {
             $corrected = trim($corrected) . "\n\n> Sistem tidak berhasil menyimpan memori tersebut ke jaringan neuron. Mohon ulangi permintaan bila masih ingin mencatatnya.";
         }
 

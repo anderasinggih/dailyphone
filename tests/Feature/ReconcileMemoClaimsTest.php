@@ -194,4 +194,61 @@ class ReconcileMemoClaimsTest extends TestCase
         $this->assertSame(0, AiTrainingNote::count());
         $this->assertStringNotContainsString('```ai_memo', $result['raw_reply']);
     }
+
+    public function test_corrects_fabricated_node_count_claims(): void
+    {
+        $reply = 'Tadi sudah kusimpan 4 node baru berisi materi OWS Huawei.';
+
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => $reply,
+            'raw_reply' => $reply,
+        ], 'belajar ows');
+
+        // No database statistic existed → the invented number must be neutralised.
+        $this->assertStringNotContainsString('4 node', $result['reply']);
+        $this->assertStringNotContainsString('berhasil', $result['reply']);
+        $this->assertStringContainsString('tidak dapat dipastikan', $result['reply']);
+        $this->assertSame(0, AiTrainingNote::count());
+    }
+
+    public function test_corrects_contradictory_count_claims(): void
+    {
+        $reply = 'Belum tersimpan ada 4 node gagal dibuat yang berhasil ditambahkan dan dihubungkan ke graf.';
+
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => $reply,
+            'raw_reply' => $reply,
+        ], 'sesi ini udah nambah berapa node?');
+
+        $this->assertStringNotContainsString('berhasil ditambahkan', $result['reply']);
+        $this->assertSame(0, AiTrainingNote::count());
+    }
+
+    public function test_allows_count_that_matches_real_database_statistics(): void
+    {
+        $controller = app(AiAssistantController::class, [
+            'geminiService' => app(GeminiAssistantService::class),
+            'aiActionService' => app(AiActionService::class),
+        ]);
+        $prop = new \ReflectionProperty(AiAssistantController::class, 'nodeStatsForGuard');
+        $prop->setAccessible(true);
+        $prop->setValue($controller, ['total' => 11, 'active' => 11, 'today' => 0, 'since_session' => 0]);
+
+        $reply = 'Saat ini total node tersimpan = 11 di jaringan neuron.';
+
+        $owner = User::factory()->create();
+        $result = [
+            'success' => true,
+            'reply' => $reply,
+            'raw_reply' => $reply,
+        ];
+        $method = new \ReflectionMethod(AiAssistantController::class, 'reconcileMemoClaims');
+        $method->setAccessible(true);
+        $method->invokeArgs($controller, [&$result, $owner, 'berapa total node?', '']);
+
+        $this->assertSame($reply, $result['reply']);
+        $this->assertSame(0, AiTrainingNote::count());
+    }
 }

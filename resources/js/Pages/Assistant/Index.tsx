@@ -302,6 +302,19 @@ function playCompletionChime(soundEnabled: boolean): void {
         };
     }, [isLoading]);
 
+    // Keep the address bar in sync with the active session without a full
+    // reload, so refreshing or opening a new tab never jumps to another chat
+    // (or silently starts a fresh one on the next message).
+    const syncUrlSessionId = (sessionId: number | null) => {
+        const url = new URL(window.location.href);
+        if (sessionId) {
+            url.searchParams.set('session_id', String(sessionId));
+        } else {
+            url.searchParams.delete('session_id');
+        }
+        window.history.replaceState(window.history.state, '', url.toString());
+    };
+
     // Handle selecting a different session
     const selectSession = (sessionId: number) => {
         setIsSidebarOpen(false);
@@ -326,11 +339,13 @@ function playCompletionChime(soundEnabled: boolean): void {
             if (data.success && data.session) {
                 setSessionList(prev => [data.session, ...prev]);
                 setCurrentSessionId(data.session.id);
+                syncUrlSessionId(data.session.id);
                 setMessages([welcomeMessage]);
             }
         } catch (e) {
             // fallback: reset state locally
             setCurrentSessionId(null);
+            syncUrlSessionId(null);
             setMessages([welcomeMessage]);
         }
     };
@@ -356,6 +371,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                     selectSession(remaining[0].id);
                 } else {
                     setCurrentSessionId(null);
+                    syncUrlSessionId(null);
                     setMessages([welcomeMessage]);
                 }
             }
@@ -480,6 +496,7 @@ function playCompletionChime(soundEnabled: boolean): void {
             // Update session list with new session or updated title
             if (data.session_id) {
                 setCurrentSessionId(data.session_id);
+                syncUrlSessionId(data.session_id);
                 setSessionList(prev => {
                     const exists = prev.find(s => s.id === data.session_id);
                     if (exists) {
