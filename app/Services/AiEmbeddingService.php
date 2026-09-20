@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\Log;
 class AiEmbeddingService
 {
     /** Mapping from model name to the CLI-friendly sanitized key for the API URL. */
-    protected string $model = 'text-embedding-004';
+    protected string $model = 'gemini-embedding-001';
 
     /** Ordered Gemini API keys (failover over rate limits). */
     protected array $apiKeys = [];
@@ -59,7 +59,7 @@ class AiEmbeddingService
         }
 
         $configured = trim((string) ($settings->ai_embedding_model ?? ''));
-        $this->model = $configured !== '' ? $configured : 'text-embedding-004';
+        $this->model = $configured !== '' ? $configured : 'gemini-embedding-001';
     }
 
     public function model(): string
@@ -84,7 +84,7 @@ class AiEmbeddingService
         $model = preg_replace('/^models\//', '', $model);
         $model = preg_replace('/:\d+[a-z]+$/', '', $model);
 
-        return $model !== '' ? $model : 'text-embedding-004';
+        return $model !== '' ? $model : 'gemini-embedding-001';
     }
 
     /**
@@ -96,6 +96,14 @@ class AiEmbeddingService
     {
         $text = trim((string) $text);
         if ($text === '') {
+            return null;
+        }
+
+        // Circuit breaker: after a total failure (all keys) the endpoint is
+        // treated as offline for a short window, so a dead/unreachable model
+        // cannot stall every chat behind connect timeouts. Cleared by any
+        // subsequent success.
+        if (Cache::get('ai.embed.api_offline')) {
             return null;
         }
 
@@ -116,7 +124,11 @@ class AiEmbeddingService
                 if ($response->successful()) {
                     $values = $response->json('embedding.values');
 
-                    return is_array($values) ? array_map('floatval', $values) : null;
+                    if (is_array($values)) {
+                        Cache::forget('ai.embed.api_offline');
+
+                        return array_map('floatval', $values);
+                    }
                 }
 
                 Log::warning("Embedding request HTTP {$response->status()} (key #".($index + 1).'): '
@@ -125,6 +137,8 @@ class AiEmbeddingService
                 Log::warning('Embedding request threw (key #'.($index + 1).'): '.$e->getMessage());
             }
         }
+
+        Cache::put('ai.embed.api_offline', true, 60);
 
         return null;
     }
@@ -174,6 +188,10 @@ class AiEmbeddingService
         $out = [];
         $model = $this->sanitizeModel($this->model);
 
+        if (Cache::get('ai.embed.api_offline')) {
+            return $out;
+        }
+
         foreach (array_values($this->apiKeys) as $key) {
             try {
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:batchEmbedContents?key={$key}";
@@ -188,7 +206,11 @@ class AiEmbeddingService
                         }
                     }
 
-                    return $out;
+                    if ($out !== []) {
+                        Cache::forget('ai.embed.api_offline');
+
+                        return $out;
+                    }
                 }
 
                 Log::warning('Batch embedding HTTP '.$response->status().': '
@@ -197,6 +219,8 @@ class AiEmbeddingService
                 Log::warning('Batch embedding threw: '.$e->getMessage());
             }
         }
+
+        Cache::put('ai.embed.api_offline', true, 60);
 
         return [];
     }
@@ -372,7 +396,15 @@ class AiEmbeddingService
         // embed so even a failing embedding API still triggers the self-heal.
         $this->scheduleSelfHeal($pool);
 
-        $qVector = $this->embedQuery($query);
+        // Cold index short-circuit: if no candidate carries a vector from the
+        // current embedding model, the query embed can only produce a null and
+        // fall back to the token pool — so skip the API round-trip entirely and
+        // let the caller's token fallback fill the result (instant, no network).
+        $hasModelVectors = $pool->contains(
+            fn ($note) => $note->embedding !== null && (string) $note->embedding_model === $this->model
+        );
+
+        $qVector = $hasModelVectors ? $this->embedQuery($query) : null;
         if ($qVector === null) {
             return ['notes' => collect(), 'best_score' => null, 'method' => 'embedding'];
         }

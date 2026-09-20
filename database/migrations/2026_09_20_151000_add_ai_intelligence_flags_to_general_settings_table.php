@@ -15,7 +15,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('general_settings', function (Blueprint $table) {
-            $table->string('ai_embedding_model', 60)->default('text-embedding-004')->after('ai_model');
+            $table->string('ai_embedding_model', 60)->default('gemini-embedding-001')->after('ai_model');
             $table->boolean('ai_tools_enabled')->default(true)->after('ai_embedding_model');
             $table->boolean('ai_grounding_enabled')->default(true)->after('ai_tools_enabled');
             $table->boolean('ai_context_caching_enabled')->default(true)->after('ai_grounding_enabled');

@@ -175,7 +175,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
         ai_api_keys: failoverSlots,
         ai_model: settings.ai_model || 'gemini-3.5-flash-lite',
         ai_system_instruction: settings.ai_system_instruction || '',
-        ai_embedding_model: settings.ai_embedding_model || 'text-embedding-004',
+        ai_embedding_model: settings.ai_embedding_model || 'gemini-embedding-001',
         ai_tools_enabled: settings.ai_tools_enabled ?? true,
         ai_grounding_enabled: settings.ai_grounding_enabled ?? true,
         ai_tool_combo: settings.ai_tool_combo ?? true,
@@ -953,8 +953,9 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                             onChange={e => aiForm.setData('ai_embedding_model', e.target.value)}
                                             className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                         >
-                                            <option value="text-embedding-004">text-embedding-004 (Recommended)</option>
-                                            <option value="gemini-embedding-001">gemini-embedding-001</option>
+                                            <option value="gemini-embedding-001">gemini-embedding-001 (Recommended)</option>
+                                            <option value="gemini-embedding-2">gemini-embedding-2</option>
+                                            <option value="text-embedding-004">text-embedding-004</option>
                                         </select>
                                         <p className="caption text-muted-foreground">
                                             Used to match memory nodes by meaning, not literal keywords ("kena air" finds "water damage"). Run <code className="font-mono text-primary">php artisan ai:embed-backfill</code> after changing.

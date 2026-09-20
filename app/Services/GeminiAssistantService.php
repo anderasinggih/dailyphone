@@ -1212,71 +1212,139 @@ PROMPT;
         $totalKeys = count($apiKeys);
         $lastErrorMsg = '';
 
-        foreach ($apiKeys as $i => $apiKey) {
-            try {
-                if ($onChunk === null) {
-                    // Blocking call: wait for the full completion (used by non-chat
-                    // callers or when the client did not ask for streaming).
-                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:generateContent?key={$apiKey}";
-                    $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
+        // Model fallback chain: when the configured model is rate-limited or its
+        // quota is exhausted (429 / RESOURCE_EXHAUSTED), silently retry the same
+        // turn on a lighter alternative text model so a reply still streams
+        // instead of dying. Hard request errors (400 invalid context, 404 model
+        // not found) would fail on every model, so those keep trying the
+        // remaining keys of the current model only.
+        $modelChain = $this->modelFallbackChain($useModel);
 
-                    if ($response->successful()) {
-                        return $this->parseBlockingResponse($response, $isImageModel);
+        foreach ($modelChain as $activeModel) {
+            foreach ($apiKeys as $i => $apiKey) {
+                try {
+                    if ($onChunk === null) {
+                        // Blocking call: wait for the full completion (used by non-chat
+                        // callers or when the client did not ask for streaming).
+                        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$activeModel}:generateContent?key={$apiKey}";
+                        $response = Http::timeout(90)->connectTimeout(15)->post($url, $payload);
+
+                        if ($response->successful()) {
+                            $parsed = $this->parseBlockingResponse($response, $isImageModel);
+                            $parsed['model_used'] = $activeModel;
+
+                            return $parsed;
+                        }
+                        $lastErrorMsg = $this->errorMessageFrom($response);
+                    } else {
+                        // Token streaming: relay each visible delta to $onChunk while
+                        // the rest of the route continues to think, so the UI renders
+                        // words ~1s after the user sends the message.
+                        //
+                        // NOTE: the Laravel/Guzzle streaming client buffers ~8KB of
+                        // the body before a read() yields, which collapsed every
+                        // streamed object into one burst — the chat showed a blank
+                        // waiting spinner for seconds and then the whole reply at
+                        // once. cURL's WRITEFUNCTION fires as each network chunk
+                        // lands, so the SSE parser below emits per-event deltas and
+                        // tokens actually flow to the UI live.
+                        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$activeModel}:streamGenerateContent?alt=sse&key={$apiKey}";
+
+                        $meta = [];
+                        $raw = null;
+                        $images = [];
+                        $calls = [];
+                        $modelParts = [];
+                        $usage = null;
+                        $grounding = null;
+                        $streamResult = $this->streamGeminiSSE($url, $payload, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding, $modelParts);
+
+                        if (! $streamResult['success']) {
+                            $lastErrorMsg = $streamResult['error'];
+                            Log::warning("Gemini model {$activeModel} stream failed: {$lastErrorMsg}");
+                            $this->logKeyRotation($i, $totalKeys);
+
+                            // Quota / rate-limit / transient upstream failures justify
+                            // switching to the next fallback model; a hard request
+                            // error would fail everywhere, so keep trying the keys.
+                            if ($this->looksQuota($lastErrorMsg)) {
+                                Log::info("Gemini quota hit on {$activeModel}; trying the next fallback model.");
+                                break;
+                            }
+
+                            continue;
+                        }
+
+                        return [
+                            'success' => true,
+                            'text' => $streamResult['text'],
+                            'calls' => $calls,
+                            'modelParts' => $modelParts,
+                            'usage' => $usage,
+                            'grounding' => $grounding,
+                            'images' => $images,
+                            'meta' => $meta,
+                            'model_used' => $activeModel,
+                        ];
                     }
-                    $lastErrorMsg = $this->errorMessageFrom($response);
-                } else {
-                    // Token streaming: relay each visible delta to $onChunk while
-                    // the rest of the route continues to think, so the UI renders
-                    // words ~1s after the user sends the message.
-                    //
-                    // NOTE: the Laravel/Guzzle streaming client buffers ~8KB of
-                    // the body before a read() yields, which collapsed every
-                    // streamed object into one burst — the chat showed a blank
-                    // waiting spinner for seconds and then the whole reply at
-                    // once. cURL's WRITEFUNCTION fires as each network chunk
-                    // lands, so the SSE parser below emits per-event deltas and
-                    // tokens actually flow to the UI live.
-                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:streamGenerateContent?alt=sse&key={$apiKey}";
 
-                    $meta = [];
-                    $raw = null;
-                    $images = [];
-                    $calls = [];
-                    $modelParts = [];
-                    $usage = null;
-                    $grounding = null;
-                    $streamResult = $this->streamGeminiSSE($url, $payload, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding, $modelParts);
-
-                    if (! $streamResult['success']) {
-                        $lastErrorMsg = $streamResult['error'];
-                        Log::warning("Gemini model {$useModel} stream failed: {$lastErrorMsg}");
-                        $this->logKeyRotation($i, $totalKeys);
-
-                        continue;
-                    }
-
-                    return [
-                        'success' => true,
-                        'text' => $streamResult['text'],
-                        'calls' => $calls,
-                        'modelParts' => $modelParts,
-                        'usage' => $usage,
-                        'grounding' => $grounding,
-                        'images' => $images,
-                        'meta' => $meta,
-                    ];
+                    Log::warning("Gemini model {$activeModel} key #".($i + 1)."/{$totalKeys} failed: {$lastErrorMsg}");
+                } catch (\Exception $e) {
+                    $lastErrorMsg = $e->getMessage();
+                    Log::warning("Gemini model {$activeModel} key #".($i + 1)."/{$totalKeys} threw: {$lastErrorMsg}");
                 }
 
-                Log::warning("Gemini model {$useModel} key #".($i + 1)."/{$totalKeys} failed: {$lastErrorMsg}");
-            } catch (\Exception $e) {
-                $lastErrorMsg = $e->getMessage();
-                Log::warning("Gemini model {$useModel} key #".($i + 1)."/{$totalKeys} threw: {$lastErrorMsg}");
+                $this->logKeyRotation($i, $totalKeys);
             }
-
-            $this->logKeyRotation($i, $totalKeys);
         }
 
         return ['success' => false, 'error' => $lastErrorMsg];
+    }
+
+    /**
+     * Whether an upstream error should trigger a fallback-model switch: quota
+     * / rate-limit / transient server-availability failures (retrying the same
+     * key on another model may still succeed). Request-shape errors return
+     * false so a 400/404 keeps failing on the remaining keys of one model.
+     */
+    protected function looksQuota(string $error): bool
+    {
+        $error = strtolower($error);
+
+        return str_contains($error, '429')
+            || str_contains($error, 'quota')
+            || str_contains($error, 'rate limit')
+            || str_contains($error, 'exhaust')
+            || str_contains($error, 'resource_exhausted')
+            || str_contains($error, 'temporarily unavailable')
+            || str_contains($error, '503');
+    }
+
+    /**
+     * Ordered list of text chat models tried for one turn. Only known,
+     * text-capable models are considered (image/TTS models never enter the chat
+     * path), duplicates are dropped, and the configured model always comes first.
+     */
+    protected function modelFallbackChain(string $primary): array
+    {
+        $primary = trim($primary);
+        $chain = [];
+        foreach ([
+            $primary,
+            'gemini-3.5-flash',
+            'gemini-2.5-flash',
+            'gemini-3.1-flash-lite',
+            'gemini-flash-lite-latest',
+        ] as $candidate) {
+            if ($candidate === '' || str_contains($candidate, 'image') || str_contains($candidate, '-tts') || str_contains($candidate, '-audio')) {
+                continue;
+            }
+            if (! in_array($candidate, $chain, true)) {
+                $chain[] = $candidate;
+            }
+        }
+
+        return $chain;
     }
 
     /**
@@ -1506,6 +1574,10 @@ PROMPT;
 
         if ($isImageModel && $looksLikeQuota) {
             return "I couldn't generate an image — your image model quota is exhausted. Please check your billing/quota in Google AI Studio (enable billing on the linked Google Cloud project to unlock Nano Banana image generation). You can keep chatting with a text model in the meantime.";
+        }
+
+        if ($looksLikeQuota) {
+            return "Your Gemini API limit (429 / quota) is currently exhausted, so even the fallback models could not answer. Wait a minute and try again, or ask the Superadmin to add another API key in Settings ▸ General (AI section) — the assistant automatically retried a fallback model before giving up.";
         }
 
         return "I encountered an error communicating with Gemini: {$error}";

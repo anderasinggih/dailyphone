@@ -19,7 +19,7 @@
 ## 4. AI Belajar (Retrieval)
 `selectTrainingNotes()` (`GeminiAssistantService.php:1915`) — 3 stage:
 1. **rule** — semua node kind `rule` aktif, selalu disuntik.
-2. **semantic** — `AiEmbeddingService::search()` (model `text-embedding-004`, cosine, multi API-key failover, crash-safe fallback token).
+2. **semantic** — `AiEmbeddingService::search()` (model `gemini-embedding-001`, cosine, multi API-key failover, crash-safe fallback token).
 3. **contextual** — seeds situasional + momentum (episode waktu/tempat/orang, node yang baru dipakai, kontinuitas topik).
 
 Lalu **path expansion 2-hop** (`generateTrainingNotesContext`): tarik konten node tetangga lewat sinaps terkuat (ambang aktivasi → `MIN_ACTIVATION_WEIGHT`), plus mood priming. Output = blok `GLOBAL AI TRAINING MEMORY` di prompt.
