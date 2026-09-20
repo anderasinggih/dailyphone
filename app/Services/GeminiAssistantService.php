@@ -14,6 +14,7 @@ use App\Models\StockTransfer;
 use App\Models\Store;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -369,8 +370,30 @@ class GeminiAssistantService
 
     /**
      * Generate structured store context to ground the AI response.
+     *
+     * The snapshot moves slowly (today's sales, active stock, audit flags), yet
+     * regenerating it on every chat turn costs a dozen+ DB queries. It is cached
+     * per scope for a short window so rapid-fire conversation pays milliseconds
+     * instead of a fresh inventory/audit sweep per message while staying fresh
+     * enough for operational answers.
      */
     public function generateStoreContext($user, bool $liveTools = false): string
+    {
+        $userId = $user && $user->id ? (int) $user->id : 0;
+        $scope = ($user && $user->role === 'karyawan' && $user->store_id)
+            ? 's'.(int) $user->store_id
+            : 'all';
+
+        $cacheKey = 'ai.store_ctx.u'.$userId.'.'.$scope.'.t'.(int) $liveTools;
+
+        return Cache::remember($cacheKey, 30, fn () => $this->buildStoreContext($user, $liveTools));
+    }
+
+    /**
+     * Raw store-context builder (a dozen DB queries). Callers normally reach it
+     * through the cached {@see generateStoreContext()}.
+     */
+    protected function buildStoreContext($user, bool $liveTools = false): string
     {
         $storeFilter = null;
         if ($user && $user->role === 'karyawan' && $user->store_id) {
@@ -2039,12 +2062,15 @@ SYSTEM;
             $onStage($stage, $payload);
         };
 
-        $rules = AiTrainingNote::where('is_active', true)
-            ->where('is_stale', false)
-            ->where('kind', 'rule')
-            ->orderBy('updated_at', 'desc')
-            ->get()
-            ->each(fn ($n) => $n->setAttribute('retrieval_stage', 'rule'));
+        // Active rules barely change (a superadmin edits them), so they are
+        // cached for a minute instead of re-querying on every turn.
+        $rules = Cache::remember('ai.active_rules', 60, fn () =>
+            AiTrainingNote::where('is_active', true)
+                ->where('is_stale', false)
+                ->where('kind', 'rule')
+                ->orderBy('updated_at', 'desc')
+                ->get()
+        )->each(fn ($n) => $n->setAttribute('retrieval_stage', 'rule'));
 
         // Stage 0 — rules: always active, and the fastest signal to observe.
         $emitStage('rule', $rules);
@@ -2167,14 +2193,18 @@ SYSTEM;
         }
 
         // ── 2 + 3. Place & person recall ──
-        $templated = AiTrainingNote::where('is_active', true)
-            ->where('is_stale', false)
-            ->where(function ($q) {
-                $q->whereNotNull('occurred_place')->where('occurred_place', '!=', '')
-                    ->orWhereNotNull('involved_with')->where('involved_with', '!=', '');
-            })
-            ->limit(800)
-            ->get(['id', 'occurred_place', 'involved_with']);
+        // The episode-tagged catalog (800-row ceiling) changes slowly; cache it
+        // briefly so chat turns reuse it instead of pulling it per message.
+        $templated = Cache::remember('ai.templated_ctx', 60, fn () =>
+            AiTrainingNote::where('is_active', true)
+                ->where('is_stale', false)
+                ->where(function ($q) {
+                    $q->whereNotNull('occurred_place')->where('occurred_place', '!=', '')
+                        ->orWhereNotNull('involved_with')->where('involved_with', '!=', '');
+                })
+                ->limit(800)
+                ->get(['id', 'occurred_place', 'involved_with'])
+        );
 
         $wordInText = function (string $word) use ($lower): bool {
             $word = mb_strtolower(trim($word));

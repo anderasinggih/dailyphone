@@ -108,7 +108,10 @@ class AiEmbeddingService
         foreach (array_values($this->apiKeys) as $index => $key) {
             try {
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:embedContent?key={$key}";
-                $response = Http::timeout(20)->connectTimeout(10)->post($url, $payload);
+                // Tight timeouts: the embedding is an auxiliary lever on the chat
+                // request path, so a degraded embedding API must fail fast (and
+                // fall back to the token pool) rather than freeze replies.
+                $response = Http::timeout(8)->connectTimeout(3)->post($url, $payload);
 
                 if ($response->successful()) {
                     $values = $response->json('embedding.values');
@@ -174,7 +177,7 @@ class AiEmbeddingService
         foreach (array_values($this->apiKeys) as $key) {
             try {
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:batchEmbedContents?key={$key}";
-                $response = Http::timeout(30)->connectTimeout(10)->post($url, ['requests' => $requests]);
+                $response = Http::timeout(12)->connectTimeout(3)->post($url, ['requests' => $requests]);
 
                 if ($response->successful()) {
                     $embeddings = $response->json('embeddings', []);
@@ -293,7 +296,10 @@ class AiEmbeddingService
     }
 
     /**
-     * Embed once per distinct query text (memoized for the request lifetime).
+     * Embed once per distinct query text (memoized for the request lifetime,
+     * then persisted app-wide so repeated questions never pay the embedding API
+     * round-trip more than once per day — the vector depends only on the text
+     * plus the current embedding model).
      *
      * @return float[]|null
      */
@@ -304,11 +310,16 @@ class AiEmbeddingService
             return $this->queryCacheVector;
         }
 
-        $vector = $this->embedText($key);
-        $this->queryCacheKey = $key;
-        $this->queryCacheVector = $vector;
+        $vector = Cache::remember(
+            'ai.embed.'.md5($this->model.'|'.$key),
+            60 * 60 * 24,
+            fn () => $this->embedText($key)
+        );
 
-        return $vector;
+        $this->queryCacheKey = $key;
+        $this->queryCacheVector = is_array($vector) ? $vector : null;
+
+        return $this->queryCacheVector;
     }
 
     /**
