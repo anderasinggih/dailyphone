@@ -1,6 +1,6 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, router, Link, usePage, useForm } from '@inertiajs/react';
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ChevronLeft,
     ChevronDown,
@@ -17,10 +17,14 @@ import {
     Activity,
     CalendarDays,
     MapPin,
-    Users
+    Users,
+    Send,
+    Loader2,
+    Radio
 } from 'lucide-react';
 import type { PageProps } from '@/types';
 import NeuralMindMap from '@/Components/NeuralMindMap';
+import { consumeNdjson, type StreamEdge, type StreamNeuron } from '@/lib/ndjson';
 import { relationName } from '@/lib/relations';
 import { kindOf, kindMeta, kindList, type Kind } from '@/lib/kinds';
 
@@ -164,6 +168,112 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
             });
         }
     };
+
+    // ── Live Watch: run a real query against assistant.chat and let the map
+    // show exactly which neurons the retrieval lights, in stage order, plus
+    // which nodes the model cites back at the end.
+    const [liveQuery, setLiveQuery] = useState('');
+    const [liveRunning, setLiveRunning] = useState(false);
+    const [liveNodes, setLiveNodes] = useState<StreamNeuron[]>([]);
+    const [liveEdges, setLiveEdges] = useState<StreamEdge[]>([]);
+    const [liveUsedIds, setLiveUsedIds] = useState<number[]>([]);
+    const [liveError, setLiveError] = useState<string | null>(null);
+    const [liveNote, setLiveNote] = useState<string | null>(null);
+    const liveAutoClear = useRef<number | null>(null);
+
+    const clearLive = () => {
+        setLiveNodes([]);
+        setLiveEdges([]);
+        setLiveUsedIds([]);
+        setLiveError(null);
+        setLiveNote(null);
+    };
+
+    const scheduleLiveClear = () => {
+        if (liveAutoClear.current) window.clearTimeout(liveAutoClear.current);
+        liveAutoClear.current = window.setTimeout(() => {
+            setLiveNodes([]);
+            setLiveEdges([]);
+            setLiveUsedIds([]);
+            setLiveNote(null);
+        }, 6000);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (liveAutoClear.current) window.clearTimeout(liveAutoClear.current);
+        };
+    }, []);
+
+    const runLive = async () => {
+        const q = liveQuery.trim();
+        if (!q || liveRunning) return;
+        if (liveAutoClear.current) window.clearTimeout(liveAutoClear.current);
+
+        setLiveRunning(true);
+        setLiveError(null);
+        setLiveNote(null);
+        setLiveNodes([]);
+        setLiveEdges([]);
+        setLiveUsedIds([]);
+
+        const started = Date.now();
+        try {
+            const res = await fetch(route('assistant.chat'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '',
+                },
+                body: JSON.stringify({ message: q }),
+            });
+
+            if (!res.ok) {
+                let msg = `Server error (${res.status})`;
+                try {
+                    const parsed = await res.json();
+                    if (parsed.message) msg = parsed.message;
+                } catch {
+                    // server returned a non-JSON error page
+                }
+                throw new Error(msg);
+            }
+
+            if ((res.headers.get('content-type') || '').includes('ndjson')) {
+                const last = await consumeNdjson(res, {
+                    onNeurons: (nodes, edges) => {
+                        setLiveNodes(nodes);
+                        setLiveEdges(edges);
+                    },
+                    onTrace: used => setLiveUsedIds(used),
+                });
+                if (!last || last.type === 'error') {
+                    throw new Error(last?.reply || 'The AI did not reply on this run.');
+                }
+            } else {
+                await res.json();
+            }
+
+            const elapsed = Math.max(1, Date.now() - started);
+            setLiveNote(`Watch complete in ${(elapsed / 1000).toFixed(1)}s`);
+            scheduleLiveClear();
+        } catch (e: any) {
+            setLiveError(e?.message || 'Live watch failed.');
+        } finally {
+            setLiveRunning(false);
+        }
+    };
+
+    const runLiveStats = useMemo(() => {
+        let rules = 0, semantic = 0, contextual = 0;
+        liveNodes.forEach(n => {
+            if (n.stage === 'rule') rules++;
+            else if (n.stage === 'contextual') contextual++;
+            else semantic++;
+        });
+        return { rules, semantic, contextual };
+    }, [liveNodes]);
 
     return (
         <AuthenticatedLayout>
@@ -333,9 +443,91 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
                                     {safeGraph.links.length} synapses
                                 </span>
                             </div>
+                            <div className="apple-card p-4 space-y-3">
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <div className="flex items-center gap-2">
+                                        <Radio className={`h-4 w-4 ${liveRunning ? 'text-primary animate-pulse' : 'text-primary'}`} />
+                                        <h3 className="text-sm font-semibold text-foreground">Live Watch</h3>
+                                        <p className="text2 text-muted-foreground">
+                                            Fire a real query and watch which neurons the AI actually accesses — in retrieval order.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        {(liveRunning || liveNote) && (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary border border-primary/20 px-2.5 py-0.5 text-[10.5px] font-semibold">
+                                                {liveRunning ? (
+                                                    <>
+                                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                                        Streaming…
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <Check className="h-3 w-3" />
+                                                        {liveNote}
+                                                    </>
+                                                )}
+                                            </span>
+                                        )}
+                                        {liveNodes.length > 0 && (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 text-muted-foreground border border-border/50 px-2 py-0.5 text-[10px] font-mono">
+                                                {liveNodes.length} neurons · {runLiveStats.rules} rules · {runLiveStats.semantic} semantic · {runLiveStats.contextual} situational
+                                            </span>
+                                        )}
+                                        {liveError && (
+                                            <span className="inline-flex items-center rounded-full bg-destructive/10 text-destructive border border-destructive/30 px-2.5 py-0.5 text-[10.5px] font-semibold">
+                                                {liveError}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="text"
+                                        value={liveQuery}
+                                        onChange={e => setLiveQuery(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                runLive();
+                                            }
+                                        }}
+                                        disabled={liveRunning}
+                                        placeholder="Ask the assistant any question — watch its memory light up… e.g. cek penjualan hari ini"
+                                        className="flex-1 rounded-xl border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:border-primary disabled:opacity-60"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={runLive}
+                                        disabled={liveRunning || !liveQuery.trim()}
+                                        className="shrink-0 inline-flex items-center justify-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 active:scale-[0.98] transition shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        <Send className="h-3.5 w-3.5" />
+                                        {liveRunning ? 'Running…' : 'Watch'}
+                                    </button>
+                                    {(liveNodes.length > 0 || liveError) && (
+                                        <button
+                                            type="button"
+                                            onClick={clearLive}
+                                            title="Clear live watch"
+                                            className="shrink-0 rounded-xl border border-border/60 bg-background px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                                        >
+                                            Clear
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground flex-wrap">
+                                    <span><span className="text-primary font-semibold">•</span> Rules always fire first</span>
+                                    <span><span className="text-primary font-semibold">•</span> Semantic matches next</span>
+                                    <span><span className="text-primary font-semibold">•</span> Situational / momentum anchors last</span>
+                                    <span><span className="text-white font-semibold">•</span> White flash = nodes the AI cited in its reply</span>
+                                </div>
+                            </div>
+
                             <NeuralMindMap
                                 nodes={safeGraph.nodes}
                                 links={safeGraph.links}
+                                liveNodes={liveNodes}
+                                liveUsedIds={liveUsedIds}
                                 onToggleActive={node =>
                                     router.post(
                                         route('settings.ai.training-notes.toggle', node.id),

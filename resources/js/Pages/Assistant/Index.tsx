@@ -38,71 +38,10 @@ import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData } from '@/Components/AiActionProposalCard';
 import NeuronFiringMap from '@/Components/NeuronFiringMap';
+import { consumeNdjson } from '@/lib/ndjson';
 
-interface AccessedNeuron {
-    id: number;
-    title: string;
-    kind: 'rule' | 'knowledge';
-}
-
-interface NeuronLink {
-    source: number;
-    target: number;
-}
-
-// Consume an application/x-ndjson streaming response from the Assistant chat
-// endpoint. Progress events are forwarded to handlers as they arrive; the last
-// 'done' / 'error' event is returned once the stream closes.
-async function consumeNdjson(
-    res: Response,
-    handlers: {
-        onNeurons?: (nodes: AccessedNeuron[], edges: NeuronLink[]) => void;
-        onToken?: (text: string) => void;
-    }
-): Promise<any> {
-    if (!res.body) return null;
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let last: any = null;
-
-    const digest = (line: string) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        let evt: any;
-        try {
-            evt = JSON.parse(trimmed);
-        } catch {
-            return;
-        }
-        if (!evt || typeof evt !== 'object') return;
-        if (evt.type === 'neurons' && handlers.onNeurons) {
-            handlers.onNeurons(
-                Array.isArray(evt.nodes) ? evt.nodes : [],
-                Array.isArray(evt.edges) ? evt.edges : []
-            );
-        }
-        if (evt.type === 'chunk' && handlers.onToken && typeof evt.text === 'string') {
-            handlers.onToken(evt.text);
-        }
-        if (evt.type === 'done' || evt.type === 'error') last = evt;
-    };
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-            digest(line);
-        }
-    }
-    if (buffer.trim()) {
-        digest(buffer);
-    }
-    return last;
-}
+type AccessedNeuron = import('@/lib/ndjson').StreamNeuron;
+type NeuronLink = import('@/lib/ndjson').StreamEdge;
 
 interface Message {
     id: string;

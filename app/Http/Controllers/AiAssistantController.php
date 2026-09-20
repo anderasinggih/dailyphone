@@ -409,6 +409,10 @@ class AiAssistantController extends Controller
                     $usedNodeIds = $this->extractCitedNodeIds($result['reply']);
                     if ($usedNodeIds !== []) {
                         app(\App\Services\AiMemoryGraphService::class)->registerUsage($usedNodeIds);
+                        // Live brain map: the nodes the model CITES back in its
+                        // answer are the ones it really leaned on — pulse them
+                        // as a final white confirmation after the token stream.
+                        $emit(['type' => 'trace', 'used' => array_values(array_map('intval', $usedNodeIds))]);
                     }
                     $replyText = $this->stripCitedNodeFooter($result['reply']);
                     $result['reply'] = $replyText;

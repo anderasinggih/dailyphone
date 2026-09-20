@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 interface NeuronFiringNode {
     id: number;
     title: string;
-    kind: 'rule' | 'knowledge';
+    kind: string;
 }
 
 interface NeuronFiringEdge {

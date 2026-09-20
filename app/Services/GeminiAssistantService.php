@@ -1808,11 +1808,14 @@ SYSTEM;
     {
         $notes = $this->selectTrainingNotes($query);
 
-        $nodes = $notes->map(function ($n) {
+        $nodes = $notes->values()->map(function ($n, $i) {
+            $stage = $n->retrieval_stage ?? ($n->kind === 'rule' ? 'rule' : 'semantic');
             $node = [
                 'id' => (int)$n->id,
                 'title' => $this->neuronLabel($n),
                 'kind' => $n->kind,
+                'stage' => $stage,
+                'order' => $i,
             ];
             $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
             if ($sources !== []) {
@@ -1894,7 +1897,8 @@ SYSTEM;
         $rules = \App\Models\AiTrainingNote::where('is_active', true)
             ->where('kind', 'rule')
             ->orderBy('updated_at', 'desc')
-            ->get();
+            ->get()
+            ->each(fn($n) => $n->setAttribute('retrieval_stage', 'rule'));
 
         $embedder = app(\App\Services\AiEmbeddingService::class);
         $search = $embedder->search($key, $topK, null);
@@ -1912,6 +1916,11 @@ SYSTEM;
             $method = 'token';
         }
 
+        // The order in which seeds reached the model is a real signal for the
+        // live brain map: semantic matches light first, contextual anchors
+        // second, rules are always on. Each note carries its retrieval_stage.
+        $selected->each(fn($n) => $n->setAttribute('retrieval_stage', 'semantic'));
+
         // Mixed seeds (situational + inter-turn momentum): on top of the
         // semantic matches, the notes that are "alive right now" in this
         // conversation also reach the model — the episode frame a query refers
@@ -1927,6 +1936,7 @@ SYSTEM;
             if (isset($selectedIds[$note->id])) {
                 continue;
             }
+            $note->setAttribute('retrieval_stage', 'contextual');
             $selectedIds[$note->id] = true;
             $selected->push($note);
             $addedContext++;

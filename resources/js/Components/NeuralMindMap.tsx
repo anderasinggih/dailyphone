@@ -38,13 +38,27 @@ interface MindMapLink {
     reason?: string | null;
 }
 
+export interface LiveNeuronPulse {
+    id: number;
+    stage?: string;
+    order?: number;
+    sources?: string[];
+}
+
 interface NeuralMindMapProps {
     nodes: MindMapNode[];
     links: MindMapLink[];
     onToggleActive?: (node: MindMapNode) => void;
     onReclassify?: (node: MindMapNode, kind: Kind) => void;
     onTidy?: () => void | Promise<void>;
+    liveNodes?: LiveNeuronPulse[];
+    liveUsedIds?: number[];
 }
+
+// Digest order of a real retrieval run (mirrors GeminiAssistantService's
+// retrieval_stage tags): rules light first, then semantic matches, then the
+// situational / momentum anchors. A lower number fires earlier.
+const STAGE_PRIORITY: Record<string, number> = { rule: 0, semantic: 1, contextual: 2 };
 
 interface Point {
     x: number;
@@ -425,7 +439,7 @@ function loadSavedPositions(): Record<number, Point> | null {
     }
 }
 
-export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassify, onTidy }: NeuralMindMapProps) {
+export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassify, onTidy, liveNodes, liveUsedIds }: NeuralMindMapProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerSize, setContainerSize] = useState({ w: 900, h: 600 });
 
@@ -454,6 +468,51 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
         viewOrigin?: View;
         moved: boolean;
     } | null>(null);
+
+    // ── Live watch: the nodes the AI retrieved this run, revealed in the real
+    // stage order the backend emitted (rules → semantic → contextual). Pending
+    // live nodes stay dimmed until their stage fires; used/cited nodes flash
+    // white at the end of the run.
+    const liveActive = Array.isArray(liveNodes) && liveNodes.length > 0;
+    const liveById = useMemo(() => {
+        const m = new Map<number, LiveNeuronPulse>();
+        (liveNodes ?? []).forEach(n => m.set(n.id, n));
+        return m;
+    }, [liveNodes]);
+    const liveOrder = useMemo(() => {
+        if (!liveActive) return [];
+        return [...liveNodes!].sort((a, b) => {
+            const pa = STAGE_PRIORITY[a.stage ?? ''] ?? 3;
+            const pb = STAGE_PRIORITY[b.stage ?? ''] ?? 3;
+            if (pa !== pb) return pa - pb;
+            return (a.order ?? 0) - (b.order ?? 0);
+        });
+    }, [liveActive, liveNodes]);
+
+    const [revealed, setRevealed] = useState<Set<number>>(new Set());
+    useEffect(() => {
+        if (liveOrder.length === 0) {
+            setRevealed(new Set());
+            return;
+        }
+        setRevealed(new Set());
+        let i = 0;
+        const timer = window.setInterval(() => {
+            i += 1;
+            setRevealed(new Set(liveOrder.slice(0, i).map(n => n.id)));
+            if (i >= liveOrder.length) window.clearInterval(timer);
+        }, 70);
+        return () => window.clearInterval(timer);
+    }, [liveOrder]);
+
+    // Cited nodes get a white confirmation flash right when the run finishes.
+    const [usedFlash, setUsedFlash] = useState<Set<number>>(new Set());
+    useEffect(() => {
+        if (!Array.isArray(liveUsedIds) || liveUsedIds.length === 0) return;
+        setUsedFlash(new Set(liveUsedIds));
+        const t = window.setTimeout(() => setUsedFlash(new Set()), 1700);
+        return () => window.clearTimeout(t);
+    }, [liveUsedIds]);
 
     useEffect(() => {
         const el = containerRef.current;
@@ -865,6 +924,20 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                             <pattern id="dp-grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse">
                                 <circle cx="1.6" cy="1.6" r="1.2" fill="var(--border)" opacity="0.55" />
                             </pattern>
+                            <filter id="dp-live-glow" x="-80%" y="-80%" width="260%" height="260%">
+                                <feGaussianBlur stdDeviation="2.6" result="blur" />
+                                <feMerge>
+                                    <feMergeNode in="blur" />
+                                    <feMergeNode in="SourceGraphic" />
+                                </feMerge>
+                            </filter>
+                            <style>{`
+                                @keyframes dp-liveflow { to { stroke-dashoffset: -30; } }
+                                @keyframes dp-livepop {
+                                    0% { box-shadow: 0 0 0 0 rgba(0,122,255,0.65); }
+                                    100% { box-shadow: 0 0 0 16px rgba(0,122,255,0); }
+                                }
+                            `}</style>
                         </defs>
 
                         <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
@@ -884,6 +957,7 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                 const cy = (y1 + y2) / 2 + (dx / len) * off;
                                 const active = selectedId === link.source || selectedId === link.target;
                                 const hovered = hoveredLink === link.id;
+                                const liveCharge = liveActive && revealed.has(link.source) && revealed.has(link.target);
 
                                 return (
                                     <g key={link.id}>
@@ -900,7 +974,7 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                             d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
                                             fill="none"
                                             stroke={active || hovered ? '#007AFF' : 'currentColor'}
-                                            className={active || hovered ? '' : 'text-border'}
+                                            className={active || hovered || liveCharge ? '' : 'text-border'}
                                             strokeWidth={active || hovered ? 2.4 : 1.4}
                                             strokeDasharray={link.label ? 'none' : '0'}
                                             style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
@@ -914,6 +988,22 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                                 {link.relation ? ` · ${RELATION_LABEL[link.relation] ?? link.relation}` : ''}
                                             </title>
                                         </path>
+
+                                        {/* Live run: charged synapses hum with animated energy between the
+                                            retrieved neurons — the exact wires the run actually lit. */}
+                                        {liveCharge && (
+                                            <path
+                                                d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
+                                                fill="none"
+                                                stroke="#007AFF"
+                                                strokeWidth={2.2}
+                                                strokeLinecap="round"
+                                                strokeDasharray="3 10"
+                                                opacity={0.9}
+                                                filter="url(#dp-live-glow)"
+                                                style={{ animation: 'dp-liveflow 900ms linear infinite', pointerEvents: 'none' }}
+                                            />
+                                        )}
 
                                         {showLabels && link.label && (
                                             <text
@@ -945,7 +1035,11 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                 const w = nodeWidth(nodeById[node.id]);
                                 const isSelected = selectedId === node.id;
                                 const isMatch = matches.size > 0 && matches.has(node.id);
-                                const dimmed = matches.size > 0 && !matches.has(node.id);
+                                const livePulse = liveActive ? liveById.get(node.id) : undefined;
+                                const liveNow = liveActive && livePulse !== undefined && revealed.has(node.id);
+                                const livePending = liveActive && livePulse !== undefined && !revealed.has(node.id);
+                                const liveFired = usedFlash.has(node.id);
+                                const dimmed = (matches.size > 0 && !matches.has(node.id)) || (liveActive && livePulse === undefined);
                                 const meta = kindMeta(node.kind);
                                 const kind = kindOf(node.kind);
 
@@ -965,10 +1059,17 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                                     isSelected ? 'ring-2 ring-primary' : ''
                                                 } ${isMatch ? 'ring-2 ring-primary/60' : ''} ${
                                                     dimmed ? 'opacity-25' : ''
+                                                } ${
+                                                    livePending ? 'ring-1 ring-primary/40' : ''
+                                                } ${
+                                                    liveNow ? 'ring-2 ring-primary shadow-[0_0_14px_rgba(0,122,255,0.4)]' : ''
+                                                } ${
+                                                    liveFired ? 'ring-2 ring-[#ffffff] shadow-[0_0_16px_rgba(255,255,255,0.7)]' : ''
                                                 }`}
                                                 style={{
                                                     backgroundColor: `${meta.color}24`,
-                                                    borderColor: `${meta.color}73`,
+                                                    borderColor: liveNow ? '#007AFF' : `${meta.color}73`,
+                                                    animation: liveNow ? 'dp-livepop 800ms ease-out' : undefined,
                                                 }}
                                             >
                                                 <span
@@ -977,10 +1078,15 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
                                                 />
                                                 <span
                                                     className="text-[10.5px] font-semibold text-foreground leading-tight truncate"
-                                                    title={node.title}
+                                                    title={livePulse?.sources?.length
+                                                        ? `${node.title}\nAccessed: ${livePulse.sources.join(' · ')}`
+                                                        : node.title}
                                                 >
                                                     {node.title}
                                                 </span>
+                                                {liveNow && (
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse shrink-0" />
+                                                )}
                                                 {(node.used_count || 0) > 0 && (
                                                     <span
                                                         title="Consulted in chat replies"
