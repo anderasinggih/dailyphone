@@ -34,6 +34,12 @@ class GeminiAssistantService
     // round-trips under one chat() call.
     protected array $usageTotals = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
 
+    // Weakest synapse weight that still triggers path expansion. Edges below
+    // this (including the artificial "fresh_memory" graph glue) don't carry
+    // enough meaning to blast their content into the model context, keeping
+    // the prompt tight — like a human only recalling *strong* associations.
+    protected const MIN_ACTIVATION_WEIGHT = 0.10;
+
     public function __construct()
     {
         $this->reloadSettings();
@@ -1989,7 +1995,10 @@ SYSTEM;
             $author = $n->author_name ?? 'System';
             $line = "- {$tag} node #{$n->id}: {$content} (oleh: {$author})";
 
-            $links = $synapses[$n->id] ?? [];
+            $links = array_values(array_filter(
+                $synapses[$n->id] ?? [],
+                fn($l) => (float)($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT
+            ));
             usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
             $links = array_slice($links, 0, 4);
 
@@ -2002,13 +2011,17 @@ SYSTEM;
         })->values();
 
         // ── Path expansion: pull the CONTENT of the most-related neighbours ──
-        $tokens = app(\App\Services\AiMemoryGraphService::class)->tokenize(trim((string)$query));
+        // Spreading activation: associations travel strongest-first along the
+        // synapse weights (deeper / weaker edges are dropped), and neighbours
+        // are ranked by connection strength — exactly how human memory recalls
+        // related facts — not by surface token overlap.
         $expansion = [];
 
         foreach ($synapses as $sourceId => $links) {
             if (!isset($selectedIds[$sourceId])) {
                 continue;
             }
+            $links = array_values(array_filter($links, fn($l) => (float)($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT));
             usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
             foreach (array_slice($links, 0, 3) as $l) {
                 if (isset($selectedIds[$l['id']]) || $l['id'] <= 0) {
@@ -2018,7 +2031,7 @@ SYSTEM;
                     'id' => $l['id'],
                     'from' => (int)$sourceId,
                     'rel' => $l['rel'],
-                    'w' => $l['w'],
+                    'w' => (float)$l['w'],
                 ];
             }
         }
@@ -2029,7 +2042,7 @@ SYSTEM;
                 ->get()
                 ->keyBy('id');
 
-            $paths = collect(array_values($expansion))->map(function ($e) use ($neighbourNodes, $tokens) {
+            $paths = collect(array_values($expansion))->map(function ($e) use ($neighbourNodes) {
                 $node = $neighbourNodes[$e['id']] ?? null;
                 if (!$node) {
                     return null;
@@ -2039,11 +2052,11 @@ SYSTEM;
                     'kind' => $node->kind,
                     'from' => $e['from'],
                     'rel' => $e['rel'],
-                    'score' => ($tokens === [] ? $e['w'] : $this->scoreAgainst($node, $tokens)),
+                    'activation' => $e['w'],
                     'content' => mb_strimwidth((string)$node->content, 0, 130, '…'),
                 ];
             })->filter()
-                ->sortByDesc('score')
+                ->sortByDesc('activation')
                 ->take(8)
                 ->values();
 
