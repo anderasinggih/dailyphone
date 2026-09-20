@@ -17,9 +17,6 @@ use Inertia\Response;
 
 class AiTrainingNoteController extends Controller
 {
-    /** Upper bound on how many neurons the mind map renders at once. */
-    protected const MAP_MAX_NODES = 300;
-
     /** Graph nodes carry a snippet instead of the full body to keep the payload light. */
     protected const GRAPH_CONTENT_SNIPPET = 220;
 
@@ -683,9 +680,10 @@ class AiTrainingNoteController extends Controller
     }
 
     /**
-     * The mind-map payload, bounded so the force graph stays fast. Rules are
-     * always inside; the remaining slots go to the most load-bearing neurons
-     * (active, consulted, recent). Edges are limited to included nodes.
+     * The mind-map payload. Rules are ordered first, then active neurons by
+     * how load-bearing they are (consulted, recent), with the rest of the pool
+     * after — every node is included so the map matches the full brain; no
+     * arbitrary cap silently drops the tail of the network.
      *
      * @return array{nodes: array<int, array<string, mixed>>, links: array<int, array<string, mixed>>}
      */
@@ -697,7 +695,6 @@ class AiTrainingNoteController extends Controller
             ->orderByRaw("CASE WHEN kind = 'rule' THEN 0 WHEN is_active = 1 THEN 1 ELSE 2 END")
             ->orderByDesc('used_count')
             ->orderByDesc('updated_at')
-            ->limit(self::MAP_MAX_NODES)
             ->get(['id', 'title', 'content', 'kind', 'is_active', 'is_stale', 'used_count', 'author_name']);
 
         $ids = $notes->pluck('id')->map('intval')->all();

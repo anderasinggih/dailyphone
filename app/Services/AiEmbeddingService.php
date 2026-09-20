@@ -2,9 +2,11 @@
 
 namespace App\Services;
 
+use App\Jobs\BackfillMissingEmbeddingsJob;
 use App\Models\AiTrainingNote;
 use App\Models\GeneralSetting;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -328,11 +330,6 @@ class AiEmbeddingService
             return ['notes' => collect(), 'best_score' => null, 'method' => 'embedding'];
         }
 
-        $qVector = $this->embedQuery($query);
-        if ($qVector === null) {
-            return ['notes' => collect(), 'best_score' => null, 'method' => 'embedding'];
-        }
-
         // Candidate pool: the ACTIVE non-rule knowledge base itself (bounded).
         // Crucially this is NOT restricted to notes sharing a literal token with
         // the query — a node about "water damage" must still be scored against
@@ -354,8 +351,20 @@ class AiEmbeddingService
             ->limit(400)
             ->get();
 
-        // Warm any missing vectors (best effort, small bounded batch).
-        $this->embedMissing($pool);
+        // Cold paths never block a request. A note that still lacks a vector
+        // (or was produced by an older embedding model) is skipped here so
+        // scoring stays instant; it is re-embedded in the background by
+        // EmbedTrainingNoteJob on creation and by a throttled backfill job when
+        // the pool looks out of coverage. Callers fall back to token overlap
+        // until the index catches up, so a slow embedding API can never freeze
+        // a chat behind meaningless network calls. Scheduled BEFORE the query
+        // embed so even a failing embedding API still triggers the self-heal.
+        $this->scheduleSelfHeal($pool);
+
+        $qVector = $this->embedQuery($query);
+        if ($qVector === null) {
+            return ['notes' => collect(), 'best_score' => null, 'method' => 'embedding'];
+        }
 
         $scored = [];
         $best = null;
@@ -407,6 +416,41 @@ class AiEmbeddingService
     public function normalizeKind(?string $kind): string
     {
         return app(AiMemoryGraphService::class)->normalizeKind($kind);
+    }
+
+    /**
+     * Ask a background job to re-warm the index when a meaningful share of the
+     * candidate pool is still unembedded. Runs on the `deferred` connection
+     * (after the response) and is throttled through the cache so a broken
+     * embedding API cannot re-trigger it on every search — an anti-retry guard
+     * that keeps failing calls out of the request path entirely.
+     */
+    protected function scheduleSelfHeal(Collection $pool): void
+    {
+        $covered = 0;
+        $missing = 0;
+        foreach ($pool as $note) {
+            if ($note->embedding !== null && (string) $note->embedding_model === $this->model) {
+                $covered++;
+            } else {
+                $missing++;
+            }
+        }
+
+        // A single cold note is already covered by its creation job
+        // (EmbedTrainingNoteJob); only a meaningful gap warrants a batched pass.
+        $total = $covered + $missing;
+        if ($missing === 0 || $total === 0 || $missing / $total < 0.5) {
+            return;
+        }
+
+        try {
+            if (Cache::add(BackfillMissingEmbeddingsJob::throttleKey(), true, 900)) {
+                BackfillMissingEmbeddingsJob::dispatch()->onConnection('deferred');
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to schedule embedding backfill: '.$e->getMessage());
+        }
     }
 
     protected function decodeVector(string $raw): ?array
