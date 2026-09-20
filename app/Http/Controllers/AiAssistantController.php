@@ -453,7 +453,12 @@ class AiAssistantController extends Controller
                         // memory-worthy fact (preference / family relation) from
                         // the user's message and save it so the neuron still
                         // learns — no announcement, fully behind the scenes.
-                        $this->silentlyPersistUserFact($result, $user, $userText);
+                        $this->silentlyPersistUserFact(
+                            $result,
+                            $user,
+                            $userText,
+                            $this->previousUserText($messagesForModel, $userText)
+                        );
                         $rawReply = $result['raw_reply'] ?? $rawReply;
                     }
                     $this->persistTrainingMemos($rawReply, $user);
@@ -1550,13 +1555,64 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
      * announcement, no rewrite of the reply. Only runs when no persistable memo
      * exists, so it never fights the model's own writing.
      */
-    protected function silentlyPersistUserFact(array &$result, $user, string $userText): void
+    protected function silentlyPersistUserFact(array &$result, $user, string $userText, string $priorUserText = ''): void
     {
         if (($result['success'] ?? true) === false) {
             return;
         }
 
-        $payload = $this->extractUserFact($userText);
+        // The user's OWN words are always the source material — never the
+        // model's summary — so nothing invented is ever persisted. Candidates
+        // are tried in order: the current message, its command-stripped form
+        // ("catat ya, ..."), and — when the user is only issuing a save/memory
+        // command like "tambah ke node" — the fact they just stated in the
+        // previous message, so explicit asks never dead-end with "gagal".
+        $wantSave = $this->hasSaveIntent($userText);
+        $candidates = [$userText];
+        if ($wantSave) {
+            $stripped = $this->stripSaveCommand($userText);
+            if ($stripped !== '' && $stripped !== $userText) {
+                $candidates[] = $stripped;
+            }
+            if (trim($priorUserText) !== '' && trim($priorUserText) !== trim($userText)) {
+                $candidates[] = $priorUserText;
+                $strippedPrior = $this->stripSaveCommand($priorUserText);
+                if ($strippedPrior !== '' && $strippedPrior !== $priorUserText) {
+                    $candidates[] = $strippedPrior;
+                }
+            }
+        }
+
+        $payload = null;
+        foreach (array_values(array_unique(array_filter($candidates))) as $source) {
+            $payload = $this->extractUserFact($source);
+            if ($payload !== null) {
+                break;
+            }
+        }
+
+        // Still nothing and the user straight-up asked to save something:
+        // fall back to the first clean declarative sentence — content comes
+        // verbatim from the user, so it stays hallucination-free.
+        if ($payload === null && $wantSave) {
+            $candidate = null;
+            foreach (array_values(array_unique(array_filter($candidates))) as $source) {
+                $candidate = $this->declarativeFallback($source);
+                if ($candidate !== null) {
+                    break;
+                }
+            }
+            if ($candidate === null) {
+                return;
+            }
+            $payload = [
+                'kind' => 'note',
+                'title' => $this->shortClaimTitle($candidate),
+                'related' => $this->relatedForClaim($candidate, $candidate),
+                'content' => $candidate,
+            ];
+        }
+
         if ($payload === null) {
             return;
         }
@@ -1573,6 +1629,120 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         $block = "\n\n```ai_memo\n" . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n```";
         $current = (string)($result['raw_reply'] ?? $result['reply'] ?? '');
         $result['raw_reply'] = rtrim($current) . $block;
+    }
+
+    /**
+     * True when the user's message is an explicit request to save / remember /
+     * record something into AI memory ("catat ya", "simpan di memori",
+     * "tambahkan ke node", "ingatkan saya", ...).
+     */
+    protected function hasSaveIntent(string $text): bool
+    {
+        return (bool) preg_match(
+            '/\b(?:catat|catet|simpan|simpen|ingatkan|ingetin|ingat|rekam|hafal(?:kan)?|pelajari|pahami|tambah(?:kan)?|buat(?:kan)?|bikin|jadikan)\b/iu',
+            $text
+        ) || (bool) preg_match(
+            '/(?:tambah(?:kan)?|simpan|simpen|catat|catet|ingatk?an|rekam|hafal(?:kan)?)[^.\n]{0,16}(?:node|memor[yì]|memory|catatan|ingatan|jaringan|neuron)/iu',
+            $text
+        );
+    }
+
+    /**
+     * Peel leading request/command clauses off a save request so the actual
+     * fact underneath shows through: "tolong catat ya eka rahayu adalah ibu
+     * saya" -> "eka rahayu adalah ibu saya", "tambahkan ke node: ..." -> "...".
+     */
+    protected function stripSaveCommand(string $text): string
+    {
+        $t = trim($text);
+        $peel = [
+            '/^\s*(?:tolong|mohon|silakan|silahkan|bisakah|bolehkah|ya|dong|donk|deh|lah|aja|saja|ini|itu|nanti|minta|saya|aku|gue|gua)\b[^:]*?[:\-]\s*/iu',
+            '/^\s*(?:tolong|mohon|silakan|silahkan|bisakah|bolehkah|ya|dong|donk|deh|lah|aja|saja|ini|itu|nanti|minta|saya|aku|gue|gua)\b/iu',
+            '/^\s*(?:tambahkan|tambah\s+ke\b|simpan|simpen|catat|catet|ingatkan|ingetin|ingat|rekam|hafal(?:kan)?|buatkan|buatin|bikin|buatin\b|buat\b|jadikan|pelajari|pahami|belajar)\w*\b/iu',
+            '/^\s*(?:ke|di|sebagai|jadi)\s+(?:node|memori|memory|catatan|ingatan|jaringan|neuron)\b/iu',
+            '/^\s*[:\-|.,]\s*/u',
+        ];
+
+        $changed = true;
+        while ($changed && $t !== '') {
+            $changed = false;
+            foreach ($peel as $re) {
+                $next = trim((string) preg_replace($re, '', $t));
+                if ($next !== $t) {
+                    $t = $next;
+                    $changed = true;
+                    break;
+                }
+            }
+        }
+
+        $t = trim((string) preg_replace(
+            '/\s+(?:ya|dong|donk|deh|lah|aja|saja|ga\??|gak\??|ngga\??|tidak|nggak)\s*$/iu',
+            '',
+            $t
+        ));
+        return trim($t, " \t\n\r,.;:!?()[]-");
+    }
+
+    /**
+     * Pick the first clean, single declarative sentence from a save request —
+     * verbatim user wording, so the fallback cannot hallucinate. Returns null
+     * for questions, commands, negations, URLs, filler and multi-sentence text.
+     */
+    protected function declarativeFallback(string $text): ?string
+    {
+        $text = trim($text);
+        if ($text === '' || mb_strlen($text) > 400) {
+            return null;
+        }
+
+        $lines = preg_split('/\n+/u', $text) ?: [trim($text)];
+        $sentence = trim((string)($lines[0] ?? ''));
+        $sentence = trim((string) preg_replace('/\s+/u', ' ', $sentence));
+        $len = mb_strlen($sentence);
+
+        if ($len < 6 || $len > 240) {
+            return null;
+        }
+
+        // Filler / acknowledgment only — nothing worth a node.
+        if (preg_match('/^(?:ok+ay?|ok|ya|yup|yap|baik|siap|tentu|paham|nyimak|wkwk|hehe|haha|done|setuju|iy[ae]?)[.,!?\s]*$/iu', $sentence)) {
+            return null;
+        }
+
+        // A sentence made up solely of discourse filler ("nanti saja dulu ya")
+        // still carries nothing to remember.
+        $fillerWords = ['nanti', 'dulu', 'saja', 'aja', 'tolong', 'mohon', 'dong', 'donk', 'deh', 'lah', 'ya', 'yay', 'ok', 'oke', 'baik', 'siap', 'tentu', 'paham', 'gak', 'nggak', 'tidak', 'yup', 'setuju', 'iya', 'kalau', 'saya', 'aku', 'gue', 'gua', 'cek', 'coba', 'mau'];
+        $words = preg_split('/\s+/u', strtolower(trim((string) preg_replace('/[^a-z0-9\s]+/iu', ' ', $sentence)))) ?: [];
+        $meaningful = array_filter($words, fn($w) => mb_strlen($w) > 2 && !in_array($w, $fillerWords, true));
+        if (count($meaningful) < 2) {
+            return null;
+        }
+
+        // Not a fact: questions, commands, negations, URLs or multi-sentence.
+        if (str_contains($sentence, '?')
+            || preg_match('/https?:\/\//iu', $sentence)
+            || preg_match('/\b(?:apakah|kenapa|mengapa|bagaimana|kapan|di\s+mana|yang\s+mana|tolong|mohon|bis[ae]kah|bolehkah|jangan)\b/iu', $sentence)
+            || preg_match('/\b(?:belum|tidak|nggak|enggak|bukan|kurang)\b/iu', $sentence)
+            || preg_match('/[.!]\s+\S/iu', $sentence)) {
+            return null;
+        }
+
+        $content = trim((string) preg_replace('/[*_`#>]+/u', '', $sentence));
+        $content = rtrim($content, " \t\n\r,.;:!?");
+        if ($content === '' || mb_strlen($content) < 4) {
+            return null;
+        }
+
+        // Must carry at least two meaningful words — "oke", "nanti" alone
+        // shouldn't become a node even under an explicit save request.
+        $words = preg_split('/\s+/u', $content) ?: [];
+        $significant = array_filter($words, fn($w) => mb_strlen($w) > 2);
+        if (count($significant) < 2) {
+            return null;
+        }
+
+        return $content;
     }
 
     /**
@@ -1624,7 +1794,11 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
             }
 
             if (preg_match('/\b(?:(?:adikku|kakakku|saudaraku|ibuku|ayahku|bapakku|mamaku|papaku|istriku|suamiku|anakku|kakekku|nenekku|pamanku|bibiku|tenteku|keponakanku|sepupuku)|(?:adik|kakak|saudara|ibu|ayah|bapak|mama|papa|istri|suami|anak|kakek|nenek|paman|bibi|tante|keponakan|sepupu))\b/iu', $s)
-                && preg_match('/\b(?:bernama|namanya|punya|mempunyai)\b/iu', $s)) {
+                && (preg_match('/\b(?:bernama|namanya|punya|mempunyai)\b/iu', $s)
+                    // Copula form: "Eka Rahayu adalah ibu saya" / "Bapak
+                    // merupakan ayahku" — requires the speaker marker so a
+                    // generic "ibu adalah orang yang..." is never captured.
+                    || (preg_match('/\b(?:adalah|merupakan)\b/iu', $s) && preg_match('/\b(?:saya|aku|gue|gua)\b/iu', $s)))) {
                 // Family relation → 'identity' node (same taxonomy as claimKind).
                 return [
                     'kind' => 'identity',
