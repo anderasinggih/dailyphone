@@ -159,6 +159,16 @@ export default function Assistant({
     const [draftStream, setDraftStream] = useState<string>('');
     // Collapsible "AI is thinking" panel — arrow toggles, like opencode's thought.
     const [streamCollapsed, setStreamCollapsed] = useState(false);
+    // Floating corner toast — confirms whenever the AI actually persisted a new
+    // memory node ("Saved to new node"), so the user sees memory grow in real time.
+    const [cornerToast, setCornerToast] = useState<{ key: number; title: string; detail?: string } | null>(null);
+    const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const showCornerToast = (title: string, detail?: string) => {
+        setCornerToast({ key: Date.now(), title, detail });
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = setTimeout(() => setCornerToast(null), 2600);
+    };
 
     // Reuse a single AudioContext so completion chimes do not leak one context per
 // message (browsers cap concurrent AudioContexts).
@@ -549,6 +559,15 @@ function playCompletionChime(soundEnabled: boolean): void {
                 const last = await consumeNdjson(response, {
                     onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
                     onToken: (text) => setDraftStream(prev => prev + text),
+                    onLearned: (evt) => {
+                        const count = Number(evt.notes_count ?? 1);
+                        if (count > 0) {
+                            showCornerToast(
+                                count === 1 ? 'Saved to new node' : `${count} new nodes saved`,
+                                evt.title || (typeof evt.message === 'string' ? evt.message : undefined) || 'AI memory updated'
+                            );
+                        }
+                    },
                 });
                 if (!last || last.type === 'error') {
                     throw new Error(
@@ -1387,6 +1406,29 @@ function playCompletionChime(soundEnabled: boolean): void {
                             </button>
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* Floating corner toast — confirms a new AI memory node was saved */}
+            {cornerToast && (
+                <div
+                    key={cornerToast.key}
+                    role="status"
+                    className="fixed bottom-5 right-5 z-50 flex items-center gap-2.5 pl-3 pr-4 py-2.5 rounded-full bg-card/90 dark:bg-black/80 backdrop-blur-2xl border border-border/60 shadow-xl shadow-black/10 dark:shadow-black/40 animate-in slide-in-from-bottom-4 fade-in duration-300"
+                >
+                    <span className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                        <Check className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="leading-tight min-w-0">
+                        <span className="block text-xs font-semibold text-foreground">
+                            {cornerToast.title}
+                        </span>
+                        {cornerToast.detail && (
+                            <span className="block text-[11px] text-muted-foreground max-w-[240px] truncate">
+                                {cornerToast.detail}
+                            </span>
+                        )}
+                    </span>
                 </div>
             )}
         </AuthenticatedLayout>

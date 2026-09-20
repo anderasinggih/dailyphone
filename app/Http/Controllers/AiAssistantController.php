@@ -23,6 +23,11 @@ class AiAssistantController extends Controller
     // one instead of trusting the model's own arithmetic.
     protected ?array $nodeStatsForGuard = null;
 
+    // How many brand-new neuron nodes this chat run actually persisted (memos,
+    // reconciled claims, silently extracted user facts). Reset per request so
+    // the client toast reports real numbers, never the model's made-up ones.
+    protected int $nodesSavedThisRun = 0;
+
     public function __construct(GeminiAssistantService $geminiService, AiActionService $aiActionService)
     {
         $this->geminiService = $geminiService;
@@ -452,6 +457,20 @@ class AiAssistantController extends Controller
                         $rawReply = $result['raw_reply'] ?? $rawReply;
                     }
                     $this->persistTrainingMemos($rawReply, $user);
+
+                    // Live toast: surface every real "new node" created during
+                    // this chat turn so the user sees memory grow in the corner
+                    // instead of trusting an unverifiable model announcement.
+                    if ($this->nodesSavedThisRun > 0) {
+                        $emit([
+                            'type' => 'learned',
+                            'source' => 'chat',
+                            'notes_count' => $this->nodesSavedThisRun,
+                            'message' => $this->nodesSavedThisRun === 1
+                                ? 'A new node was saved to AI memory.'
+                                : $this->nodesSavedThisRun . ' new nodes were saved to AI memory.',
+                        ]);
+                    }
 
                     // The AI cites which neuron nodes it actually consulted in a
                     // trailing metadata line (see the system prompt). Record that
@@ -1795,6 +1814,7 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
                 'occurred_place' => $occurredPlace,
                 'involved_with' => $involvedWith,
             ]);
+            $this->nodesSavedThisRun++;
             return true;
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('Failed to persist AI training memo: ' . $e->getMessage());
