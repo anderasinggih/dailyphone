@@ -347,7 +347,16 @@ class AiAssistantController extends Controller
                 // same blended seed set (semantic + conversation + episode).
                 $this->geminiService->setConversationContext($messagesForModel);
 
-                $network = $this->geminiService->resolveNeuronNetwork($userText);
+                $network = $this->geminiService->resolveNeuronNetwork(
+                    $userText,
+                    // Stream each retrieval stage the moment it completes, so
+                    // the live brain map lights up in real time: rules → the
+                    // embedding index answering → situational seeds. The final
+                    // 'neurons' event below carries the whole set + synapses.
+                    function (string $stage, array $nodes) use ($emit) {
+                        $emit(['type' => 'stage', 'stage' => $stage, 'nodes' => $nodes]);
+                    }
+                );
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
 

@@ -55,11 +55,6 @@ interface NeuralMindMapProps {
     liveUsedIds?: number[];
 }
 
-// Digest order of a real retrieval run (mirrors GeminiAssistantService's
-// retrieval_stage tags): rules light first, then semantic matches, then the
-// situational / momentum anchors. A lower number fires earlier.
-const STAGE_PRIORITY: Record<string, number> = { rule: 0, semantic: 1, contextual: 2 };
-
 interface Point {
     x: number;
     y: number;
@@ -469,41 +464,21 @@ export default function NeuralMindMap({ nodes, links, onToggleActive, onReclassi
         moved: boolean;
     } | null>(null);
 
-    // ── Live watch: the nodes the AI retrieved this run, revealed in the real
-    // stage order the backend emitted (rules → semantic → contextual). Pending
-    // live nodes stay dimmed until their stage fires; used/cited nodes flash
-    // white at the end of the run.
+    // ── Live watch: the nodes the AI retrieved this run. The page appends nodes
+    // as real 'stage' events stream in (rules → semantic → contextual), so a
+    // node lights up the instant its stage actually completes — no playback
+    // timer. Used/cited nodes flash white at the end of the run.
     const liveActive = Array.isArray(liveNodes) && liveNodes.length > 0;
     const liveById = useMemo(() => {
         const m = new Map<number, LiveNeuronPulse>();
         (liveNodes ?? []).forEach(n => m.set(n.id, n));
         return m;
     }, [liveNodes]);
-    const liveOrder = useMemo(() => {
-        if (!liveActive) return [];
-        return [...liveNodes!].sort((a, b) => {
-            const pa = STAGE_PRIORITY[a.stage ?? ''] ?? 3;
-            const pb = STAGE_PRIORITY[b.stage ?? ''] ?? 3;
-            if (pa !== pb) return pa - pb;
-            return (a.order ?? 0) - (b.order ?? 0);
-        });
-    }, [liveActive, liveNodes]);
 
     const [revealed, setRevealed] = useState<Set<number>>(new Set());
     useEffect(() => {
-        if (liveOrder.length === 0) {
-            setRevealed(new Set());
-            return;
-        }
-        setRevealed(new Set());
-        let i = 0;
-        const timer = window.setInterval(() => {
-            i += 1;
-            setRevealed(new Set(liveOrder.slice(0, i).map(n => n.id)));
-            if (i >= liveOrder.length) window.clearInterval(timer);
-        }, 70);
-        return () => window.clearInterval(timer);
-    }, [liveOrder]);
+        setRevealed(new Set((liveNodes ?? []).map(n => n.id)));
+    }, [liveNodes]);
 
     // Cited nodes get a white confirmation flash right when the run finishes.
     const [usedFlash, setUsedFlash] = useState<Set<number>>(new Set());

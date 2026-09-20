@@ -28,6 +28,7 @@ export interface NdjsonHandlers {
     onToken?: (text: string) => void;
     onTrace?: (used: number[]) => void;
     onLearned?: (payload: NdjsonEvent) => void;
+    onStage?: (stage: string, nodes: StreamNeuron[]) => void;
 }
 
 export async function consumeNdjson(
@@ -56,6 +57,9 @@ export async function consumeNdjson(
                 Array.isArray(evt.nodes) ? evt.nodes : [],
                 Array.isArray(evt.edges) ? evt.edges : []
             );
+        }
+        if (evt.type === 'stage' && handlers.onStage && typeof evt.stage === 'string' && Array.isArray(evt.nodes)) {
+            handlers.onStage(evt.stage, evt.nodes);
         }
         if (evt.type === 'chunk' && handlers.onToken && typeof evt.text === 'string') {
             handlers.onToken(evt.text);

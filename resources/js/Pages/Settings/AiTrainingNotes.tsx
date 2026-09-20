@@ -242,6 +242,13 @@ export default function AiTrainingNotes({ notes, graph }: AiTrainingNotesProps) 
 
             if ((res.headers.get('content-type') || '').includes('ndjson')) {
                 const last = await consumeNdjson(res, {
+                    onStage: (_stage, nodes) => {
+                        setLiveNodes(prev => {
+                            const seen = new Set(prev.map(n => n.id));
+                            const fresh = nodes.filter(n => !seen.has(n.id));
+                            return fresh.length > 0 ? [...prev, ...fresh] : prev;
+                        });
+                    },
                     onNeurons: (nodes, edges) => {
                         setLiveNodes(nodes);
                         setLiveEdges(edges);

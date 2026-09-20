@@ -1803,26 +1803,21 @@ SYSTEM;
      * active rule first, then knowledge notes ranked by relevance — together
      * with the real synapses that connect those neurons to each other. The
      * Assistant UI renders this as a live neuron map while the model thinks.
+     *
+     * When $onStage is given, every retrieval stage emits its notes the moment
+     * that stage actually completes (rules → embedding search → situational
+     * seeds), so a live map can light up in real time instead of replaying a
+     * snapshot after the fact.
      */
-    public function resolveNeuronNetwork(?string $query = null): array
+    public function resolveNeuronNetwork(?string $query = null, ?callable $onStage = null): array
     {
-        $notes = $this->selectTrainingNotes($query);
+        $notes = $this->selectTrainingNotes($query, $onStage);
 
-        $nodes = $notes->values()->map(function ($n, $i) {
-            $stage = $n->retrieval_stage ?? ($n->kind === 'rule' ? 'rule' : 'semantic');
-            $node = [
-                'id' => (int)$n->id,
-                'title' => $this->neuronLabel($n),
-                'kind' => $n->kind,
-                'stage' => $stage,
-                'order' => $i,
-            ];
-            $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
-            if ($sources !== []) {
-                $node['sources'] = $sources;
-            }
-            return $node;
-        })->values()->all();
+        $nodes = $notes->values()->map(fn ($n, $i) => $this->neuronPayload(
+            $n,
+            $n->retrieval_stage ?? ($n->kind === 'rule' ? 'rule' : 'semantic'),
+            $i
+        ))->values()->all();
 
         $idSet = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
 
@@ -1849,6 +1844,27 @@ SYSTEM;
         }
 
         return ['nodes' => $nodes, 'edges' => $edges];
+    }
+
+    /**
+     * Render one training note as the JSON node shape the live map consumes.
+     * The stage tag says WHY it reached the model (rule / semantic /
+     * contextual); seed_sources carries the situational reason verbatim.
+     */
+    protected function neuronPayload(\App\Models\AiTrainingNote $n, string $stage, int $order): array
+    {
+        $node = [
+            'id' => (int)$n->id,
+            'title' => $this->neuronLabel($n),
+            'kind' => $n->kind,
+            'stage' => $stage,
+            'order' => $order,
+        ];
+        $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
+        if ($sources !== []) {
+            $node['sources'] = $sources;
+        }
+        return $node;
     }
 
     /**
@@ -1879,8 +1895,13 @@ SYSTEM;
      * When the embedding index is cold (no vectors yet, or the embedding API
      * unreachable) the scoring gracefully degrades to the tf-idf token pool so
      * nothing breaks before the backfill job has run.
+     *
+     * With $onStage set, each retrieval stage emits the moment it finishes:
+     * 'rule' right after the rules query, 'semantic' once the embedding index
+     * answers, 'contextual' as soon as the situational seeds are gathered — so
+     * a live brain map lights up against the real latency of each step.
      */
-    protected function selectTrainingNotes(?string $query): \Illuminate\Support\Collection
+    protected function selectTrainingNotes(?string $query, ?callable $onStage = null): \Illuminate\Support\Collection
     {
         $key = trim((string)$query);
         $cacheKey = $key . '::' . md5((string)$this->conversationContextText);
@@ -1894,11 +1915,27 @@ SYSTEM;
             $topK = 12;
         }
 
+        // Fire a stage event as its notes land (real completion order, not a
+        // post-hoc replay). Each payload carries its own stage + order.
+        $emitStage = function (string $stage, $collection) use ($onStage): void {
+            if ($onStage === null || $collection === null || $collection instanceof \Illuminate\Support\Collection && $collection->isEmpty()) {
+                return;
+            }
+            $payload = $collection->values()
+                ->map(fn($n, $i) => $this->neuronPayload($n, $stage, $i))
+                ->values()
+                ->all();
+            $onStage($stage, $payload);
+        };
+
         $rules = \App\Models\AiTrainingNote::where('is_active', true)
             ->where('kind', 'rule')
             ->orderBy('updated_at', 'desc')
             ->get()
             ->each(fn($n) => $n->setAttribute('retrieval_stage', 'rule'));
+
+        // Stage 0 — rules: always active, and the fastest signal to observe.
+        $emitStage('rule', $rules);
 
         $embedder = app(\App\Services\AiEmbeddingService::class);
         $search = $embedder->search($key, $topK, null);
@@ -1921,6 +1958,10 @@ SYSTEM;
         // second, rules are always on. Each note carries its retrieval_stage.
         $selected->each(fn($n) => $n->setAttribute('retrieval_stage', 'semantic'));
 
+        // Stage 1 — semantic: fires right after the embedding index answers
+        // (the slowest step in retrieval), so the map waits on real latency.
+        $emitStage('semantic', $selected);
+
         // Mixed seeds (situational + inter-turn momentum): on top of the
         // semantic matches, the notes that are "alive right now" in this
         // conversation also reach the model — the episode frame a query refers
@@ -1929,6 +1970,7 @@ SYSTEM;
         $contextual = $this->contextSeedNotes($key);
         $selectedIds = $selected->map(fn($n) => (int)$n->id)->filter()->flip();
         $addedContext = 0;
+        $addedContextual = [];
         foreach ($contextual as $note) {
             if ($addedContext >= self::CONTEXT_SEED_SLOTS) {
                 break;
@@ -1939,8 +1981,13 @@ SYSTEM;
             $note->setAttribute('retrieval_stage', 'contextual');
             $selectedIds[$note->id] = true;
             $selected->push($note);
+            $addedContextual[] = $note;
             $addedContext++;
         }
+
+        // Stage 2 — situational: emitted once the episode / momentum seeds are
+        // gathered, closing the real retrieval sequence.
+        $emitStage('contextual', collect($addedContextual));
 
         // Remember the confidence signal for the abstention floor + telemetry.
         $this->retrievalState = [
