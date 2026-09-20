@@ -2,28 +2,39 @@
 
 namespace App\Services;
 
-use App\Models\GeneralSetting;
-use App\Models\Stock;
-use App\Models\Sale;
-use App\Models\Store;
+use App\Models\AiTrainingNote;
+use App\Models\AiTrainingNoteLink;
 use App\Models\Buyer;
 use App\Models\DynamicParameter;
+use App\Models\GeneralSetting;
+use App\Models\MoneyNoteCategory;
+use App\Models\Sale;
+use App\Models\Stock;
+use App\Models\StockTransfer;
+use App\Models\Store;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class GeminiAssistantService
 {
     protected ?string $apiKey;
+
     protected array $apiKeys = [];
+
     protected string $model;
+
     protected bool $enabled;
+
     protected ?string $customInstruction;
 
     // The training-note selection is queried up to three times per chat
     // request (live neuron map, model context, memo-eligibility review).
     // Memoize per query so we hit the DB once.
     protected ?string $notesCacheKey = null;
-    protected ?\Illuminate\Support\Collection $notesCache = null;
+
+    protected ?Collection $notesCache = null;
 
     // Retrieval telemetry for the current request: the highest embedding
     // similarity seen for the query and how the pool was built. Used both for
@@ -115,14 +126,14 @@ class GeminiAssistantService
         $this->apiKeys = $settings ? $settings->apiKeyList() : [];
         if (empty($this->apiKeys)) {
             $envKey = env('GEMINI_API_KEY');
-            if (!empty($envKey)) {
+            if (! empty($envKey)) {
                 $this->apiKeys = [$envKey];
             }
         }
 
         $this->apiKey = $this->apiKeys[0] ?? null;
         $this->model = $settings?->ai_model ?: env('GEMINI_MODEL', 'gemini-3.5-flash-lite');
-        $this->enabled = $settings ? (bool)$settings->ai_enabled : true;
+        $this->enabled = $settings ? (bool) $settings->ai_enabled : true;
         $this->customInstruction = $settings?->ai_system_instruction;
     }
 
@@ -132,7 +143,7 @@ class GeminiAssistantService
     protected function logKeyRotation(int $index, int $total): void
     {
         if ($index + 1 < $total) {
-            Log::info("Gemini API key #" . ($index + 2) . "/{$total} will be tried next (failover from key #" . ($index + 1) . ").");
+            Log::info('Gemini API key #'.($index + 2)."/{$total} will be tried next (failover from key #".($index + 1).').');
         }
     }
 
@@ -148,12 +159,14 @@ class GeminiAssistantService
     public function isConfigured(): bool
     {
         $this->reloadSettings();
-        return !empty($this->apiKey);
+
+        return ! empty($this->apiKey);
     }
 
     public function isEnabled(): bool
     {
         $this->reloadSettings();
+
         return $this->enabled;
     }
 
@@ -199,19 +212,19 @@ class GeminiAssistantService
             default => 'png',
         };
 
-        $baseDir = storage_path('app/ai_generated/images/' . $runId);
-        if (!is_dir($baseDir)) {
+        $baseDir = storage_path('app/ai_generated/images/'.$runId);
+        if (! is_dir($baseDir)) {
             mkdir($baseDir, 0755, true);
         }
 
-        $name = 'generated-' . ($index + 1) . '.' . $ext;
-        $full = $baseDir . '/' . $name;
+        $name = 'generated-'.($index + 1).'.'.$ext;
+        $full = $baseDir.'/'.$name;
         file_put_contents($full, base64_decode($data, true) ?: '');
-        if (!is_file($full) || filesize($full) === 0) {
+        if (! is_file($full) || filesize($full) === 0) {
             return null;
         }
 
-        $rel = 'images/' . $runId . '/' . $name;
+        $rel = 'images/'.$runId.'/'.$name;
 
         return [
             'name' => $name,
@@ -233,12 +246,12 @@ class GeminiAssistantService
         if (empty($key)) {
             return [
                 'success' => false,
-                'message' => 'API Key is missing. Please provide a valid Gemini API Key.'
+                'message' => 'API Key is missing. Please provide a valid Gemini API Key.',
             ];
         }
 
         // Use exactly the requested (or configured) model — no ordering of its own.
-        $model = trim((string)$requestedModel) ?: 'gemini-3.5-flash-lite';
+        $model = trim((string) $requestedModel) ?: 'gemini-3.5-flash-lite';
 
         try {
             $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$key}";
@@ -246,17 +259,18 @@ class GeminiAssistantService
                 'contents' => [
                     [
                         'role' => 'user',
-                        'parts' => [['text' => 'Respond with the single word: ONLINE']]
-                    ]
-                ]
+                        'parts' => [['text' => 'Respond with the single word: ONLINE']],
+                    ],
+                ],
             ]);
 
             if ($response->successful()) {
                 $reply = $response->json('candidates.0.content.parts.0.text', '');
+
                 return [
                     'success' => true,
                     'model_used' => $model,
-                    'message' => "Connected successfully to {$model}! Response: " . trim($reply)
+                    'message' => "Connected successfully to {$model}! Response: ".trim($reply),
                 ];
             }
 
@@ -267,7 +281,7 @@ class GeminiAssistantService
 
         return [
             'success' => false,
-            'message' => 'Google Gemini API Error: ' . $lastError
+            'message' => 'Google Gemini API Error: '.$lastError,
         ];
     }
 
@@ -283,7 +297,7 @@ class GeminiAssistantService
 
         // Stores
         $stores = Store::select('id', 'name', 'address')->get();
-        $storeListStr = $stores->map(fn($s) => "Store ID {$s->id}: {$s->name} ({$s->address})")->implode("\n");
+        $storeListStr = $stores->map(fn ($s) => "Store ID {$s->id}: {$s->name} ({$s->address})")->implode("\n");
 
         // Available Stocks Summary
         $stockQuery = Stock::with(['store', 'brand', 'color', 'memory', 'license'])
@@ -303,7 +317,7 @@ class GeminiAssistantService
             $mem = $s->memory ? $s->memory->value : '';
             $lic = $s->license ? $s->license->value : '';
             $price = number_format($s->sell_price, 0, ',', '.');
-            $imei = $s->imei_1 ? " (IMEI: {$s->imei_1})" : "";
+            $imei = $s->imei_1 ? " (IMEI: {$s->imei_1})" : '';
 
             return "- [ID: {$s->id}] {$s->name} | {$brand} | {$color} | {$mem} | {$lic} | Type: {$s->type} | Price: Rp {$price} | Loc: {$storeName}{$imei}";
         })->implode("\n");
@@ -326,12 +340,13 @@ class GeminiAssistantService
             ->where('updated_at', '>=', now()->subDays(7))
             ->limit(10)
             ->get();
-        $voidAuditStr = $voidSales->isEmpty() 
-            ? "None (No void transactions in last 7 days)" 
-            : $voidSales->map(function($v) {
+        $voidAuditStr = $voidSales->isEmpty()
+            ? 'None (No void transactions in last 7 days)'
+            : $voidSales->map(function ($v) {
                 $st = $v->store ? $v->store->name : '-';
                 $by = $v->user ? $v->user->name : '-';
-                return "- Invoice #{$v->invoice_number} | Rp " . number_format($v->total_amount, 0, ',', '.') . " | Reason: {$v->void_reason} | Store: {$st} | Kasir: {$by}";
+
+                return "- Invoice #{$v->invoice_number} | Rp ".number_format($v->total_amount, 0, ',', '.')." | Reason: {$v->void_reason} | Store: {$st} | Kasir: {$by}";
             })->implode("\n");
 
         // 2. Dead/Aging Stock Audit (>45 days available)
@@ -341,37 +356,39 @@ class GeminiAssistantService
             $agingStocks->where('store_id', $storeFilter);
         }
         $agingCount = (clone $agingStocks)->count();
-        $agingSample = $agingStocks->limit(5)->get()->map(function($a) {
-            $days = $a->created_at ? (int)$a->created_at->diffInDays(now()) : 45;
-            return "- [Aging {$days}d] {$a->name} (Rp " . number_format($a->sell_price, 0, ',', '.') . ")";
+        $agingSample = $agingStocks->limit(5)->get()->map(function ($a) {
+            $days = $a->created_at ? (int) $a->created_at->diffInDays(now()) : 45;
+
+            return "- [Aging {$days}d] {$a->name} (Rp ".number_format($a->sell_price, 0, ',', '.').')';
         })->implode("\n");
 
         // 3. Pending Stock Transfers
-        $pendingTransfers = \App\Models\StockTransfer::with(['stock', 'fromStore', 'toStore'])
+        $pendingTransfers = StockTransfer::with(['stock', 'fromStore', 'toStore'])
             ->where('status', 'pending')
             ->limit(10)
             ->get();
         $pendingTransferCount = $pendingTransfers->count();
         $transferStr = $pendingTransfers->isEmpty()
-            ? "No pending inter-store transfers"
-            : $pendingTransfers->map(fn($t) => "- Unit: {$t->stock?->name} | From {$t->fromStore?->name} -> To {$t->toStore?->name}")->implode("\n");
+            ? 'No pending inter-store transfers'
+            : $pendingTransfers->map(fn ($t) => "- Unit: {$t->stock?->name} | From {$t->fromStore?->name} -> To {$t->toStore?->name}")->implode("\n");
 
         // Customer count & recent customers list
         $customerCount = Buyer::count();
         $recentCustomers = Buyer::orderBy('updated_at', 'desc')->limit(15)->get();
         $customerSampleStr = $recentCustomers->isEmpty()
-            ? "No registered customers yet"
-            : $recentCustomers->map(fn($c) => "- [ID: {$c->id}] {$c->name} | Phone: {$c->phone} | Address: {$c->address}")->implode("\n");
+            ? 'No registered customers yet'
+            : $recentCustomers->map(fn ($c) => "- [ID: {$c->id}] {$c->name} | Phone: {$c->phone} | Address: {$c->address}")->implode("\n");
 
         // Recently Deleted / Trashed Units (Soft deleted in Trash Bin)
         $trashedCount = Stock::onlyTrashed()->count();
         $trashedStocks = Stock::onlyTrashed()->with(['store'])->orderBy('deleted_at', 'desc')->limit(50)->get();
         $trashedStockStr = $trashedCount === 0
-            ? "Kosong (0 unit di keranjang sampah)"
-            : "Total {$trashedCount} unit di keranjang sampah (Trash Bin):\n" . $trashedStocks->map(function($t) {
+            ? 'Kosong (0 unit di keranjang sampah)'
+            : "Total {$trashedCount} unit di keranjang sampah (Trash Bin):\n".$trashedStocks->map(function ($t) {
                 $st = $t->store ? $t->store->name : 'PERENG STORE';
-                $imei = $t->imei_1 ? " | IMEI: {$t->imei_1}" : "";
-                $sn = $t->serial_number ? " | SN: {$t->serial_number}" : "";
+                $imei = $t->imei_1 ? " | IMEI: {$t->imei_1}" : '';
+                $sn = $t->serial_number ? " | SN: {$t->serial_number}" : '';
+
                 return "- [ID: {$t->id}] {$t->name}{$imei}{$sn} | Branch: {$st} | Deleted at: {$t->deleted_at}";
             })->implode("\n");
 
@@ -475,7 +492,7 @@ CONTEXT;
 
         if ($parameters->isNotEmpty()) {
             foreach ($parameters as $param) {
-                $values = $param->values->map(fn($v) => $v->value)->implode(', ');
+                $values = $param->values->map(fn ($v) => $v->value)->implode(', ');
                 $lines[] = "- {$param->name} [{$param->category}]: {$values}";
             }
         } else {
@@ -483,8 +500,8 @@ CONTEXT;
         }
 
         // 2. Money note categories (income vs expense)
-        $inCats = \App\Models\MoneyNoteCategory::where('type', 'in')->orderBy('name')->pluck('name')->implode(', ');
-        $outCats = \App\Models\MoneyNoteCategory::where('type', 'out')->orderBy('name')->pluck('name')->implode(', ');
+        $inCats = MoneyNoteCategory::where('type', 'in')->orderBy('name')->pluck('name')->implode(', ');
+        $outCats = MoneyNoteCategory::where('type', 'out')->orderBy('name')->pluck('name')->implode(', ');
         $lines[] = "- Money Note Category (Income / in): {$inCats}";
         $lines[] = "- Money Note Category (Expense / out): {$outCats}";
 
@@ -514,10 +531,10 @@ CONTEXT;
      */
     public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null, ?string $summary = null): array
     {
-        if (!$this->isConfigured()) {
+        if (! $this->isConfigured()) {
             return [
                 'success' => false,
-                'reply' => 'Gemini API Key has not been configured yet. Please ask the Superadmin to configure it in Settings > General.'
+                'reply' => 'Gemini API Key has not been configured yet. Please ask the Superadmin to configure it in Settings > General.',
             ];
         }
 
@@ -542,22 +559,22 @@ CONTEXT;
         // store tools. This needs toolConfig.includeServerSideToolInvocations
         // and re-sending every part of the model turn verbatim. Older models
         // keep the old mutually-exclusive rule (function calling wins).
-        $useModel = !empty($model) ? $model : $this->model;
+        $useModel = ! empty($model) ? $model : $this->model;
         $isImageModel = $this->isImageModel($useModel);
-        $toolsEnabled = !$isImageModel && (bool)($settings?->ai_tools_enabled ?? true);
-        $groundingRequested = !$isImageModel && (bool)($settings?->ai_grounding_enabled ?? true);
+        $toolsEnabled = ! $isImageModel && (bool) ($settings?->ai_tools_enabled ?? true);
+        $groundingRequested = ! $isImageModel && (bool) ($settings?->ai_grounding_enabled ?? true);
         $comboWanted = $toolsEnabled
             && $groundingRequested
-            && (bool)($settings?->ai_tool_combo ?? true);
+            && (bool) ($settings?->ai_tool_combo ?? true);
         $comboSupported = $comboWanted && $this->isGemini3Model($useModel);
 
-        $toolService = app(\App\Services\AiToolService::class);
+        $toolService = app(AiToolService::class);
         $tools = [];
         if ($toolsEnabled) {
             $tools = $toolService->declarations();
         }
         if ($groundingRequested && ($tools === [] || $comboSupported)) {
-            $tools[] = ['googleSearch' => new \stdClass()];
+            $tools[] = ['googleSearch' => new \stdClass];
         }
         $toolCombo = $comboSupported && $tools !== [];
 
@@ -567,21 +584,21 @@ CONTEXT;
         // hallucinate prices/stock/customer numbers.
         $retrieval = $this->lastRetrieval();
         $minScore = ($settings?->ai_retrieval_min_score !== null && $settings->ai_retrieval_min_score !== '')
-            ? (float)$settings->ai_retrieval_min_score
+            ? (float) $settings->ai_retrieval_min_score
             : 0.30;
         $lowConfidence = $retrieval['best_score'] !== null
-            && (float)$retrieval['best_score'] < $minScore
+            && (float) $retrieval['best_score'] < $minScore
             && $retrieval['notes_count'] > 0;
 
         $userRole = $user ? $user->role : 'user';
         $userStoreName = $user && $user->store ? $user->store->name : 'All Stores (Admin View)';
         $storeContext = $this->generateStoreContext($user, $toolsEnabled);
-        $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : "";
-        $sessionRulesPrompt = !empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n" . $sessionRules . "\n" : "";
+        $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : '';
+        $sessionRulesPrompt = ! empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n".$sessionRules."\n" : '';
 
         // Progressive summary of the conversation's older turns (item 7); folded
         // into the prompt below so long chats never exhaust the context window.
-        $summaryBlock = ($summary !== null && trim((string)$summary) !== '')
+        $summaryBlock = ($summary !== null && trim((string) $summary) !== '')
             ? "\nPROGRESSIVE CONVERSATION SUMMARY (memories of the earlier part of this chat, recorded when the context grew too long to keep verbatim — treat as reliable while answering):\n{$summary}\n"
             : '';
         $lowConfBlock = $lowConfidence
@@ -822,8 +839,8 @@ PROMPT;
         // The model resolves relative dates ("kemarin", "lusa", "tadi") into
         // real "when" episode tags for episodic memory — it needs today's date
         // to do that correctly.
-        $tailStatic = "TANGGAL HARI INI: " . now()->format('d M Y (l)') . ". Gunakan tanggal ini untuk mengubah kata waktu relatif menjadi tanggal nyata.\n" .
-            <<<PROMPT
+        $tailStatic = 'TANGGAL HARI INI: '.now()->format('d M Y (l)').". Gunakan tanggal ini untuk mengubah kata waktu relatif menjadi tanggal nyata.\n".
+            <<<'PROMPT'
 
 READING LINKS & ARTICLES (otomatis oleh sistem):
 - Saat pengguna berbagi sebuah tautan (artikel, Wikipedia, berita, blog, dokumen PDF) dan memintamu membacanya / mempelajarinya / meringkasnya / mencatatnya ("baca ini ...", "pelajari https://...", "ringkas link ini", "simpan ke node ..."), BACKEND SECARA OTOMATIS mengambil isi halaman tersebut dan menyimpannya sebagai node neuron memory BARU dalam request yang sama — SEBELUM kamu menjawab.
@@ -888,25 +905,25 @@ GLOBAL AI TRAINING MEMORY (Buku Besar Belajar AI — isi yang sudah tercatat, se
 PROMPT;
 
         $suffix = $storeContext
-            . $customInst
-            . $sessionRulesPrompt
-            . $summaryBlock
-            . $lowConfBlock
-            . $tailStatic
-            . "\n"
-            . $trainingNotesStr
-            . $ingestNotice;
+            .$customInst
+            .$sessionRulesPrompt
+            .$summaryBlock
+            .$lowConfBlock
+            .$tailStatic
+            ."\n"
+            .$trainingNotesStr
+            .$ingestNotice;
 
-        $systemPrompt = $prefix . $suffix;
+        $systemPrompt = $prefix.$suffix;
 
         // Build contents for Gemini API
         $contents = [];
-        $includeAttachments = $attachments instanceof \Illuminate\Support\Collection
+        $includeAttachments = $attachments instanceof Collection
             ? $attachments->values()
             : collect($attachments ?? [])->values();
 
         foreach ($messages as $msg) {
-            $text = trim((string)($msg['content'] ?? ''));
+            $text = trim((string) ($msg['content'] ?? ''));
             if ($text === '') {
                 // A `parts[].text` of null/empty makes Gemini reject the whole
                 // payload with 400 INVALID_ARGUMENT ("required oneof field
@@ -931,14 +948,14 @@ PROMPT;
         $payload = [
             'system_instruction' => [
                 'parts' => [
-                    ['text' => $systemPrompt]
-                ]
+                    ['text' => $systemPrompt],
+                ],
             ],
             'contents' => $contents,
             'generationConfig' => [
                 'temperature' => 0.2,
                 'maxOutputTokens' => 16384,
-            ]
+            ],
         ];
         if ($isImageModel) {
             // Image-capable models may answer with inline images alongside text.
@@ -980,18 +997,18 @@ PROMPT;
             $payload['contents'] = $conversation;
 
             $turnResult = $this->runTurn($payload, $useModel, $onChunk, $isImageModel);
-            if (!$turnResult['success']) {
+            if (! $turnResult['success']) {
                 $lastErrorMsg = $turnResult['error'];
                 break;
             }
 
             // Aggregate token usage + search-grounding metadata across turns.
             $this->accumulateUsage($turnResult['usage'] ?? null);
-            if (!empty($turnResult['grounding'])) {
+            if (! empty($turnResult['grounding'])) {
                 $grounding = $this->compactGrounding($turnResult['grounding']);
             }
 
-            $textChunk = (string)($turnResult['text'] ?? '');
+            $textChunk = (string) ($turnResult['text'] ?? '');
             $replyText .= $textChunk;
             $rawText .= $textChunk;
             foreach (($turnResult['images'] ?? []) as $img) {
@@ -1013,14 +1030,14 @@ PROMPT;
             $modelParts = $this->echoModelTurnParts($turnResult, $calls);
             $replyParts = [];
             foreach ($calls as $call) {
-                $name = (string)($call['name'] ?? '');
+                $name = (string) ($call['name'] ?? '');
                 $args = is_array($call['args'] ?? null) ? $call['args'] : [];
 
                 // Gemini 3 tags each function call with a stable id that must be
                 // mirrored inside the matching functionResponse part.
                 $callId = (isset($call['part']) && is_array($call['part'])
                     && isset($call['part']['functionCall']['id']))
-                    ? (string)$call['part']['functionCall']['id'] : '';
+                    ? (string) $call['part']['functionCall']['id'] : '';
 
                 if ($name === 'submit_action_proposal') {
                     if ($proposalArgs === null) {
@@ -1036,6 +1053,7 @@ PROMPT;
                         $frPart['functionResponse']['id'] = $callId;
                     }
                     $replyParts[] = $frPart;
+
                     continue;
                 }
 
@@ -1062,7 +1080,7 @@ PROMPT;
         // Structured action proposals (item 5): the model's submit_action_proposal
         // call becomes the exact ```action_proposal block the card renders — no
         // more fragile regex repair when JSON gets mangled mid-stream.
-        if ($proposalArgs !== null && !str_contains($replyText, '```action_proposal')) {
+        if ($proposalArgs !== null && ! str_contains($replyText, '```action_proposal')) {
             $proposalBlock = $this->encodeProposal($proposalArgs);
             if ($proposalBlock !== '') {
                 $blockFence = "\n\n```action_proposal\n{$proposalBlock}\n```";
@@ -1123,8 +1141,9 @@ PROMPT;
                         ->connectTimeout(15)
                         ->post($url, $payload);
 
-                    if (!$response->successful()) {
+                    if (! $response->successful()) {
                         $lastErrorMsg = $this->streamErrorBody($response, $i, $totalKeys, $useModel);
+
                         continue;
                     }
 
@@ -1149,10 +1168,10 @@ PROMPT;
                     ];
                 }
 
-                Log::warning("Gemini model {$useModel} key #" . ($i + 1) . "/{$totalKeys} failed: {$lastErrorMsg}");
+                Log::warning("Gemini model {$useModel} key #".($i + 1)."/{$totalKeys} failed: {$lastErrorMsg}");
             } catch (\Exception $e) {
                 $lastErrorMsg = $e->getMessage();
-                Log::warning("Gemini model {$useModel} key #" . ($i + 1) . "/{$totalKeys} threw: {$lastErrorMsg}");
+                Log::warning("Gemini model {$useModel} key #".($i + 1)."/{$totalKeys} threw: {$lastErrorMsg}");
             }
 
             $this->logKeyRotation($i, $totalKeys);
@@ -1168,7 +1187,7 @@ PROMPT;
     protected function parseBlockingResponse($response, bool $isImageModel): array
     {
         $parts = $response->json('candidates.0.content.parts', []);
-        $runId = date('Ymd_His') . '_' . uniqid();
+        $runId = date('Ymd_His').'_'.uniqid();
         $text = '';
         $imageMd = '';
         $images = [];
@@ -1176,18 +1195,18 @@ PROMPT;
         $n = 0;
 
         foreach ((array) $parts as $part) {
-            if (!empty($part['text'])) {
+            if (! empty($part['text'])) {
                 $text .= $part['text'];
             }
-            if (!empty($part['functionCall']) && is_array($part['functionCall'])) {
+            if (! empty($part['functionCall']) && is_array($part['functionCall'])) {
                 $calls[] = [
-                    'name' => (string)($part['functionCall']['name'] ?? ''),
-                    'args' => (array)($part['functionCall']['args'] ?? []),
-                    'thoughtSignature' => isset($part['thoughtSignature']) ? (string)$part['thoughtSignature'] : null,
+                    'name' => (string) ($part['functionCall']['name'] ?? ''),
+                    'args' => (array) ($part['functionCall']['args'] ?? []),
+                    'thoughtSignature' => isset($part['thoughtSignature']) ? (string) $part['thoughtSignature'] : null,
                     'part' => $part,
                 ];
             }
-            if (!empty($part['inlineData'])) {
+            if (! empty($part['inlineData'])) {
                 $meta = $this->persistInlineImage($part['inlineData'], $runId, $n++);
                 if ($meta) {
                     $images[] = $meta;
@@ -1198,9 +1217,9 @@ PROMPT;
 
         return [
             'success' => true,
-            'text' => $text . $imageMd,
+            'text' => $text.$imageMd,
             'calls' => $calls,
-            'modelParts' => array_values((array)$parts),
+            'modelParts' => array_values((array) $parts),
             'usage' => $response->json('usageMetadata'),
             'grounding' => $response->json('groundingMetadata'),
             'images' => $images,
@@ -1221,15 +1240,15 @@ PROMPT;
         if (is_array($parts) && $parts !== []) {
             $signatureSeen = '';
             foreach ($parts as $part) {
-                if (!empty($part['thoughtSignature'])) {
-                    $signatureSeen = (string)$part['thoughtSignature'];
+                if (! empty($part['thoughtSignature'])) {
+                    $signatureSeen = (string) $part['thoughtSignature'];
                     break;
                 }
             }
             if ($signatureSeen === '') {
                 foreach ($calls as $call) {
-                    if (!empty($call['thoughtSignature'])) {
-                        $signatureSeen = (string)$call['thoughtSignature'];
+                    if (! empty($call['thoughtSignature'])) {
+                        $signatureSeen = (string) $call['thoughtSignature'];
                         break;
                     }
                 }
@@ -1238,7 +1257,7 @@ PROMPT;
             foreach ($parts as $part) {
                 if (isset($part['functionCall']) && is_array($part['functionCall'])
                     && is_array($part['functionCall']['args'] ?? null)) {
-                    $part['functionCall']['args'] = (object)$part['functionCall']['args'];
+                    $part['functionCall']['args'] = (object) $part['functionCall']['args'];
                 }
                 if ($signatureSeen !== ''
                     && isset($part['functionCall'])
@@ -1249,6 +1268,7 @@ PROMPT;
                 }
                 $out[] = $part;
             }
+
             return array_values($out);
         }
 
@@ -1256,15 +1276,16 @@ PROMPT;
         foreach ($calls as $call) {
             $part = [
                 'functionCall' => [
-                    'name' => (string)($call['name'] ?? ''),
-                    'args' => (object)($call['args'] ?? []),
+                    'name' => (string) ($call['name'] ?? ''),
+                    'args' => (object) ($call['args'] ?? []),
                 ],
             ];
-            if (!empty($call['thoughtSignature'])) {
-                $part['thoughtSignature'] = (string)$call['thoughtSignature'];
+            if (! empty($call['thoughtSignature'])) {
+                $part['thoughtSignature'] = (string) $call['thoughtSignature'];
             }
             $out[] = $part;
         }
+
         return $out;
     }
 
@@ -1292,17 +1313,18 @@ PROMPT;
 
         $rawBody = trim($rawBody);
         if ($rawBody === '') {
-            return 'HTTP ' . $response->status();
+            return 'HTTP '.$response->status();
         }
 
         $decoded = json_decode($rawBody, true);
         if (is_array($decoded)) {
-            $msg = trim((string)($decoded['error']['message'] ?? ''));
+            $msg = trim((string) ($decoded['error']['message'] ?? ''));
             if ($msg === '') {
-                $msg = trim((string)($decoded['message'] ?? ''));
+                $msg = trim((string) ($decoded['message'] ?? ''));
             }
             if ($msg !== '') {
-                $statusTag = (string)($decoded['error']['status'] ?? $decoded['error']['code'] ?? '');
+                $statusTag = (string) ($decoded['error']['status'] ?? $decoded['error']['code'] ?? '');
+
                 return $statusTag !== '' && $statusTag !== '0'
                     ? "[{$statusTag}] {$msg}"
                     : $msg;
@@ -1320,7 +1342,7 @@ PROMPT;
     {
         $lastErrorMsg = $this->errorMessageFrom($response);
 
-        Log::warning("Gemini stream key #" . ($index + 1) . "/{$totalKeys} failed ({$response->status()}) on {$useModel}: {$lastErrorMsg}");
+        Log::warning('Gemini stream key #'.($index + 1)."/{$totalKeys} failed ({$response->status()}) on {$useModel}: {$lastErrorMsg}");
         $this->logKeyRotation($index, $totalKeys);
 
         return $lastErrorMsg;
@@ -1331,13 +1353,13 @@ PROMPT;
      */
     protected function accumulateUsage(?array $usage): void
     {
-        if (!is_array($usage)) {
+        if (! is_array($usage)) {
             return;
         }
 
-        $this->usageTotals['prompt_tokens'] += (int)($usage['promptTokenCount'] ?? $usage['prompt_tokens'] ?? 0);
-        $this->usageTotals['completion_tokens'] += (int)($usage['candidatesTokenCount'] ?? $usage['candidates_tokens'] ?? $usage['completion_tokens'] ?? 0);
-        $this->usageTotals['total_tokens'] += (int)($usage['totalTokenCount'] ?? $usage['total_tokens'] ?? 0);
+        $this->usageTotals['prompt_tokens'] += (int) ($usage['promptTokenCount'] ?? $usage['prompt_tokens'] ?? 0);
+        $this->usageTotals['completion_tokens'] += (int) ($usage['candidatesTokenCount'] ?? $usage['candidates_tokens'] ?? $usage['completion_tokens'] ?? 0);
+        $this->usageTotals['total_tokens'] += (int) ($usage['totalTokenCount'] ?? $usage['total_tokens'] ?? 0);
     }
 
     /**
@@ -1349,8 +1371,8 @@ PROMPT;
         $sources = [];
         foreach (($meta['groundingChunks'] ?? []) as $chunk) {
             $web = is_array($chunk) ? ($chunk['web'] ?? []) : [];
-            $title = isset($web['title']) ? (string)$web['title'] : '';
-            $uri = isset($web['uri']) ? (string)$web['uri'] : '';
+            $title = isset($web['title']) ? (string) $web['title'] : '';
+            $uri = isset($web['uri']) ? (string) $web['uri'] : '';
             if ($title === '' && $uri === '') {
                 continue;
             }
@@ -1369,7 +1391,7 @@ PROMPT;
         $out = [];
         foreach (['action', 'title', 'summary', 'target'] as $key) {
             if (isset($args[$key]) && $args[$key] !== '') {
-                $out[$key] = is_scalar($args[$key]) ? $args[$key] : (string)$args[$key];
+                $out[$key] = is_scalar($args[$key]) ? $args[$key] : (string) $args[$key];
             }
         }
         if (isset($args['changes']) && is_array($args['changes'])) {
@@ -1380,7 +1402,7 @@ PROMPT;
         }
         $out['payload'] = (is_array($args['payload'] ?? null) && $args['payload'] !== [])
             ? $args['payload']
-            : new \stdClass();
+            : new \stdClass;
 
         return json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?: '';
     }
@@ -1409,11 +1431,11 @@ PROMPT;
      * tool-style call that needs a plain JSON/text answer instead of chat).
      * Reuses the same model + API-key failover as chat().
      *
-     * @return string|null  Full text reply, or null on failure.
+     * @return string|null Full text reply, or null on failure.
      */
     public function generate(string $systemPrompt, string $userPrompt, int $maxTokens = 1600, float $temperature = 0.2): ?string
     {
-        if (!$this->isConfigured()) {
+        if (! $this->isConfigured()) {
             return null;
         }
 
@@ -1438,12 +1460,13 @@ PROMPT;
                 $response = Http::timeout(45)->connectTimeout(15)->post($url, $payload);
 
                 if ($response->successful()) {
-                    $text = trim((string)$response->json('candidates.0.content.parts.0.text', ''));
+                    $text = trim((string) $response->json('candidates.0.content.parts.0.text', ''));
+
                     return $text === '' ? null : $text;
                 }
-                Log::warning("Gemini generate key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                Log::warning('Gemini generate key #'.($i + 1)."/{$totalKeys} HTTP ".$response->status().': '.($response->json('error.message') ?? $response->body()));
             } catch (\Exception $e) {
-                Log::warning("Gemini generate key #" . ($i + 1) . "/{$totalKeys} threw: " . $e->getMessage());
+                Log::warning('Gemini generate key #'.($i + 1)."/{$totalKeys} threw: ".$e->getMessage());
             }
 
             $this->logKeyRotation($i, $totalKeys);
@@ -1462,24 +1485,24 @@ PROMPT;
      */
     public function summarizeConversation(array $messages, ?string $priorSummary, ?callable $onDone = null): ?string
     {
-        if (!$this->isConfigured()) {
+        if (! $this->isConfigured()) {
             return null;
         }
 
         $turns = [];
         foreach ($messages as $m) {
             $role = ($m['role'] ?? 'user') === 'user' ? 'User' : 'Assistant';
-            $content = trim((string)($m['content'] ?? ''));
+            $content = trim((string) ($m['content'] ?? ''));
             if ($content === '') {
                 continue;
             }
-            $turns[] = "{$role}: " . mb_strimwidth($content, 0, 900, '…');
+            $turns[] = "{$role}: ".mb_strimwidth($content, 0, 900, '…');
         }
         if ($turns === []) {
             return $priorSummary;
         }
 
-        $system = <<<SYSTEM
+        $system = <<<'SYSTEM'
 You maintain a rolling memory summary of a support conversation for the Daily Phone
 store assistant. Keep facts that will matter later: pending asks, agreed prices,
 customer details, store issues, decisions, and anything the user explicitly asked
@@ -1491,9 +1514,9 @@ never invent facts that were not present.
 Prior summary (keep everything still relevant):
 SYSTEM;
 
-        $user = ($priorSummary !== null && trim($priorSummary) !== '' ? trim($priorSummary) . "\n\n" : '')
-            . "New turns to fold in:\n" . implode("\n", $turns)
-            . "\n\nProduce the updated summary now.";
+        $user = ($priorSummary !== null && trim($priorSummary) !== '' ? trim($priorSummary)."\n\n" : '')
+            ."New turns to fold in:\n".implode("\n", $turns)
+            ."\n\nProduce the updated summary now.";
 
         try {
             $summary = $this->generate($system, $user, 1200, 0.3);
@@ -1506,7 +1529,7 @@ SYSTEM;
 
             return trim($summary);
         } catch (\Throwable $e) {
-            Log::warning('Conversation summarization failed: ' . $e->getMessage());
+            Log::warning('Conversation summarization failed: '.$e->getMessage());
 
             return null;
         }
@@ -1541,23 +1564,23 @@ SYSTEM;
         if ($modelParts === null) {
             $modelParts = [];
         }
-        $runId = date('Ymd_His') . '_' . uniqid();
+        $runId = date('Ymd_His').'_'.uniqid();
         $imgIndex = 0;
         // Gemini 3 may stream a thought_signature on its own part (empty text)
         // just before the functionCall part that must carry it on the next turn.
         $pendingSignature = '';
 
         $emitJson = function (array $json) use (&$out, &$pending, &$inMemo, $onChunk, &$meta, &$raw, &$images, &$calls, &$usage, &$grounding, &$imgIndex, &$pendingSignature, &$modelParts, $runId): void {
-            if (($meta['finishReason'] ?? '') === '' && !empty($json['candidates'][0]['finishReason'])) {
+            if (($meta['finishReason'] ?? '') === '' && ! empty($json['candidates'][0]['finishReason'])) {
                 $meta['finishReason'] = $json['candidates'][0]['finishReason'];
             }
-            if (($meta['blockReason'] ?? '') === '' && !empty($json['promptFeedback']['blockReason'])) {
+            if (($meta['blockReason'] ?? '') === '' && ! empty($json['promptFeedback']['blockReason'])) {
                 $meta['blockReason'] = $json['promptFeedback']['blockReason'];
             }
-            if (!is_array($usage) && !empty($json['usageMetadata'])) {
+            if (! is_array($usage) && ! empty($json['usageMetadata'])) {
                 $usage = $json['usageMetadata'];
             }
-            if (!is_array($grounding) && !empty($json['groundingMetadata'])) {
+            if (! is_array($grounding) && ! empty($json['groundingMetadata'])) {
                 $grounding = $json['groundingMetadata'];
             }
             $delta = '';
@@ -1566,29 +1589,29 @@ SYSTEM;
                 // next request so tool context circulation (toolCall/toolResponse
                 // for server-side Google Search) and thought signatures survive.
                 $modelParts[] = $part;
-                $partSignature = isset($part['thoughtSignature']) ? (string)$part['thoughtSignature'] : '';
-                if (!empty($part['inlineData']) && is_array($part['inlineData'])) {
+                $partSignature = isset($part['thoughtSignature']) ? (string) $part['thoughtSignature'] : '';
+                if (! empty($part['inlineData']) && is_array($part['inlineData'])) {
                     $m = $this->persistInlineImage($part['inlineData'], $runId, $imgIndex++);
                     if ($m) {
                         $images[] = $m;
                     }
                 }
-                if (!empty($part['functionCall']) && is_array($part['functionCall'])) {
+                if (! empty($part['functionCall']) && is_array($part['functionCall'])) {
                     // Gemini 3 requires the thought_signature on the replayed
                     // functionCall part; capture it (from this part or the one
                     // streamed just before it) so the tool loop can echo it back.
                     $sig = $partSignature !== '' ? $partSignature : $pendingSignature;
                     $pendingSignature = '';
                     $calls[] = [
-                        'name' => (string)($part['functionCall']['name'] ?? ''),
-                        'args' => (array)($part['functionCall']['args'] ?? []),
+                        'name' => (string) ($part['functionCall']['name'] ?? ''),
+                        'args' => (array) ($part['functionCall']['args'] ?? []),
                         'thoughtSignature' => $sig !== '' ? $sig : null,
                         'part' => $part,
                     ];
                 } elseif ($partSignature !== '') {
                     $pendingSignature = $partSignature;
                 }
-                if (!empty($part['text']) && $delta === '') {
+                if (! empty($part['text']) && $delta === '') {
                     $delta = $part['text'];
                 }
             }
@@ -1627,7 +1650,7 @@ SYSTEM;
         $inStr = false;
         $esc = false;
 
-        while (!$body->eof()) {
+        while (! $body->eof()) {
             $buffer .= $body->read(8192);
             $len = strlen($buffer);
 
@@ -1658,6 +1681,7 @@ SYSTEM;
                         $inStr = false;
                     }
                     $i++;
+
                     continue;
                 }
 
@@ -1685,6 +1709,7 @@ SYSTEM;
                         $start = -1;
                         $scan = 0;
                         $i = 0;
+
                         continue;
                     }
                 }
@@ -1720,16 +1745,18 @@ SYSTEM;
     protected function streamVisible(string &$pending, bool &$inMemo, callable $flush): void
     {
         while ($pending !== '') {
-            if (!$inMemo) {
+            if (! $inMemo) {
                 $idx = strpos($pending, '```ai_memo');
                 if ($idx === false) {
                     $flush($pending);
                     $pending = '';
+
                     return;
                 }
                 $flush(substr($pending, 0, $idx));
                 $pending = substr($pending, $idx);
                 $inMemo = true;
+
                 continue;
             }
 
@@ -1739,6 +1766,7 @@ SYSTEM;
             $close = strpos($pending, '```', min(4, strlen($pending)));
             if ($close === false) {
                 $pending = '';
+
                 return;
             }
             $pending = substr($pending, $close + 3);
@@ -1751,7 +1779,7 @@ SYSTEM;
      * become Gemini inline_data (base64) parts so the model can see them, while
      * the text of every other file is folded into a labelled attachment block.
      */
-    protected function attachParts(array $parts, \Illuminate\Support\Collection $attachments): array
+    protected function attachParts(array $parts, Collection $attachments): array
     {
         $inline = 0;
         $maxInline = 3;
@@ -1760,7 +1788,7 @@ SYSTEM;
         foreach ($attachments as $att) {
             $name = $att->original_name ?? 'attachment';
             $isVisual = in_array($att->kind ?? '', ['image', 'pdf'], true);
-            $text = trim((string)($att->extracted_text ?? ''));
+            $text = trim((string) ($att->extracted_text ?? ''));
 
             // Server-extracted text (CSV/XLSX/DOCX/PDF/ZIP/...) is cheaper and
             // faster for the model than re-parsing blobs, so prefer it. Images
@@ -1768,7 +1796,7 @@ SYSTEM;
             // no text could be extracted.
             $sendInline = false;
             if ($isVisual && $inline < $maxInline) {
-                $fullPath = storage_path('app/private/' . $att->storage_path);
+                $fullPath = storage_path('app/private/'.$att->storage_path);
                 if (is_file($fullPath) && filesize($fullPath) > 0) {
                     $mime = $att->mime_type ?: 'image/jpeg';
                     $isImage = str_starts_with($mime, 'image/');
@@ -1784,14 +1812,15 @@ SYSTEM;
                             ];
                             $inline++;
                             $body .= "\n— {$name} (dilampirkan sebagai {$mime})\n";
+
                             continue;
                         }
                     }
                 }
             }
 
-            $body .= "\n--- FILE: {$name} (" . ($att->mime_type ?: 'unknown') . ' / ' . number_format((int)$att->size_bytes) . " bytes) ---\n";
-            $body .= $text === '' ? '(tidak ada teks yang bisa diekstrak dari file ini)' . "\n" : mb_substr($text, 0, 60000) . "\n";
+            $body .= "\n--- FILE: {$name} (".($att->mime_type ?: 'unknown').' / '.number_format((int) $att->size_bytes)." bytes) ---\n";
+            $body .= $text === '' ? '(tidak ada teks yang bisa diekstrak dari file ini)'."\n" : mb_substr($text, 0, 60000)."\n";
         }
 
         $parts[0]['text'] .= mb_substr($body, 0, 220000);
@@ -1830,22 +1859,22 @@ SYSTEM;
             $i
         ))->values()->all();
 
-        $idSet = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
+        $idSet = $notes->map(fn ($n) => (int) $n->id)->filter()->flip();
 
         $edges = [];
         if ($idSet->isNotEmpty()) {
             $seen = [];
-            $links = \App\Models\AiTrainingNoteLink::whereIn('note_id', $idSet->keys())
+            $links = AiTrainingNoteLink::whereIn('note_id', $idSet->keys())
                 ->whereIn('linked_note_id', $idSet->keys())
                 ->get(['note_id', 'linked_note_id']);
 
             foreach ($links as $link) {
-                $source = (int)$link->note_id;
-                $target = (int)$link->linked_note_id;
+                $source = (int) $link->note_id;
+                $target = (int) $link->linked_note_id;
                 if ($source === $target) {
                     continue;
                 }
-                $key = min($source, $target) . ':' . max($source, $target);
+                $key = min($source, $target).':'.max($source, $target);
                 if (isset($seen[$key])) {
                     continue;
                 }
@@ -1862,19 +1891,20 @@ SYSTEM;
      * The stage tag says WHY it reached the model (rule / semantic /
      * contextual); seed_sources carries the situational reason verbatim.
      */
-    protected function neuronPayload(\App\Models\AiTrainingNote $n, string $stage, int $order): array
+    protected function neuronPayload(AiTrainingNote $n, string $stage, int $order): array
     {
         $node = [
-            'id' => (int)$n->id,
+            'id' => (int) $n->id,
             'title' => $this->neuronLabel($n),
             'kind' => $n->kind,
             'stage' => $stage,
             'order' => $order,
         ];
-        $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
+        $sources = array_values(array_unique(array_filter((array) ($n->seed_sources ?? []))));
         if ($sources !== []) {
             $node['sources'] = $sources;
         }
+
         return $node;
     }
 
@@ -1888,8 +1918,8 @@ SYSTEM;
     {
         $turns = collect($messages)
             ->pluck('content')
-            ->filter(fn($t) => trim((string)$t) !== '')
-            ->map(fn($t) => mb_substr(trim((string)$t), 0, 600))
+            ->filter(fn ($t) => trim((string) $t) !== '')
+            ->map(fn ($t) => mb_substr(trim((string) $t), 0, 600))
             ->slice(-8)
             ->values();
 
@@ -1912,16 +1942,16 @@ SYSTEM;
      * answers, 'contextual' as soon as the situational seeds are gathered — so
      * a live brain map lights up against the real latency of each step.
      */
-    protected function selectTrainingNotes(?string $query, ?callable $onStage = null): \Illuminate\Support\Collection
+    protected function selectTrainingNotes(?string $query, ?callable $onStage = null): Collection
     {
-        $key = trim((string)$query);
-        $cacheKey = $key . '::' . md5((string)$this->conversationContextText);
+        $key = trim((string) $query);
+        $cacheKey = $key.'::'.md5((string) $this->conversationContextText);
         if ($this->notesCache !== null && $this->notesCacheKey === $cacheKey) {
             return $this->notesCache;
         }
 
         $settings = GeneralSetting::first();
-        $topK = (int)($settings?->ai_retrieval_top_k ?? 12);
+        $topK = (int) ($settings?->ai_retrieval_top_k ?? 12);
         if ($topK < 3) {
             $topK = 12;
         }
@@ -1929,26 +1959,27 @@ SYSTEM;
         // Fire a stage event as its notes land (real completion order, not a
         // post-hoc replay). Each payload carries its own stage + order.
         $emitStage = function (string $stage, $collection) use ($onStage): void {
-            if ($onStage === null || $collection === null || $collection instanceof \Illuminate\Support\Collection && $collection->isEmpty()) {
+            if ($onStage === null || $collection === null || $collection instanceof Collection && $collection->isEmpty()) {
                 return;
             }
             $payload = $collection->values()
-                ->map(fn($n, $i) => $this->neuronPayload($n, $stage, $i))
+                ->map(fn ($n, $i) => $this->neuronPayload($n, $stage, $i))
                 ->values()
                 ->all();
             $onStage($stage, $payload);
         };
 
-        $rules = \App\Models\AiTrainingNote::where('is_active', true)
+        $rules = AiTrainingNote::where('is_active', true)
+            ->where('is_stale', false)
             ->where('kind', 'rule')
             ->orderBy('updated_at', 'desc')
             ->get()
-            ->each(fn($n) => $n->setAttribute('retrieval_stage', 'rule'));
+            ->each(fn ($n) => $n->setAttribute('retrieval_stage', 'rule'));
 
         // Stage 0 — rules: always active, and the fastest signal to observe.
         $emitStage('rule', $rules);
 
-        $embedder = app(\App\Services\AiEmbeddingService::class);
+        $embedder = app(AiEmbeddingService::class);
         $search = $embedder->search($key, $topK, null);
 
         $scored = $search['notes'] ?? collect();
@@ -1967,7 +1998,7 @@ SYSTEM;
         // The order in which seeds reached the model is a real signal for the
         // live brain map: semantic matches light first, contextual anchors
         // second, rules are always on. Each note carries its retrieval_stage.
-        $selected->each(fn($n) => $n->setAttribute('retrieval_stage', 'semantic'));
+        $selected->each(fn ($n) => $n->setAttribute('retrieval_stage', 'semantic'));
 
         // Stage 1 — semantic: fires right after the embedding index answers
         // (the slowest step in retrieval), so the map waits on real latency.
@@ -1979,7 +2010,7 @@ SYSTEM;
         // to (time / place / person) plus whatever was just discussed or used
         // moments ago. Bounded so the prompt stays tight.
         $contextual = $this->contextSeedNotes($key);
-        $selectedIds = $selected->map(fn($n) => (int)$n->id)->filter()->flip();
+        $selectedIds = $selected->map(fn ($n) => (int) $n->id)->filter()->flip();
         $addedContext = 0;
         $addedContextual = [];
         foreach ($contextual as $note) {
@@ -2003,7 +2034,7 @@ SYSTEM;
         // Remember the confidence signal for the abstention floor + telemetry.
         $this->retrievalState = [
             'query' => $key,
-            'best_score' => is_numeric($best) ? (float)$best : null,
+            'best_score' => is_numeric($best) ? (float) $best : null,
             'method' => $method,
             'top_k' => $topK,
             'notes_count' => $selected->count(),
@@ -2033,18 +2064,19 @@ SYSTEM;
      * Each returned note carries a seed_sources attribute so the UI and prompt
      * can show WHY it resurfaced.
      *
-     * @return \Illuminate\Support\Collection<int, \App\Models\AiTrainingNote>
+     * @return Collection<int, AiTrainingNote>
      */
-    protected function contextSeedNotes(string $query): \Illuminate\Support\Collection
+    protected function contextSeedNotes(string $query): Collection
     {
-        $graph = app(\App\Services\AiMemoryGraphService::class);
-        $contextText = $query . "\n" . (string)$this->conversationContextText;
+        $graph = app(AiMemoryGraphService::class);
+        $contextText = $query."\n".(string) $this->conversationContextText;
         $lower = mb_strtolower($contextText);
 
         $seeds = [];
         $addSeed = function (int $id, string $reason) use (&$seeds) {
             if (isset($seeds[$id])) {
                 $seeds[$id]['reasons'][] = $reason;
+
                 return;
             }
             $seeds[$id] = ['reasons' => [$reason]];
@@ -2054,17 +2086,19 @@ SYSTEM;
         foreach ($this->resolveEpisodeDates($lower) as $day) {
             $from = $day->copy()->startOfDay()->subDay();
             $to = $day->copy()->endOfDay()->addDay();
-            \App\Models\AiTrainingNote::where('is_active', true)
+            AiTrainingNote::where('is_active', true)
+                ->where('is_stale', false)
                 ->whereNotNull('occurred_at')
                 ->whereBetween('occurred_at', [$from, $to])
                 ->get(['id', 'occurred_at', 'occurred_place', 'involved_with'])
                 ->each(function ($n) use ($addSeed, $day) {
-                    $addSeed((int)$n->id, 'waktu ' . $day->format('Y-m-d'));
+                    $addSeed((int) $n->id, 'waktu '.$day->format('Y-m-d'));
                 });
         }
 
         // ── 2 + 3. Place & person recall ──
-        $templated = \App\Models\AiTrainingNote::where('is_active', true)
+        $templated = AiTrainingNote::where('is_active', true)
+            ->where('is_stale', false)
             ->where(function ($q) {
                 $q->whereNotNull('occurred_place')->where('occurred_place', '!=', '')
                     ->orWhereNotNull('involved_with')->where('involved_with', '!=', '');
@@ -2077,24 +2111,25 @@ SYSTEM;
             if (mb_strlen($word) < 3 || preg_match('/^\d+$/', $word)) {
                 return false;
             }
-            return preg_match('/(^|[^a-z0-9])' . preg_quote($word, '/') . '([^a-z0-9]|$)/u', $lower);
+
+            return preg_match('/(^|[^a-z0-9])'.preg_quote($word, '/').'([^a-z0-9]|$)/u', $lower);
         };
 
         foreach ($templated as $note) {
-            $place = trim((string)$note->occurred_place);
+            $place = trim((string) $note->occurred_place);
             if ($place !== '') {
                 foreach (preg_split('/[\s,\/\-]+/', $place) ?: [] as $word) {
                     if ($wordInText($word)) {
-                        $addSeed((int)$note->id, 'di ' . mb_strimwidth($place, 0, 40, '…'));
+                        $addSeed((int) $note->id, 'di '.mb_strimwidth($place, 0, 40, '…'));
                         break;
                     }
                 }
             }
-            $person = trim((string)$note->involved_with);
+            $person = trim((string) $note->involved_with);
             if ($person !== '') {
                 foreach (preg_split('/[\s,\/\-]+/', $person) ?: [] as $word) {
                     if ($wordInText($word)) {
-                        $addSeed((int)$note->id, 'bersama ' . mb_strimwidth($person, 0, 40, '…'));
+                        $addSeed((int) $note->id, 'bersama '.mb_strimwidth($person, 0, 40, '…'));
                         break;
                     }
                 }
@@ -2102,17 +2137,18 @@ SYSTEM;
         }
 
         // ── 4. Momentum: just-used + just-discussed ──
-        \App\Models\AiTrainingNote::where('is_active', true)
+        AiTrainingNote::where('is_active', true)
+            ->where('is_stale', false)
             ->whereNotNull('last_used_at')
             ->where('last_used_at', '>=', now()->subHours(self::MOMENTUM_WINDOW_HOURS))
             ->orderByDesc('last_used_at')
             ->limit(6)
             ->get(['id'])
-            ->each(fn($n) => $addSeed((int)$n->id, 'momentum percakapan'));
+            ->each(fn ($n) => $addSeed((int) $n->id, 'momentum percakapan'));
 
         if ($this->conversationContextText !== null) {
             foreach ($graph->candidateNoteIds($graph->tokenize($this->conversationContextText), 120) as $id) {
-                $addSeed((int)$id, 'topik yang sedang dibahas');
+                $addSeed((int) $id, 'topik yang sedang dibahas');
             }
         }
 
@@ -2120,8 +2156,9 @@ SYSTEM;
             return collect();
         }
 
-        $notes = \App\Models\AiTrainingNote::whereIn('id', array_keys($seeds))
+        $notes = AiTrainingNote::whereIn('id', array_keys($seeds))
             ->where('is_active', true)
+            ->where('is_stale', false)
             ->get()
             ->keyBy('id');
 
@@ -2143,7 +2180,7 @@ SYSTEM;
      * actual ≈dates a human would mean, so episodic recall can seed a memory
      * from context instead of keywords.
      *
-     * @return \Illuminate\Support\Carbon[]  Unique calendar days (with time: 12:00).
+     * @return Carbon[] Unique calendar days (with time: 12:00).
      */
     protected function resolveEpisodeDates(string $lower): array
     {
@@ -2154,17 +2191,17 @@ SYSTEM;
         $monthNames = 'januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember';
         $monthList = explode('|', $monthNames);
         if (preg_match('/(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?/u', $lower, $m)) {
-            $day = \Illuminate\Support\Carbon::createFromDate(
-                !empty($m[3]) ? (int)$m[3] : (int)$today->format('Y'),
-                max(1, min(12, (int)$m[2])),
-                max(1, min(31, (int)$m[1])),
+            $day = Carbon::createFromDate(
+                ! empty($m[3]) ? (int) $m[3] : (int) $today->format('Y'),
+                max(1, min(12, (int) $m[2])),
+                max(1, min(31, (int) $m[1])),
             );
             $days[$day->format('Y-m-d')] = $day->copy()->startOfDay()->addHours(12);
         }
-        if (preg_match('/(\d{1,2})\s*(?:hari\s*)?(?:bulan\s*)?(' . $monthNames . ')\s*(?:tahun\s*)?(\d{2,4})?/u', $lower, $m)) {
+        if (preg_match('/(\d{1,2})\s*(?:hari\s*)?(?:bulan\s*)?('.$monthNames.')\s*(?:tahun\s*)?(\d{2,4})?/u', $lower, $m)) {
             $monthNo = array_search($m[2], $monthList) + 1;
-            $year = !empty($m[3]) ? (int)$m[3] : (int)$today->format('Y');
-            $day = \Illuminate\Support\Carbon::createFromDate($year, $monthNo, max(1, min(31, (int)$m[1])));
+            $year = ! empty($m[3]) ? (int) $m[3] : (int) $today->format('Y');
+            $day = Carbon::createFromDate($year, $monthNo, max(1, min(31, (int) $m[1])));
             $days[$day->format('Y-m-d')] = $day->copy()->startOfDay()->addHours(12);
         }
 
@@ -2204,7 +2241,7 @@ SYSTEM;
         // "tiga/dua/empat... hari (yang) lalu" (worded counts).
         $wordNo = ['satu' => 1, 'dua' => 2, 'tiga' => 3, 'empat' => 4, 'lima' => 5,
             'enam' => 6, 'tujuh' => 7, 'delapan' => 8, 'sembilan' => 9, 'sepuluh' => 10];
-        if (preg_match('/\b(' . implode('|', array_keys($wordNo)) . ')\s+hari\s+(?:yang\s+)?(?:(?:yang\s+)?lalu|lagi)/u', $lower, $m)) {
+        if (preg_match('/\b('.implode('|', array_keys($wordNo)).')\s+hari\s+(?:yang\s+)?(?:(?:yang\s+)?lalu|lagi)/u', $lower, $m)) {
             $off = $wordNo[$m[1]] ?? 0;
             $sign = str_contains($m[0], 'lalu') ? 1 : -1;
             $d = $today->copy()->subDays($off * $sign);
@@ -2213,13 +2250,13 @@ SYSTEM;
 
         // Numeric offsets: "N hari/minggu/bulan/tahun (yang) lalu" and "lagi".
         foreach (['hari' => 1, 'minggu' => 7, 'bulan' => 30, 'tahun' => 365] as $unit => $mult) {
-            if (preg_match('/(\d{1,3})\s*' . $unit . '\s+(?:yang\s+)?lalu/u', $lower, $m)) {
-                $off = (int)$m[1] * $mult;
+            if (preg_match('/(\d{1,3})\s*'.$unit.'\s+(?:yang\s+)?lalu/u', $lower, $m)) {
+                $off = (int) $m[1] * $mult;
                 $d = $today->copy()->subDays($off);
                 $days[$d->format('Y-m-d')] = $d->copy()->addHours(12);
             }
-            if (preg_match('/(\d{1,3})\s*' . $unit . '\s+(?:yang\s+)?(?:lagi|ke depan)/u', $lower, $m)) {
-                $off = (int)$m[1] * $mult;
+            if (preg_match('/(\d{1,3})\s*'.$unit.'\s+(?:yang\s+)?(?:lagi|ke depan)/u', $lower, $m)) {
+                $off = (int) $m[1] * $mult;
                 $d = $today->copy()->addDays($off);
                 $days[$d->format('Y-m-d')] = $d->copy()->addHours(12);
             }
@@ -2251,14 +2288,15 @@ SYSTEM;
      * Legacy literal-token candidate selection, used only as the warm-up
      * fallback before the embedding index has been backfilled.
      */
-    protected function tokenFallbackNotes(?string $query): \Illuminate\Support\Collection
+    protected function tokenFallbackNotes(?string $query): Collection
     {
-        $key = trim((string)$query);
-        $graph = app(\App\Services\AiMemoryGraphService::class);
+        $key = trim((string) $query);
+        $graph = app(AiMemoryGraphService::class);
         $tokens = $graph->tokenize($key);
 
         if ($tokens === []) {
-            return \App\Models\AiTrainingNote::where('is_active', true)
+            return AiTrainingNote::where('is_active', true)
+                ->where('is_stale', false)
                 ->where('kind', '!=', 'rule')
                 ->orderBy('updated_at', 'desc')
                 ->take(10)
@@ -2282,7 +2320,8 @@ SYSTEM;
             return $matched;
         }
 
-        return \App\Models\AiTrainingNote::where('is_active', true)
+        return AiTrainingNote::where('is_active', true)
+            ->where('is_stale', false)
             ->where('kind', '!=', 'rule')
             ->orderBy('updated_at', 'desc')
             ->take(6)
@@ -2292,9 +2331,9 @@ SYSTEM;
 
     protected function scoreAgainst($note, array $tokens): int
     {
-        $title = strtolower((string)$note->title);
-        $content = strtolower((string)$note->content);
-        $related = strtolower(implode(' ', (array)($note->related_keywords ?? [])));
+        $title = strtolower((string) $note->title);
+        $content = strtolower((string) $note->content);
+        $related = strtolower(implode(' ', (array) ($note->related_keywords ?? [])));
 
         $score = 0;
         foreach ($tokens as $token) {
@@ -2308,6 +2347,7 @@ SYSTEM;
                 $score += 1;
             }
         }
+
         return $score;
     }
 
@@ -2349,23 +2389,23 @@ SYSTEM;
         $updated = $node->updated_at ?? null;
         if ($updated) {
             $ageDays = max(0.0, (now()->timestamp - $updated->timestamp) / 86400.0);
-            $hour = (int)$updated->format('G');
+            $hour = (int) $updated->format('G');
         }
 
         $recency = max(self::RECENCY_FLOOR, pow(0.5, $ageDays / self::RECENCY_HALF_LIFE_DAYS));
 
-        $emotion = (string)($node->kind ?? '') === 'emotions' ? self::EMOTION_BOOST : 1.0;
+        $emotion = (string) ($node->kind ?? '') === 'emotions' ? self::EMOTION_BOOST : 1.0;
 
-        if ($affectWords !== [] && (string)($node->kind ?? '') === 'emotions') {
+        if ($affectWords !== [] && (string) ($node->kind ?? '') === 'emotions') {
             $emotion *= self::EMOTION_RESONANCE_BOOST;
         }
 
-        $usage = 1.0 + self::USAGE_BOOST_PER_LOG * log(max(1, (int)($node->used_count ?? 0)) + 1);
+        $usage = 1.0 + self::USAGE_BOOST_PER_LOG * log(max(1, (int) ($node->used_count ?? 0)) + 1);
         $usage = min($usage, self::USAGE_BOOST_CAP);
 
         $situation = 1.0;
         if ($hour >= 0) {
-            $delta = abs((int)now()->format('G') - $hour);
+            $delta = abs((int) now()->format('G') - $hour);
             $delta = min($delta, 24 - $delta);
             if ($delta <= self::SITUATION_PROXIMITY_HOURS) {
                 $situation = self::SITUATION_BOOST;
@@ -2379,11 +2419,12 @@ SYSTEM;
 
     protected function neuronLabel($note): string
     {
-        $title = trim((string)($note->title ?? ''));
+        $title = trim((string) ($note->title ?? ''));
         if ($title !== '') {
             return mb_strimwidth($title, 0, 60, '…');
         }
-        $compact = preg_replace('/\s+/', ' ', trim((string)$note->content)) ?: '';
+        $compact = preg_replace('/\s+/', ' ', trim((string) $note->content)) ?: '';
+
         return mb_strimwidth($compact, 0, 56, '…');
     }
 
@@ -2406,16 +2447,17 @@ SYSTEM;
             'warning' => 'WARNING',
         ];
 
-        return '[' . ($map[$kind] ?? mb_strtoupper((string)$kind)) . ']';
+        return '['.($map[$kind] ?? mb_strtoupper((string) $kind)).']';
     }
 
     protected function lastUserText(array $messages): string
     {
         foreach (array_reverse($messages) as $msg) {
             if (($msg['role'] ?? '') === 'user') {
-                return trim((string)($msg['content'] ?? ''));
+                return trim((string) ($msg['content'] ?? ''));
             }
         }
+
         return '';
     }
 
@@ -2435,62 +2477,62 @@ SYSTEM;
         $notes = $this->selectTrainingNotes($query);
 
         if ($notes->isEmpty()) {
-            return "- (empty - no training memories yet)";
+            return '- (empty - no training memories yet)';
         }
 
-        $linkRows = \App\Models\AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'relation', 'label', 'weight', 'reason']);
+        $linkRows = AiTrainingNoteLink::get(['note_id', 'linked_note_id', 'relation', 'label', 'weight', 'reason']);
 
         $synapses = [];
         foreach ($linkRows as $l) {
             $rel = $l->relation ?: ($l->label ?: 'related');
             $synapses[$l->note_id][] = [
-                'id' => (int)$l->linked_note_id,
-                'rel' => (string)$rel,
-                'w' => $l->weight !== null ? (float)$l->weight : 0.0,
+                'id' => (int) $l->linked_note_id,
+                'rel' => (string) $rel,
+                'w' => $l->weight !== null ? (float) $l->weight : 0.0,
             ];
         }
 
-        $selectedIds = $notes->map(fn ($n) => (int)$n->id)->filter()->flip();
+        $selectedIds = $notes->map(fn ($n) => (int) $n->id)->filter()->flip();
 
         $main = $notes->map(function ($n) use ($synapses) {
             $tag = self::kindTag($n->kind);
-            $content = mb_strimwidth((string)$n->content, 0, 170, '…');
+            $content = mb_strimwidth((string) $n->content, 0, 170, '…');
             $author = $n->author_name ?? 'System';
             $line = "- {$tag} node #{$n->id}: {$content} (oleh: {$author})";
 
             // Episode frame: the when/where/with-whom anchors of an episodic
             // memory, so the model sees it was recalled by context, not text.
             $episode = [];
-            if (!empty($n->occurred_at)) {
+            if (! empty($n->occurred_at)) {
                 $episode[] = $n->occurred_at->format('d M Y');
             }
-            if (trim((string)($n->occurred_place ?? '')) !== '') {
-                $episode[] = trim((string)$n->occurred_place);
+            if (trim((string) ($n->occurred_place ?? '')) !== '') {
+                $episode[] = trim((string) $n->occurred_place);
             }
-            if (trim((string)($n->involved_with ?? '')) !== '') {
-                $episode[] = 'bersama ' . trim((string)$n->involved_with);
+            if (trim((string) ($n->involved_with ?? '')) !== '') {
+                $episode[] = 'bersama '.trim((string) $n->involved_with);
             }
             if ($episode !== []) {
-                $line .= " [episode: " . implode(' · ', $episode) . ']';
+                $line .= ' [episode: '.implode(' · ', $episode).']';
             }
 
             // Why this node resurfaced (situational / momentum seed) — makes
             // the recall legible: "muncul dari: waktu … / topik yang dibahas".
-            $sources = array_values(array_unique(array_filter((array)($n->seed_sources ?? []))));
+            $sources = array_values(array_unique(array_filter((array) ($n->seed_sources ?? []))));
             if ($sources !== []) {
-                $line .= ' (muncul: ' . implode(', ', $sources) . ')';
+                $line .= ' (muncul: '.implode(', ', $sources).')';
             }
 
             $links = array_values(array_filter(
                 $synapses[$n->id] ?? [],
-                fn($l) => (float)($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT
+                fn ($l) => (float) ($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT
             ));
-            usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
+            usort($links, fn ($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
             $links = array_slice($links, 0, 4);
 
             if ($links !== []) {
-                $parts = array_map(fn($l) => "#{$l['id']}:{$l['rel']}", $links);
-                $line .= " ⟶ terhubung: " . implode(', ', $parts);
+                $parts = array_map(fn ($l) => "#{$l['id']}:{$l['rel']}", $links);
+                $line .= ' ⟶ terhubung: '.implode(', ', $parts);
             }
 
             return $line;
@@ -2505,26 +2547,27 @@ SYSTEM;
         $strongEdges = function (array $links): array {
             $links = array_values(array_filter(
                 $links,
-                fn($l) => (float)($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT
+                fn ($l) => (float) ($l['w'] ?? 0) >= self::MIN_ACTIVATION_WEIGHT
             ));
-            usort($links, fn($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
+            usort($links, fn ($a, $b) => ($b['w'] ?? 0) <=> ($a['w'] ?? 0));
+
             return $links;
         };
 
         // Mood priming signal: how emotionally charged is the message? Emotion
         // nodes resonate louder when the conversation itself is emotional.
-        $affectWords = collect($this->detectAffect((string)$query))->flatten()->values()->all();
+        $affectWords = collect($this->detectAffect((string) $query))->flatten()->values()->all();
 
         $candidates = [];
 
         // Hop 1: strongest synapses out of every selected seed neuron.
         foreach ($selectedIds->keys() as $sourceId) {
-            foreach (array_slice($strongEdges($synapses[(int)$sourceId] ?? []), 0, 3) as $l) {
-                $target = (int)$l['id'];
+            foreach (array_slice($strongEdges($synapses[(int) $sourceId] ?? []), 0, 3) as $l) {
+                $target = (int) $l['id'];
                 if ($target <= 0 || isset($selectedIds[$target])) {
                     continue;
                 }
-                $w = (float)$l['w'];
+                $w = (float) $l['w'];
                 $existing = $candidates[$target] ?? null;
                 if ($existing && $existing['weight'] >= $w) {
                     continue;
@@ -2532,8 +2575,8 @@ SYSTEM;
                 $candidates[$target] = [
                     'id' => $target,
                     'weight' => $w,
-                    'path' => [(int)$sourceId, $target],
-                    'via' => (string)$l['rel'],
+                    'path' => [(int) $sourceId, $target],
+                    'via' => (string) $l['rel'],
                 ];
             }
         }
@@ -2542,8 +2585,9 @@ SYSTEM;
             return $main->implode("\n");
         }
 
-        $hopNodes = \App\Models\AiTrainingNote::whereIn('id', array_keys($candidates))
+        $hopNodes = AiTrainingNote::whereIn('id', array_keys($candidates))
             ->where('is_active', true)
+            ->where('is_stale', false)
             ->get()
             ->keyBy('id');
 
@@ -2557,39 +2601,41 @@ SYSTEM;
         // Hop 2: only the loudest first-hop neurons fire again, and only along
         // their own strong edges — hard caps keep the dream small.
         $hopOneRanked = collect($candidates)
-            ->filter(fn($c) => $c['activation'] > 0)
+            ->filter(fn ($c) => $c['activation'] > 0)
             ->sortByDesc('activation')
             ->take(self::SECOND_HOP_SOURCES);
 
         foreach ($hopOneRanked as $c) {
             foreach (array_slice($strongEdges($synapses[$c['id']] ?? []), 0, self::SECOND_HOP_PER_SOURCE) as $l) {
-                $target = (int)$l['id'];
+                $target = (int) $l['id'];
                 if ($target <= 0 || isset($selectedIds[$target]) || isset($candidates[$target])) {
                     continue;
                 }
                 $candidates[$target] = [
                     'id' => $target,
-                    'weight' => $c['weight'] * (float)$l['w'],
+                    'weight' => $c['weight'] * (float) $l['w'],
                     'path' => array_merge($c['path'], [$target]),
-                    'via' => (string)$l['rel'],
+                    'via' => (string) $l['rel'],
                 ];
             }
         }
 
         // Load whatever was dreamt into reachable nodes, then rank by final
         // activation = synapse product × lived memory strength.
-        $expandedNodes = \App\Models\AiTrainingNote::whereIn('id', array_keys($candidates))
+        $expandedNodes = AiTrainingNote::whereIn('id', array_keys($candidates))
             ->where('is_active', true)
+            ->where('is_stale', false)
             ->get()
             ->keyBy('id');
 
         $paths = collect(array_values($candidates))->map(function ($c) use ($expandedNodes, $affectWords) {
             $node = $expandedNodes[$c['id']] ?? null;
-            if (!$node) {
+            if (! $node) {
                 return null;
             }
             $activation = $c['weight'] * $this->memoryBoost($node, $affectWords);
             $hop = count($c['path']) - 1;
+
             return [
                 'id' => $c['id'],
                 'kind' => $node->kind,
@@ -2597,7 +2643,7 @@ SYSTEM;
                 'via' => $c['via'],
                 'hop' => $hop,
                 'activation' => $activation,
-                'content' => mb_strimwidth((string)$node->content, 0, 130, '…'),
+                'content' => mb_strimwidth((string) $node->content, 0, 130, '…'),
             ];
         })->filter()
             ->sortByDesc('activation')
@@ -2607,9 +2653,10 @@ SYSTEM;
         if ($paths->isNotEmpty()) {
             $lines = $paths->map(function ($p) {
                 $tag = self::kindTag($p['kind']);
-                $via = mb_strimwidth((string)$p['via'], 0, 24, '');
+                $via = mb_strimwidth((string) $p['via'], 0, 24, '');
                 $chain = implode(' → #', $p['path']);
                 $hopNote = $p['hop'] > 1 ? ', hop 2' : '';
+
                 return "- {$tag} node #{$p['id']}: {$p['content']} (jalur: #{$chain} via {$via}{$hopNote})";
             })->implode("\n");
 
@@ -2626,17 +2673,17 @@ SYSTEM;
      */
     public function generateDashboardInsight(array $context): ?string
     {
-        if (!$this->isConfigured()) {
+        if (! $this->isConfigured()) {
             return null;
         }
 
         // Format a compact readable context snapshot for the model.
-        $fmt = fn($v) => 'Rp ' . number_format((float)$v, 0, ',', '.');
+        $fmt = fn ($v) => 'Rp '.number_format((float) $v, 0, ',', '.');
         $lines = [];
         $lines[] = "Periode: {$context['periodLabel']}";
         $lines[] = "Cakupan: {$context['scopeLabel']}";
-        $lines[] = "";
-        $lines[] = "=== Ringkasan Periode ===";
+        $lines[] = '';
+        $lines[] = '=== Ringkasan Periode ===';
         $lines[] = "- Revenue: {$fmt($context['stats']['totalRevenue'])}";
         $lines[] = "- HPP/COGS: {$fmt($context['stats']['totalHpp'])}";
         $lines[] = "- Reparasi/Garansi: {$fmt($context['stats']['totalRepairs'])}";
@@ -2647,8 +2694,8 @@ SYSTEM;
         $lines[] = "- Pending Profit (booking): {$fmt($context['stats']['pendingProfit'])}";
         $lines[] = "- Affiliator aktif: {$context['stats']['activeAffiliatorsCount']}";
 
-        $lines[] = "";
-        $lines[] = "=== Performa Hari Ini ===";
+        $lines[] = '';
+        $lines[] = '=== Performa Hari Ini ===';
         $todayLines = [];
         $gabungan = $context['todayStats']['gabungan'] ?? null;
         if ($gabungan) {
@@ -2663,23 +2710,23 @@ SYSTEM;
         }
         $lines[] = $todayLines ? implode("\n", $todayLines) : '- Belum ada transaksi hari ini.';
 
-        $lines[] = "";
-        $lines[] = "=== Model Terlaris (periode ini) ===";
-        $top = collect($context['topProducts'])->map(fn($t) => "- {$t['name']}: {$t['total_sold']} unit")->implode("\n");
+        $lines[] = '';
+        $lines[] = '=== Model Terlaris (periode ini) ===';
+        $top = collect($context['topProducts'])->map(fn ($t) => "- {$t['name']}: {$t['total_sold']} unit")->implode("\n");
         $lines[] = $top ?: '- Belum ada data.';
 
-        $lines[] = "";
-        $lines[] = "=== Metode Pembayaran ===";
-        $pays = collect($context['paymentData'])->map(fn($p) => "- {$p['method']}: {$p['count']} trx / {$fmt($p['revenue'])}")->implode("\n");
+        $lines[] = '';
+        $lines[] = '=== Metode Pembayaran ===';
+        $pays = collect($context['paymentData'])->map(fn ($p) => "- {$p['method']}: {$p['count']} trx / {$fmt($p['revenue'])}")->implode("\n");
         $lines[] = $pays ?: '- Belum ada data.';
 
-        $lines[] = "";
-        $lines[] = "=== Tren 8 Bulan Terakhir (Revenue) ===";
-        $trends = collect($context['monthlyRevenue'])->map(fn($m) => "- {$m['month']}: {$fmt($m['revenue'])}")->implode("\n");
+        $lines[] = '';
+        $lines[] = '=== Tren 8 Bulan Terakhir (Revenue) ===';
+        $trends = collect($context['monthlyRevenue'])->map(fn ($m) => "- {$m['month']}: {$fmt($m['revenue'])}")->implode("\n");
         $lines[] = $trends ?: '- Belum ada data.';
 
-        $lines[] = "";
-        $lines[] = "=== Statistik All-Time ===";
+        $lines[] = '';
+        $lines[] = '=== Statistik All-Time ===';
         $lines[] = "- Revenue: {$fmt($context['allTimeStats']['revenue'])}";
         $lines[] = "- Gross Profit: {$fmt($context['allTimeStats']['actualProfit'])}";
         $lines[] = "- Net Profit: {$fmt($context['allTimeStats']['netProfit'])}";
@@ -2716,15 +2763,15 @@ PROMPT;
 
         $payload = [
             'system_instruction' => [
-                'parts' => [['text' => 'Kamu analis bisnis retail gadget. Jawab dalam Bahasa Indonesia, berbasis data, ringkas dan profesional.']]
+                'parts' => [['text' => 'Kamu analis bisnis retail gadget. Jawab dalam Bahasa Indonesia, berbasis data, ringkas dan profesional.']],
             ],
             'contents' => [
-                ['role' => 'user', 'parts' => [['text' => $prompt]]]
+                ['role' => 'user', 'parts' => [['text' => $prompt]]],
             ],
             'generationConfig' => [
                 'temperature' => 0.4,
                 'maxOutputTokens' => 1200,
-            ]
+            ],
         ];
 
         // Same configured model; fail over across API keys only.
@@ -2739,11 +2786,12 @@ PROMPT;
 
                 if ($response->successful()) {
                     $text = trim($response->json('candidates.0.content.parts.0.text', ''));
+
                     return $text === '' ? null : $text;
                 }
-                Log::warning("Gemini dashboard insight key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                Log::warning('Gemini dashboard insight key #'.($i + 1)."/{$totalKeys} HTTP ".$response->status().': '.($response->json('error.message') ?? $response->body()));
             } catch (\Exception $e) {
-                Log::warning("Gemini dashboard insight key #" . ($i + 1) . "/{$totalKeys} threw: " . $e->getMessage());
+                Log::warning('Gemini dashboard insight key #'.($i + 1)."/{$totalKeys} threw: ".$e->getMessage());
             }
 
             $this->logKeyRotation($i, $totalKeys);
@@ -2754,7 +2802,7 @@ PROMPT;
 
     public function generateCheckoutUpsell(Stock $stock, float $price): ?string
     {
-        if (!$this->isConfigured()) {
+        if (! $this->isConfigured()) {
             return null;
         }
 
@@ -2785,15 +2833,15 @@ PROMPT;
 
         $payload = [
             'system_instruction' => [
-                'parts' => [['text' => 'Kamu asisten pemasaran toko gadget. Jawab singkat, profesional, dan dalam Bahasa Indonesia.']]
+                'parts' => [['text' => 'Kamu asisten pemasaran toko gadget. Jawab singkat, profesional, dan dalam Bahasa Indonesia.']],
             ],
             'contents' => [
-                ['role' => 'user', 'parts' => [['text' => $prompt]]]
+                ['role' => 'user', 'parts' => [['text' => $prompt]]],
             ],
             'generationConfig' => [
                 'temperature' => 0.4,
                 'maxOutputTokens' => 300,
-            ]
+            ],
         ];
 
         // Same configured model; fail over across API keys only.
@@ -2808,11 +2856,12 @@ PROMPT;
 
                 if ($response->successful()) {
                     $text = trim($response->json('candidates.0.content.parts.0.text', ''));
+
                     return $text === '' ? null : $text;
                 }
-                Log::warning("Gemini checkout upsell key #" . ($i + 1) . "/{$totalKeys} HTTP " . $response->status() . ': ' . ($response->json('error.message') ?? $response->body()));
+                Log::warning('Gemini checkout upsell key #'.($i + 1)."/{$totalKeys} HTTP ".$response->status().': '.($response->json('error.message') ?? $response->body()));
             } catch (\Exception $e) {
-                Log::warning("Gemini checkout upsell key #" . ($i + 1) . "/{$totalKeys} threw: " . $e->getMessage());
+                Log::warning('Gemini checkout upsell key #'.($i + 1)."/{$totalKeys} threw: ".$e->getMessage());
             }
 
             $this->logKeyRotation($i, $totalKeys);

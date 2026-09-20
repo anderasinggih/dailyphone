@@ -14,10 +14,12 @@ class AiTrainingNoteLink extends Model
         'relation',
         'weight',
         'reason',
+        'metadata',
     ];
 
     protected $casts = [
         'weight' => 'float',
+        'metadata' => 'array',
     ];
 
     public function note(): BelongsTo

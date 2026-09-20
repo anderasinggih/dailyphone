@@ -1,15 +1,18 @@
 <?php
 
+use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\AiAssistantController;
+use App\Http\Controllers\AiTrainingNoteController;
+use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\StockController;
+use App\Http\Controllers\GeneralSettingsController;
+use App\Http\Controllers\MoneyNoteController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\ShiftController;
-use App\Http\Controllers\CustomerController;
-use App\Http\Controllers\ProfileController;
-use App\Http\Controllers\UserController;
+use App\Http\Controllers\StockController;
 use App\Http\Controllers\StoreManagementController;
-use App\Http\Controllers\ActivityLogController;
-use Illuminate\Foundation\Application;
+use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -17,6 +20,7 @@ Route::get('/', function () {
     if (auth()->check()) {
         return redirect()->route('dashboard');
     }
+
     return Inertia::render('Landing');
 })->name('landing');
 
@@ -90,16 +94,16 @@ Route::prefix('application/dp')->group(function () {
         Route::delete('/stores/{store}', [StoreManagementController::class, 'destroy'])->name('stores.destroy');
 
         // General Settings & Schedules
-        Route::get('/settings/general', [\App\Http\Controllers\GeneralSettingsController::class, 'index'])->name('settings.general');
-        Route::post('/settings/general', [\App\Http\Controllers\GeneralSettingsController::class, 'update'])->name('settings.general.update');
-        Route::post('/settings/schedule', [\App\Http\Controllers\GeneralSettingsController::class, 'storeSchedule'])->name('settings.schedule.store');
-        Route::delete('/settings/schedule/{schedule}', [\App\Http\Controllers\GeneralSettingsController::class, 'destroySchedule'])->name('settings.schedule.destroy');
+        Route::get('/settings/general', [GeneralSettingsController::class, 'index'])->name('settings.general');
+        Route::post('/settings/general', [GeneralSettingsController::class, 'update'])->name('settings.general.update');
+        Route::post('/settings/schedule', [GeneralSettingsController::class, 'storeSchedule'])->name('settings.schedule.store');
+        Route::delete('/settings/schedule/{schedule}', [GeneralSettingsController::class, 'destroySchedule'])->name('settings.schedule.destroy');
 
         // Money Notes
-        Route::get('/money-notes', [\App\Http\Controllers\MoneyNoteController::class, 'index'])->name('money-notes.index');
-        Route::post('/money-notes', [\App\Http\Controllers\MoneyNoteController::class, 'store'])->name('money-notes.store');
-        Route::delete('/money-notes/{moneyNote}', [\App\Http\Controllers\MoneyNoteController::class, 'destroy'])->name('money-notes.destroy');
-        Route::post('/money-notes/category', [\App\Http\Controllers\MoneyNoteController::class, 'storeCategory'])->name('money-notes.category.store');
+        Route::get('/money-notes', [MoneyNoteController::class, 'index'])->name('money-notes.index');
+        Route::post('/money-notes', [MoneyNoteController::class, 'store'])->name('money-notes.store');
+        Route::delete('/money-notes/{moneyNote}', [MoneyNoteController::class, 'destroy'])->name('money-notes.destroy');
+        Route::post('/money-notes/category', [MoneyNoteController::class, 'storeCategory'])->name('money-notes.category.store');
 
         // Profile
         Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
@@ -107,34 +111,36 @@ Route::prefix('application/dp')->group(function () {
         Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 
         // AI Assistant
-        Route::get('/assistant', [\App\Http\Controllers\AiAssistantController::class, 'index'])->name('assistant.index');
-        Route::post('/assistant/session', [\App\Http\Controllers\AiAssistantController::class, 'createSession'])->name('assistant.session.create');
-        Route::patch('/assistant/session/{id}', [\App\Http\Controllers\AiAssistantController::class, 'updateSession'])->name('assistant.session.update');
-        Route::delete('/assistant/session/{id}', [\App\Http\Controllers\AiAssistantController::class, 'deleteSession'])->name('assistant.session.destroy');
-        Route::post('/assistant/chat', [\App\Http\Controllers\AiAssistantController::class, 'chat'])->name('assistant.chat');
+        Route::get('/assistant', [AiAssistantController::class, 'index'])->name('assistant.index');
+        Route::post('/assistant/session', [AiAssistantController::class, 'createSession'])->name('assistant.session.create');
+        Route::patch('/assistant/session/{id}', [AiAssistantController::class, 'updateSession'])->name('assistant.session.update');
+        Route::delete('/assistant/session/{id}', [AiAssistantController::class, 'deleteSession'])->name('assistant.session.destroy');
+        Route::post('/assistant/chat', [AiAssistantController::class, 'chat'])->name('assistant.chat');
 
-        Route::post('/assistant/upload', [\App\Http\Controllers\AiAssistantController::class, 'upload'])->name('assistant.upload');
-        Route::post('/assistant/checkout-summary', [\App\Http\Controllers\AiAssistantController::class, 'checkoutSummary'])->name('assistant.checkout-summary');
-        Route::post('/assistant/execute', [\App\Http\Controllers\AiAssistantController::class, 'executeAction'])->name('assistant.execute');
-        Route::post('/assistant/undo', [\App\Http\Controllers\AiAssistantController::class, 'undoAction'])->name('assistant.undo');
-        Route::post('/assistant/proposal-status', [\App\Http\Controllers\AiAssistantController::class, 'updateProposalStatus'])->name('assistant.proposal-status');
-        Route::get('/assistant/file/{path}', [\App\Http\Controllers\AiAssistantController::class, 'downloadGeneratedFile'])->name('assistant.file')->where('path', '.*');
-        Route::post('/settings/ai/test', [\App\Http\Controllers\AiAssistantController::class, 'testConnection'])->name('settings.ai.test');
+        Route::post('/assistant/upload', [AiAssistantController::class, 'upload'])->name('assistant.upload');
+        Route::post('/assistant/checkout-summary', [AiAssistantController::class, 'checkoutSummary'])->name('assistant.checkout-summary');
+        Route::post('/assistant/execute', [AiAssistantController::class, 'executeAction'])->name('assistant.execute');
+        Route::post('/assistant/undo', [AiAssistantController::class, 'undoAction'])->name('assistant.undo');
+        Route::post('/assistant/proposal-status', [AiAssistantController::class, 'updateProposalStatus'])->name('assistant.proposal-status');
+        Route::get('/assistant/file/{path}', [AiAssistantController::class, 'downloadGeneratedFile'])->name('assistant.file')->where('path', '.*');
+        Route::post('/settings/ai/test', [AiAssistantController::class, 'testConnection'])->name('settings.ai.test');
 
         // AI Training Notes / Persistent Memory (superadmin)
-        Route::get('/settings/ai/training-notes', [\App\Http\Controllers\AiTrainingNoteController::class, 'index'])->name('settings.ai.training-notes');
-        Route::post('/settings/ai/training-notes', [\App\Http\Controllers\AiTrainingNoteController::class, 'store'])->name('settings.ai.training-notes.store');
-        Route::get('/settings/ai/training-notes/search', [\App\Http\Controllers\AiTrainingNoteController::class, 'searchApi'])->name('settings.ai.training-notes.search');
-        Route::get('/settings/ai/training-notes/{id}', [\App\Http\Controllers\AiTrainingNoteController::class, 'showApi'])->name('settings.ai.training-notes.show');
-        Route::post('/settings/ai/training-notes/tidy', [\App\Http\Controllers\AiTrainingNoteController::class, 'tidy'])->name('settings.ai.training-notes.tidy');
-        Route::post('/settings/ai/training-notes/{id}/toggle', [\App\Http\Controllers\AiTrainingNoteController::class, 'toggle'])->name('settings.ai.training-notes.toggle');
-        Route::post('/settings/ai/training-notes/{id}/kind', [\App\Http\Controllers\AiTrainingNoteController::class, 'reclassify'])->name('settings.ai.training-notes.kind');
-        Route::delete('/settings/ai/training-notes/{id}', [\App\Http\Controllers\AiTrainingNoteController::class, 'destroy'])->name('settings.ai.training-notes.destroy');
+        Route::get('/settings/ai/training-notes', [AiTrainingNoteController::class, 'index'])->name('settings.ai.training-notes');
+        Route::post('/settings/ai/training-notes', [AiTrainingNoteController::class, 'store'])->name('settings.ai.training-notes.store');
+        Route::get('/settings/ai/training-notes/search', [AiTrainingNoteController::class, 'searchApi'])->name('settings.ai.training-notes.search');
+        Route::get('/settings/ai/training-notes/{id}', [AiTrainingNoteController::class, 'showApi'])->name('settings.ai.training-notes.show');
+        Route::post('/settings/ai/training-notes/tidy', [AiTrainingNoteController::class, 'tidy'])->name('settings.ai.training-notes.tidy');
+        Route::post('/settings/ai/training-notes/settle', [AiTrainingNoteController::class, 'settle'])->name('settings.ai.training-notes.settle');
+        Route::post('/settings/ai/training-notes/{id}/restore', [AiTrainingNoteController::class, 'restore'])->name('settings.ai.training-notes.restore');
+        Route::post('/settings/ai/training-notes/{id}/toggle', [AiTrainingNoteController::class, 'toggle'])->name('settings.ai.training-notes.toggle');
+        Route::post('/settings/ai/training-notes/{id}/kind', [AiTrainingNoteController::class, 'reclassify'])->name('settings.ai.training-notes.kind');
+        Route::delete('/settings/ai/training-notes/{id}', [AiTrainingNoteController::class, 'destroy'])->name('settings.ai.training-notes.destroy');
 
         // AI Skills Library (superadmin) — repo-learned files management
-        Route::get('/settings/ai/skills', [\App\Http\Controllers\AiTrainingNoteController::class, 'skillsIndex'])->name('settings.ai.skills');
-        Route::post('/settings/ai/skills', [\App\Http\Controllers\AiTrainingNoteController::class, 'storeRepo'])->name('settings.ai.skills.store');
-        Route::delete('/settings/ai/skills/repo', [\App\Http\Controllers\AiTrainingNoteController::class, 'destroyRepo'])->name('settings.ai.skills.destroy-repo');
+        Route::get('/settings/ai/skills', [AiTrainingNoteController::class, 'skillsIndex'])->name('settings.ai.skills');
+        Route::post('/settings/ai/skills', [AiTrainingNoteController::class, 'storeRepo'])->name('settings.ai.skills.store');
+        Route::delete('/settings/ai/skills/repo', [AiTrainingNoteController::class, 'destroyRepo'])->name('settings.ai.skills.destroy-repo');
     });
 
     require __DIR__.'/auth.php';

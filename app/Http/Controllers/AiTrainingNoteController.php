@@ -4,11 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Models\AiTrainingNote;
 use App\Models\AiTrainingNoteLink;
+use App\Services\AiBrainMaintenanceService;
 use App\Services\AiEmbeddingService;
+use App\Services\AiFileIngestService;
 use App\Services\AiMemoryGraphService;
-use Illuminate\Http\Request;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -74,7 +77,7 @@ class AiTrainingNoteController extends Controller
 
         // Literal matches widen the net: rules (excluded from embedding search)
         // plus paused nodes so a hidden memory is still discoverable.
-        $like = '%' . $q . '%';
+        $like = '%'.$q.'%';
         $have = $results->pluck('id')->flip();
         $literal = AiTrainingNote::query()
             ->where(function ($b) use ($like) {
@@ -108,6 +111,7 @@ class AiTrainingNoteController extends Controller
             if ($sa !== $sb) {
                 return $sb <=> $sa;
             }
+
             return $b['note']->updated_at->timestamp <=> $a['note']->updated_at->timestamp;
         });
 
@@ -121,6 +125,7 @@ class AiTrainingNoteController extends Controller
                 'title' => $n->title ?: app(AiMemoryGraphService::class)->titleFromContent((string) $n->content),
                 'kind' => $n->kind,
                 'is_active' => (bool) $n->is_active,
+                'is_stale' => (bool) $n->is_stale,
                 'score' => $entry['score'] !== null ? round((float) $entry['score'], 3) : null,
                 'snippet' => mb_strimwidth(strip_tags((string) $n->content), 0, 160, '…'),
                 'used_count' => (int) ($n->used_count ?? 0),
@@ -146,7 +151,7 @@ class AiTrainingNoteController extends Controller
         $ids = [(int) $note->id];
         $linkRows = AiTrainingNoteLink::where('note_id', $note->id)
             ->orWhere('linked_note_id', $note->id)
-            ->get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason']);
+            ->get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason', 'metadata']);
 
         $neighborIds = $linkRows->map(fn ($l) => $l->getOtherId((int) $note->id))->map('intval')->all();
         $titleById = [];
@@ -164,6 +169,7 @@ class AiTrainingNoteController extends Controller
             'relation' => $l->relation,
             'weight' => $l->weight !== null ? (float) $l->weight : null,
             'reason' => $l->reason,
+            'possible_conflict' => (bool) (($l->metadata[AiMemoryGraphService::METADATA_CONFLICT_FLAG] ?? false) === true),
         ])->sortByDesc(fn ($l) => $l['weight'] ?? 0)->values()->all();
 
         return response()->json([
@@ -173,6 +179,8 @@ class AiTrainingNoteController extends Controller
                 'title' => $note->title ?: app(AiMemoryGraphService::class)->titleFromContent((string) $note->content),
                 'content' => (string) $note->content,
                 'is_active' => (bool) $note->is_active,
+                'is_stale' => (bool) $note->is_stale,
+                'superseded_by' => $note->superseded_by_note_id !== null ? (int) $note->superseded_by_note_id : null,
                 'author_name' => $note->author_name ?? 'System',
                 'occurred_at' => $note->occurred_at ? $note->occurred_at->format('d M Y') : null,
                 'occurred_place' => $note->occurred_place,
@@ -193,7 +201,7 @@ class AiTrainingNoteController extends Controller
 
         $request->validate([
             'content' => 'required|string|max:1000',
-            'kind' => 'required|in:' . implode(',', $graph->kinds()),
+            'kind' => 'required|in:'.implode(',', $graph->kinds()),
             'occurred_at' => 'nullable|date',
             'occurred_place' => 'nullable|string|max:120',
             'involved_with' => 'nullable|string|max:120',
@@ -202,7 +210,7 @@ class AiTrainingNoteController extends Controller
         $content = trim($request->input('content'));
         $kind = $graph->normalizeKind($request->input('kind'));
 
-        if (!$graph->isDuplicateContent($content)) {
+        if (! $graph->isDuplicateContent($content)) {
             AiTrainingNote::create([
                 'user_id' => $request->user()->id,
                 'author_name' => $request->user()->name,
@@ -236,7 +244,7 @@ class AiTrainingNoteController extends Controller
         $graph = app(AiMemoryGraphService::class);
 
         $request->validate([
-            'kind' => 'required|in:' . implode(',', $graph->kinds()),
+            'kind' => 'required|in:'.implode(',', $graph->kinds()),
         ]);
 
         $result = $graph->reclassifyNode((int) $id, $request->input('kind'));
@@ -245,8 +253,54 @@ class AiTrainingNoteController extends Controller
 
         return redirect()->back()
             ->with('success', $result['changed']
-                ? "Reclassified '{$snippet}' → " . $request->input('kind') . ' and rewired its synapses.'
+                ? "Reclassified '{$snippet}' → ".$request->input('kind').' and rewired its synapses.'
                 : "Node '{$snippet}' already has that kind.");
+    }
+
+    /**
+     * Settle a possible-conflict synapse that auto-linking flagged. The
+     * reviewer names the winning note and the verdict: "supersedes" marks the
+     * loser stale (retrieval stops surfacing it), "contradicts" merely
+     * acknowledges both facts stay alive. Either way the pen mark is lifted.
+     */
+    public function settle(Request $request): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $request->validate([
+            'link_id' => 'required|integer|exists:ai_training_note_links,id',
+            'winner_id' => 'required|integer|exists:ai_training_notes,id',
+            'action' => 'required|in:supersedes,contradicts',
+        ]);
+
+        $result = app(AiMemoryGraphService::class)->settleConflict(
+            (int) $request->input('link_id'),
+            (int) $request->input('winner_id'),
+            (string) $request->input('action')
+        );
+
+        $verb = $result['action'] === 'supersedes' ? 'Superseded' : 'Recorded as a contradiction between';
+
+        return redirect()->back()
+            ->with('success', "{$verb} #{$result['loser_id']} and #{$result['winner_id']} (cleared {$result['conflicts_cleared']} conflict flag(s)).");
+    }
+
+    /**
+     * Undo a supersede verdict: the node becomes a live neuron again, its
+     * replacement pointer is dropped and its synapses are re-wired.
+     */
+    public function restore(Request $request, $id): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $note = app(AiMemoryGraphService::class)->restoreNode((int) $id);
+
+        return redirect()->back()
+            ->with('success', "Training note #{$note->id} is live again and its synapses were re-wired.");
     }
 
     /**
@@ -260,7 +314,7 @@ class AiTrainingNoteController extends Controller
             abort(403, 'Unauthorized action.');
         }
 
-        $result = app(\App\Services\AiBrainMaintenanceService::class)->tidy(80);
+        $result = app(AiBrainMaintenanceService::class)->tidy(80);
 
         if ($result['ok']) {
             session()->flash('success', $result['message']);
@@ -310,6 +364,7 @@ class AiTrainingNoteController extends Controller
             $files = $repo['files'];
             $repo['total'] = count($files);
             $repo['active'] = collect($files)->where('is_active', true)->count();
+
             return $repo;
         })->values();
 
@@ -332,7 +387,7 @@ class AiTrainingNoteController extends Controller
             'repo' => 'required|string|max:200',
         ]);
 
-        $result = app(\App\Services\AiFileIngestService::class)
+        $result = app(AiFileIngestService::class)
             ->ingestRepository($request->input('repo'), $request->user());
 
         return redirect()->route('settings.ai.skills')
@@ -384,7 +439,7 @@ class AiTrainingNoteController extends Controller
         }
 
         $note = AiTrainingNote::findOrFail($id);
-        $note->update(['is_active' => !$note->is_active]);
+        $note->update(['is_active' => ! $note->is_active]);
 
         $snippet = mb_strimwidth((string) $note->content, 0, 60, '…');
 
@@ -415,7 +470,7 @@ class AiTrainingNoteController extends Controller
      * (embedding index) merged with literal token hits; otherwise the plain
      * store stays ordered rules-first-by-recency and simply paginates.
      *
-     * @return array{0: \Illuminate\Support\Collection, 1: array, 2: array}
+     * @return array{0: Collection, 1: array, 2: array}
      */
     protected function resolveList(Request $request): array
     {
@@ -491,7 +546,7 @@ class AiTrainingNoteController extends Controller
             }
         }
 
-        $like = '%' . $q . '%';
+        $like = '%'.$q.'%';
         $literalIds = (clone $query)
             ->where(function ($b) use ($like) {
                 $b->where('title', 'like', $like)
@@ -521,7 +576,7 @@ class AiTrainingNoteController extends Controller
         if ($ids !== []) {
             $linkRows = AiTrainingNoteLink::where(function ($w) use ($ids) {
                 $w->whereIn('note_id', $ids)->orWhereIn('linked_note_id', $ids);
-            })->get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason']);
+            })->get(['note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason', 'metadata']);
 
             $neighborIds = $linkRows->flatMap(fn ($l) => [$l->note_id, $l->linked_note_id])
                 ->map('intval')
@@ -533,11 +588,23 @@ class AiTrainingNoteController extends Controller
             $titles = $neighborIds === []
                 ? collect()
                 : AiTrainingNote::whereIn('id', $neighborIds)->pluck('title', 'id');
-            $titleOf = function ($id) use ($titles) {
-                return $titles[$id] ?: 'Memory';
+
+            // Titles for the page's own notes too, so a synapse between two
+            // notes that are both on this page still resolves; `??` also
+            // guards against links pointing at already-deleted notes.
+            $pageById = collect($pageNotes->all())->keyBy('id');
+            $titleOf = function ($id) use ($titles, $pageById) {
+                $t = $titles[$id] ?? null;
+                if ($t !== null && $t !== '') {
+                    return $t;
+                }
+                $owned = $pageById[$id] ?? null;
+
+                return $owned ? ($owned->title ?: 'Memory') : 'Memory';
             };
 
             $idSet = array_flip($ids);
+            $flag = AiMemoryGraphService::METADATA_CONFLICT_FLAG;
             foreach ($linkRows as $l) {
                 $left = (int) $l->note_id;
                 $right = (int) $l->linked_note_id;
@@ -549,6 +616,7 @@ class AiTrainingNoteController extends Controller
                         'relation' => $l->relation,
                         'weight' => $l->weight !== null ? (float) $l->weight : null,
                         'reason' => $l->reason,
+                        'possible_conflict' => (bool) (($l->metadata[$flag] ?? false) === true),
                     ];
                 }
                 if (isset($idSet[$right])) {
@@ -559,6 +627,7 @@ class AiTrainingNoteController extends Controller
                         'relation' => $l->relation,
                         'weight' => $l->weight !== null ? (float) $l->weight : null,
                         'reason' => $l->reason,
+                        'possible_conflict' => (bool) (($l->metadata[$flag] ?? false) === true),
                     ];
                 }
             }
@@ -570,6 +639,8 @@ class AiTrainingNoteController extends Controller
             'title' => $n->title,
             'content' => $n->content,
             'is_active' => $n->is_active,
+            'is_stale' => (bool) $n->is_stale,
+            'superseded_by' => $n->superseded_by_note_id !== null ? (int) $n->superseded_by_note_id : null,
             'used_count' => (int) $n->used_count,
             'last_used_at' => $n->last_used_at ? $n->last_used_at->diffForHumans() : null,
             'occurred_at' => $n->occurred_at ? $n->occurred_at->format('d M Y') : null,
@@ -595,6 +666,11 @@ class AiTrainingNoteController extends Controller
         return [
             'total' => (int) AiTrainingNote::count(),
             'active' => (int) AiTrainingNote::where('is_active', true)->count(),
+            'stale' => (int) AiTrainingNote::where('is_stale', true)->count(),
+            'conflicts' => AiTrainingNoteLink::whereNotNull('metadata')
+                ->get(['metadata'])
+                ->filter(fn ($l) => (($l->metadata[AiMemoryGraphService::METADATA_CONFLICT_FLAG] ?? false) === true))
+                ->count(),
             'rules' => (int) AiTrainingNote::where('kind', 'rule')->where('is_active', true)->count(),
             'uses' => (int) AiTrainingNote::sum('used_count'),
             'topNote' => ($top && (int) $top->used_count > 0)
@@ -622,14 +698,14 @@ class AiTrainingNoteController extends Controller
             ->orderByDesc('used_count')
             ->orderByDesc('updated_at')
             ->limit(self::MAP_MAX_NODES)
-            ->get(['id', 'title', 'content', 'kind', 'is_active', 'used_count', 'author_name']);
+            ->get(['id', 'title', 'content', 'kind', 'is_active', 'is_stale', 'used_count', 'author_name']);
 
         $ids = $notes->pluck('id')->map('intval')->all();
         $idSet = collect($ids)->flip();
 
         $linkRows = AiTrainingNoteLink::whereIn('note_id', $ids)
             ->whereIn('linked_note_id', $ids)
-            ->get(['id', 'note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason']);
+            ->get(['id', 'note_id', 'linked_note_id', 'label', 'relation', 'weight', 'reason', 'metadata']);
 
         $degree = [];
         foreach ($linkRows as $l) {
@@ -643,20 +719,24 @@ class AiTrainingNoteController extends Controller
             'content' => mb_strimwidth(strip_tags((string) $n->content), 0, self::GRAPH_CONTENT_SNIPPET, '…'),
             'kind' => $n->kind,
             'is_active' => $n->is_active,
+            'is_stale' => (bool) $n->is_stale,
             'author_name' => $n->author_name ?? 'System',
             'degree' => $degree[$n->id] ?? 0,
             'used_count' => (int) ($n->used_count ?? 0),
         ])->values()->all();
 
-        $links = $linkRows->map(fn ($l) => [
-            'id' => (int) $l->id,
-            'source' => (int) $l->note_id,
-            'target' => (int) $l->linked_note_id,
-            'label' => $l->label,
-            'relation' => $l->relation,
-            'weight' => $l->weight !== null ? (float) $l->weight : null,
-            'reason' => $l->reason,
-        ])->values()->all();
+        $links = $linkRows->map(function ($l) {
+            return [
+                'id' => (int) $l->id,
+                'source' => (int) $l->note_id,
+                'target' => (int) $l->linked_note_id,
+                'label' => $l->label,
+                'relation' => $l->relation,
+                'weight' => $l->weight !== null ? (float) $l->weight : null,
+                'reason' => $l->reason,
+                'possible_conflict' => (bool) (($l->metadata[AiMemoryGraphService::METADATA_CONFLICT_FLAG] ?? false) === true),
+            ];
+        })->values()->all();
 
         return ['nodes' => $nodes, 'links' => $links];
     }

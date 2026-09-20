@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\AiTrainingNote;
 use App\Models\GeneralSetting;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -35,6 +36,7 @@ class AiEmbeddingService
      * neurons three times hits the embedding API at most once.
      */
     protected ?string $queryCacheKey = null;
+
     protected ?array $queryCacheVector = null;
 
     public function __construct()
@@ -49,12 +51,12 @@ class AiEmbeddingService
         $this->apiKeys = $settings ? $settings->apiKeyList() : [];
         if (empty($this->apiKeys)) {
             $envKey = env('GEMINI_API_KEY');
-            if (!empty($envKey)) {
+            if (! empty($envKey)) {
                 $this->apiKeys = [$envKey];
             }
         }
 
-        $configured = trim((string)($settings->ai_embedding_model ?? ''));
+        $configured = trim((string) ($settings->ai_embedding_model ?? ''));
         $this->model = $configured !== '' ? $configured : 'text-embedding-004';
     }
 
@@ -66,7 +68,8 @@ class AiEmbeddingService
     public function isConfigured(): bool
     {
         $this->reloadSettings();
-        return !empty($this->apiKeys);
+
+        return ! empty($this->apiKeys);
     }
 
     /**
@@ -78,24 +81,25 @@ class AiEmbeddingService
         $model = trim($model);
         $model = preg_replace('/^models\//', '', $model);
         $model = preg_replace('/:\d+[a-z]+$/', '', $model);
+
         return $model !== '' ? $model : 'text-embedding-004';
     }
 
     /**
      * Embed a single piece of text into a numeric vector.
      *
-     * @return float[]|null  Vector, or null when the API is unavailable.
+     * @return float[]|null Vector, or null when the API is unavailable.
      */
     public function embedText(string $text): ?array
     {
-        $text = trim((string)$text);
+        $text = trim((string) $text);
         if ($text === '') {
             return null;
         }
 
         $model = $this->sanitizeModel($this->model);
         $payload = [
-            'model' => 'models/' . $model,
+            'model' => 'models/'.$model,
             'content' => ['parts' => [['text' => mb_substr($text, 0, 8000)]]],
         ];
 
@@ -106,13 +110,14 @@ class AiEmbeddingService
 
                 if ($response->successful()) {
                     $values = $response->json('embedding.values');
+
                     return is_array($values) ? array_map('floatval', $values) : null;
                 }
 
-                Log::warning("Embedding request HTTP {$response->status()} (key #" . ($index + 1) . '): '
-                    . ($response->json('error.message') ?? $response->body()));
+                Log::warning("Embedding request HTTP {$response->status()} (key #".($index + 1).'): '
+                    .($response->json('error.message') ?? $response->body()));
             } catch (\Throwable $e) {
-                Log::warning('Embedding request threw (key #' . ($index + 1) . '): ' . $e->getMessage());
+                Log::warning('Embedding request threw (key #'.($index + 1).'): '.$e->getMessage());
             }
         }
 
@@ -123,14 +128,14 @@ class AiEmbeddingService
      * Embed several texts in one batch API call.
      *
      * @param  string[]  $texts  Indexed by original array keys.
-     * @return array<string|int, float[]>  Matches that succeeded, keyed by input key.
+     * @return array<string|int, float[]> Matches that succeeded, keyed by input key.
      */
     public function embedBatch(array $texts): array
     {
         $out = [];
         $indexed = [];
         foreach ($texts as $key => $text) {
-            $text = trim((string)$text);
+            $text = trim((string) $text);
             if ($text !== '') {
                 $indexed[$key] = $text;
             }
@@ -143,8 +148,8 @@ class AiEmbeddingService
         $requests = [];
         foreach ($indexed as $key => $text) {
             $requests[] = [
-                'model' => 'models/' . $model,
-                'content' => ['parts' => [['text' => mb_substr((string)$text, 0, 8000)]]],
+                'model' => 'models/'.$model,
+                'content' => ['parts' => [['text' => mb_substr((string) $text, 0, 8000)]]],
             ];
             // Cap batch size per call (some models limit it), chunk the rest.
             if (count($requests) >= 96) {
@@ -177,13 +182,14 @@ class AiEmbeddingService
                             $out[$i] = array_map('floatval', $values);
                         }
                     }
+
                     return $out;
                 }
 
-                Log::warning('Batch embedding HTTP ' . $response->status() . ': '
-                    . ($response->json('error.message') ?? $response->body()));
+                Log::warning('Batch embedding HTTP '.$response->status().': '
+                    .($response->json('error.message') ?? $response->body()));
             } catch (\Throwable $e) {
-                Log::warning('Batch embedding threw: ' . $e->getMessage());
+                Log::warning('Batch embedding threw: '.$e->getMessage());
             }
         }
 
@@ -221,7 +227,7 @@ class AiEmbeddingService
             // A vector is stale when it is absent OR was produced by a different
             // model (vectors from different models are not comparable, so they
             // must be regenerated rather than mixed into the index).
-            if ($note->embedding === null || (string)$note->embedding_model !== $this->model) {
+            if ($note->embedding === null || (string) $note->embedding_model !== $this->model) {
                 $missing[$note->id] = $note;
             }
         }
@@ -250,7 +256,7 @@ class AiEmbeddingService
                 ])->saveQuietly();
                 $count++;
             } catch (\Throwable $e) {
-                Log::warning('Failed persisting embedding for note #' . $id . ': ' . $e->getMessage());
+                Log::warning('Failed persisting embedding for note #'.$id.': '.$e->getMessage());
             }
         }
 
@@ -264,24 +270,24 @@ class AiEmbeddingService
      */
     public function noteText(AiTrainingNote $note): string
     {
-        $title = trim((string)($note->title ?? ''));
-        $content = trim((string)$note->content);
+        $title = trim((string) ($note->title ?? ''));
+        $content = trim((string) $note->content);
         $related = is_array($note->related_keywords ?? null)
             ? trim(implode(' ', $note->related_keywords))
             : '';
 
         $episode = [];
-        if (!empty($note->occurred_at)) {
+        if (! empty($note->occurred_at)) {
             $episode[] = $note->occurred_at->format('Y-m-d');
         }
-        if (trim((string)($note->occurred_place ?? '')) !== '') {
-            $episode[] = trim((string)$note->occurred_place);
+        if (trim((string) ($note->occurred_place ?? '')) !== '') {
+            $episode[] = trim((string) $note->occurred_place);
         }
-        if (trim((string)($note->involved_with ?? '')) !== '') {
-            $episode[] = trim((string)$note->involved_with);
+        if (trim((string) ($note->involved_with ?? '')) !== '') {
+            $episode[] = trim((string) $note->involved_with);
         }
 
-        return trim($title . ' ' . $related . ' ' . implode(' ', $episode) . ' ' . $content);
+        return trim($title.' '.$related.' '.implode(' ', $episode).' '.$content);
     }
 
     /**
@@ -307,18 +313,18 @@ class AiEmbeddingService
      * Rank active non-rule notes against a query by cosine similarity over their
      * stored embeddings.
      *
-     * @return array{notes: \Illuminate\Support\Collection, best_score: ?float, method: string}
-     *               `notes` are AiTrainingNote models; `best_score` is the highest
-     *               similarity found (null when no scored note); `method` tells the
-     *               caller whether this really used embeddings or an empty result
-     *               that a token fallback should fill.
+     * @return array{notes: Collection, best_score: ?float, method: string}
+     *                                                                      `notes` are AiTrainingNote models; `best_score` is the highest
+     *                                                                      similarity found (null when no scored note); `method` tells the
+     *                                                                      caller whether this really used embeddings or an empty result
+     *                                                                      that a token fallback should fill.
      */
     public function search(?string $query, int $topK = 12, ?float $minScore = 0.30, array|string|null $kind = null): array
     {
         $this->reloadSettings();
-        $query = trim((string)$query);
+        $query = trim((string) $query);
 
-        if ($query === '' || !$this->isConfigured()) {
+        if ($query === '' || ! $this->isConfigured()) {
             return ['notes' => collect(), 'best_score' => null, 'method' => 'embedding'];
         }
 
@@ -332,12 +338,14 @@ class AiEmbeddingService
         // the query — a node about "water damage" must still be scored against
         // the query "iphone kena air garansi" even though they share no words.
         // That is the entire point of semantic retrieval over token overlap.
-        $queryBuilder = AiTrainingNote::where('is_active', true)->where('kind', '!=', 'rule');
+        $queryBuilder = AiTrainingNote::where('is_active', true)
+            ->where('is_stale', false)
+            ->where('kind', '!=', 'rule');
         if ($kind) {
             if (is_array($kind)) {
                 $queryBuilder->whereIn('kind', $kind);
             } else {
-                $queryBuilder->where('kind', $this->normalizeKind((string)$kind));
+                $queryBuilder->where('kind', $this->normalizeKind((string) $kind));
             }
         }
 
@@ -356,11 +364,11 @@ class AiEmbeddingService
             // vectors across models (or embedding dimensions) yields a cosine
             // that silently truncates to the shorter vector and ranks garbage,
             // so cross-model nodes are skipped until the warm-up re-embeds them.
-            if ((string)$note->embedding_model !== $this->model) {
+            if ((string) $note->embedding_model !== $this->model) {
                 continue;
             }
 
-            $vector = $this->decodeVector((string)($note->embedding ?? ''));
+            $vector = $this->decodeVector((string) ($note->embedding ?? ''));
             if ($vector === null || count($vector) !== count($qVector)) {
                 continue;
             }
@@ -408,9 +416,10 @@ class AiEmbeddingService
             return null;
         }
         $decoded = json_decode($raw, true);
-        if (!is_array($decoded) || $decoded === []) {
+        if (! is_array($decoded) || $decoded === []) {
             return null;
         }
+
         return array_map('floatval', $decoded);
     }
 

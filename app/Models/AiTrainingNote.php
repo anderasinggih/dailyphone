@@ -2,10 +2,12 @@
 
 namespace App\Models;
 
+use App\Jobs\EmbedTrainingNoteJob;
 use App\Services\AiMemoryGraphService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Log;
 
 class AiTrainingNote extends Model
 {
@@ -19,6 +21,8 @@ class AiTrainingNote extends Model
         'content_hash',
         'kind',
         'is_active',
+        'is_stale',
+        'superseded_by_note_id',
         'used_count',
         'last_used_at',
         'source_url',
@@ -30,6 +34,8 @@ class AiTrainingNote extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        'is_stale' => 'boolean',
+        'superseded_by_note_id' => 'integer',
         'used_count' => 'integer',
         'last_used_at' => 'datetime',
         'occurred_at' => 'datetime',
@@ -46,17 +52,17 @@ class AiTrainingNote extends Model
             try {
                 app(AiMemoryGraphService::class)->linkNewNote($note, $note->related_keywords ?? []);
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Failed to auto-link training note: ' . $e->getMessage());
+                Log::warning('Failed to auto-link training note: '.$e->getMessage());
             }
 
             // Keep the semantic index warm: embed the fresh node AFTER the
             // response, so a new memory is searchable by meaning on the very
             // next query instead of waiting for a backfill (item 1).
             try {
-                \App\Jobs\EmbedTrainingNoteJob::dispatch((int)$note->id)
+                EmbedTrainingNoteJob::dispatch((int) $note->id)
                     ->onConnection('deferred');
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Failed to queue note embedding: ' . $e->getMessage());
+                Log::warning('Failed to queue note embedding: '.$e->getMessage());
             }
         });
 
@@ -64,9 +70,9 @@ class AiTrainingNote extends Model
         // neuron map free of dangling edges.
         static::deleted(function (AiTrainingNote $note) {
             try {
-                app(AiMemoryGraphService::class)->pruneLinksFor((int)$note->id);
+                app(AiMemoryGraphService::class)->pruneLinksFor((int) $note->id);
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Failed to prune training note links: ' . $e->getMessage());
+                Log::warning('Failed to prune training note links: '.$e->getMessage());
             }
         });
     }

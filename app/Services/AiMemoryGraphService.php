@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\AiTrainingNote;
 use App\Models\AiTrainingNoteLink;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Builds the "neural memory" graph. Every training note becomes a node that is
@@ -38,14 +40,23 @@ class AiMemoryGraphService
     ];
 
     public const KIND_RULE = 'rule';
+
     public const KIND_VALIDATION = 'validation';
+
     public const KIND_CONDITION = 'condition';
+
     public const KIND_EMOTIONS = 'emotions';
+
     public const KIND_NOTE = 'note';
+
     public const KIND_MEMORY = 'memory';
+
     public const KIND_PREFERENCE = 'preference';
+
     public const KIND_IDENTITY = 'identity';
+
     public const KIND_GOAL = 'goal';
+
     public const KIND_WARNING = 'warning';
 
     // Kinds that are NOT user-typed directives but still qualify as "brain
@@ -72,6 +83,23 @@ class AiMemoryGraphService
     // Jaccard similarity above this means "same memory, rephrased".
     protected const DUPLICATE_THRESHOLD = 0.72;
 
+    // Token cosine band between "definitely the same memory" and "definitely a
+    // different topic": nodes that land here share most of their vocabulary —
+    // the strong signature of the SAME topic carrying a possibly DIFFERENT fact
+    // (a daily fact that changed), not a pure rephrase (already caught by the
+    // duplicate gate at DUPLICATE_THRESHOLD / consolidation at 0.92).
+    public const CONFLICT_FLOOR = 0.72;
+
+    public const CONFLICT_CEILING = 0.92;
+
+    // Per-link JSON key that flags a synapse for the superadmin conflict review.
+    public const METADATA_CONFLICT_FLAG = 'possible_conflict';
+
+    // Meaningful typed relations for the resolve-conflict review actions.
+    public const RELATION_SUPERSEDES = 'supersedes';
+
+    public const RELATION_CONTRADICTS = 'contradicts';
+
     protected const STOPWORDS = [
         'yang', 'dan', 'di', 'ke', 'dari', 'dengan', 'untuk', 'pada', 'itu', 'ini', 'adalah',
         'agar', 'supaya', 'jangan', 'tidak', 'saat', 'ketika', 'harus', 'bisa', 'dapat',
@@ -84,15 +112,14 @@ class AiMemoryGraphService
     /**
      * Link a freshly created note to its most related neighbours.
      *
-     * @param array $hints Optional relation keywords (e.g. from the AI memo
-     *                     `related` field or manual entry) used both as node
-     *                     labels and to boost candidate ranking.
-     * @param bool  $fullScan When true, every existing note is compared (used
-     *                        by the offline rebuild command for a complete
-     *                        re-layout). Live writes default to false so we only
-     *                        score candidates sharing a real token with the new
-     *                        note, keeping per-node cost bounded as memory grows.
-     *
+     * @param  array  $hints  Optional relation keywords (e.g. from the AI memo
+     *                        `related` field or manual entry) used both as node
+     *                        labels and to boost candidate ranking.
+     * @param  bool  $fullScan  When true, every existing note is compared (used
+     *                          by the offline rebuild command for a complete
+     *                          re-layout). Live writes default to false so we only
+     *                          score candidates sharing a real token with the new
+     *                          note, keeping per-node cost bounded as memory grows.
      * @return AiTrainingNoteLink[]
      */
     public function linkNewNote(AiTrainingNote $note, array $hints = [], bool $fullScan = false): array
@@ -113,15 +140,15 @@ class AiMemoryGraphService
         }
 
         $hints = array_values(array_unique(array_filter(array_map(function ($h) {
-            return strtolower(trim((string)$h));
-        }, $hints), fn($h) => $h !== '')));
+            return strtolower(trim((string) $h));
+        }, $hints), fn ($h) => $h !== '')));
 
         // IDF over the whole current memory so rare, meaningful words weigh
         // more than common ones when matching two memories.
         $docs = $this->tokenizedDocs($others->push($note));
         $idf = $this->computeIdf($docs);
         $noteVec = $this->tokenVector($noteTokens, $idf);
-        $noteTitleTokens = $this->tokenize((string)$note->title);
+        $noteTitleTokens = $this->tokenize((string) $note->title);
 
         $scores = [];
 
@@ -132,11 +159,12 @@ class AiMemoryGraphService
             }
 
             $otherVec = $this->tokenVector($otherTokens, $idf);
-            $score = $this->cosine($noteVec, $otherVec);
+            $cosine = $this->cosine($noteVec, $otherVec);
+            $score = $cosine;
             $shared = array_intersect($noteTokens, $otherTokens);
 
             // Shared title words are a strong topical signal.
-            $titleShared = array_intersect($noteTitleTokens, $this->tokenize((string)$other->title));
+            $titleShared = array_intersect($noteTitleTokens, $this->tokenize((string) $other->title));
             $shared = array_merge($shared, $titleShared);
             $shared = array_values(array_unique($shared));
             if ($titleShared) {
@@ -157,6 +185,7 @@ class AiMemoryGraphService
             if ($score > 0.0001) {
                 $scores[$other->id] = [
                     'score' => $score,
+                    'cosine' => $cosine,
                     'label' => $this->pickLabel($shared, $hintMatches),
                     'relation' => $relation,
                     'reason' => $reason,
@@ -165,12 +194,12 @@ class AiMemoryGraphService
         }
 
         // Rank and keep the strongest candidates.
-        uasort($scores, fn($a, $b) => $b['score'] <=> $a['score']);
+        uasort($scores, fn ($a, $b) => $b['score'] <=> $a['score']);
         $top = array_slice($scores, 0, self::MAX_LINKS, true);
 
         // If nothing is related enough, keep the graph connected by linking to
         // the most recently touched note ("fresh memory" synapse).
-        $strong = array_filter($top, fn($c) => $c['score'] >= self::MIN_SCORE);
+        $strong = array_filter($top, fn ($c) => $c['score'] >= self::MIN_SCORE);
         if ($strong === [] && $others->isNotEmpty()) {
             $fallback = $others->sortByDesc('updated_at')->first();
             $strong = [$fallback->id => [
@@ -182,13 +211,20 @@ class AiMemoryGraphService
         }
 
         foreach ($strong as $targetId => $meta) {
+            // A synapse whose endpoints share most of their vocabulary but are
+            // NOT pure rephrases is a candidate conflict: same topic, possibly
+            // different facts. Flag it so the superadmin can review the pair.
+            $cosine = (float) ($meta['cosine'] ?? $meta['score']);
+            $conflicting = $cosine >= self::CONFLICT_FLOOR && $cosine < self::CONFLICT_CEILING;
+
             $link = $this->createLink(
                 $note->id,
-                (int)$targetId,
+                (int) $targetId,
                 $meta['label'],
                 $meta['relation'] ?? null,
-                round(min((float)$meta['score'], 1.0), 3),
-                $meta['reason'] ?? null
+                round(min((float) $meta['score'], 1.0), 3),
+                $meta['reason'] ?? null,
+                $conflicting ? [self::METADATA_CONFLICT_FLAG => true] : null
             );
             if ($link !== null) {
                 $created[] = $link;
@@ -207,7 +243,8 @@ class AiMemoryGraphService
         ?string $label = null,
         ?string $relation = null,
         ?float $weight = null,
-        ?string $reason = null
+        ?string $reason = null,
+        ?array $metadata = null
     ): ?AiTrainingNoteLink {
         if ($noteId === $linkedId) {
             return null;
@@ -230,6 +267,7 @@ class AiMemoryGraphService
             'relation' => $relation,
             'weight' => $weight,
             'reason' => $reason,
+            'metadata' => $metadata,
         ]);
     }
 
@@ -269,11 +307,11 @@ class AiMemoryGraphService
      * per-write cost proportional to the relevant neighbourhood, not the whole
      * table, as the memory grows.
      */
-    protected function linkCandidates(AiTrainingNote $note): \Illuminate\Support\Collection
+    protected function linkCandidates(AiTrainingNote $note): Collection
     {
         $tokens = $this->tokenize($this->labelSource($note));
-        foreach ((array)($note->related_keywords ?? []) as $hint) {
-            foreach ($this->tokenize((string)$hint) as $t) {
+        foreach ((array) ($note->related_keywords ?? []) as $hint) {
+            foreach ($this->tokenize((string) $hint) as $t) {
                 $tokens[] = $t;
             }
         }
@@ -289,6 +327,7 @@ class AiMemoryGraphService
 
         return AiTrainingNote::whereIn('id', $ids)
             ->where('id', '!=', $note->id)
+            ->where('is_stale', false)
             ->get();
     }
 
@@ -301,7 +340,8 @@ class AiMemoryGraphService
     public function candidateNoteIds(array $tokens, int $limit = 300): array
     {
         $tokens = array_values(array_unique(array_filter(array_map(function ($t) {
-            $t = strtolower(trim((string)$t));
+            $t = strtolower(trim((string) $t));
+
             return strlen($t) >= 4 ? $t : null;
         }, $tokens))));
 
@@ -310,17 +350,19 @@ class AiMemoryGraphService
         }
 
         // Longest tokens first: they are the strongest, most selective filters.
-        usort($tokens, fn($a, $b) => strlen((string)$b) <=> strlen((string)$a));
+        usort($tokens, fn ($a, $b) => strlen((string) $b) <=> strlen((string) $a));
         $tokens = array_slice($tokens, 0, 8);
 
-        $query = AiTrainingNote::query()->select('id');
-        foreach ($tokens as $token) {
-            // related_keywords is a JSON column, but LIKE over its serialized
-            // text works identically on MySQL and SQLite for substring hits.
-            $query->orWhere('title', 'like', "%{$token}%")
-                ->orWhere('content', 'like', "%{$token}%")
-                ->orWhere('related_keywords', 'like', "%{$token}%");
-        }
+        $query = AiTrainingNote::query()->select('id')->where('is_stale', false);
+        $query->where(function ($q) use ($tokens) {
+            foreach ($tokens as $token) {
+                // related_keywords is a JSON column, but LIKE over its serialized
+                // text works identically on MySQL and SQLite for substring hits.
+                $q->orWhere('title', 'like', "%{$token}%")
+                    ->orWhere('content', 'like', "%{$token}%")
+                    ->orWhere('related_keywords', 'like', "%{$token}%");
+            }
+        });
 
         return $query->orderBy('updated_at', 'desc')->limit($limit)->pluck('id')->all();
     }
@@ -340,7 +382,8 @@ class AiMemoryGraphService
      */
     public function normalizeKind(?string $kind): string
     {
-        $kind = strtolower(trim((string)$kind));
+        $kind = strtolower(trim((string) $kind));
+
         return in_array($kind, self::KINDS, true) ? $kind : self::KIND_NOTE;
     }
 
@@ -360,15 +403,15 @@ class AiMemoryGraphService
             $note->kind = $newKind;
             $change[] = "kind:{$note->getOriginal('kind')}→{$newKind}";
         }
-        if ($title !== null && trim((string)$title) !== '' && (string)$note->title !== trim((string)$title)) {
-            $note->title = mb_substr(trim((string)$title), 0, 200);
+        if ($title !== null && trim((string) $title) !== '' && (string) $note->title !== trim((string) $title)) {
+            $note->title = mb_substr(trim((string) $title), 0, 200);
             $change[] = 'title';
         }
         if (is_array($related)) {
             $normalized = array_values(array_unique(array_filter(array_map(
-                fn($r) => strtolower(trim((string)$r)),
+                fn ($r) => strtolower(trim((string) $r)),
                 $related
-            ), fn($r) => $r !== '')));
+            ), fn ($r) => $r !== '')));
             $note->related_keywords = $normalized === [] ? null : array_slice($normalized, 0, 8);
             $change[] = 'related';
         }
@@ -378,8 +421,8 @@ class AiMemoryGraphService
         // Re-connect the node from scratch so its synapses reflect the new role.
         if ($change !== []) {
             $this->pruneLinksFor($noteId);
-            $links = $this->linkNewNote($note, (array)$note->related_keywords, true);
-            $change[] = 're-linked (' . count($links) . ')';
+            $links = $this->linkNewNote($note, (array) $note->related_keywords, true);
+            $change[] = 're-linked ('.count($links).')';
         }
 
         return [
@@ -387,6 +430,90 @@ class AiMemoryGraphService
             'changes' => $change,
             'kind' => $newKind,
         ];
+    }
+
+    /**
+     * Settle a consensual (flagged) conflict between two nodes. The reviewer
+     * names the WINNING node and the verdict:
+     *
+     * - supersedes: the winning node's fact replaced the other's. The loser is
+     *   marked stale (retrieval stops surfacing it) and records the winner as
+     *   its replacement, so the reviewer can undo the call later.
+     * - contradicts: both facts stay alive — the reviewer simply acknowledged
+     *   the contradiction, so only the synapse is relabelled.
+     *
+     * Either way every `possible_conflict` pen mark touching the loser vertex
+     * is cleared.
+     *
+     * @return array{loser_id: int, winner_id: int, action: string, conflicts_cleared: int}
+     */
+    public function settleConflict(int $linkId, int $winnerId, string $action): array
+    {
+        $link = AiTrainingNoteLink::findOrFail($linkId);
+        if ($winnerId !== (int) $link->note_id && $winnerId !== (int) $link->linked_note_id) {
+            throw new \InvalidArgumentException('The winning note must be one endpoint of the synapse.');
+        }
+        $loserId = $link->getOtherId($winnerId);
+
+        $action = in_array($action, [self::RELATION_SUPERSEDES, self::RELATION_CONTRADICTS], true)
+            ? $action
+            : self::RELATION_SUPERSEDES;
+
+        $loser = AiTrainingNote::findOrFail($loserId);
+        if ($action === self::RELATION_SUPERSEDES) {
+            $loser->update([
+                'is_stale' => true,
+                'superseded_by_note_id' => $winnerId,
+            ]);
+        } else {
+            $loser->update([
+                'is_stale' => false,
+                'superseded_by_note_id' => null,
+            ]);
+        }
+
+        $cleared = 0;
+        $touching = AiTrainingNoteLink::where('note_id', $loserId)
+            ->orWhere('linked_note_id', $loserId)
+            ->get();
+
+        foreach ($touching as $l) {
+            $meta = $l->metadata ?? [];
+            if (($meta[self::METADATA_CONFLICT_FLAG] ?? false) === true) {
+                $cleared++;
+            }
+            unset($meta[self::METADATA_CONFLICT_FLAG]);
+            $l->update([
+                'relation' => $l->id === $link->id ? $action : $l->relation,
+                'metadata' => $meta === [] ? null : $meta,
+            ]);
+        }
+
+        return [
+            'loser_id' => $loserId,
+            'winner_id' => $winnerId,
+            'action' => $action,
+            'conflicts_cleared' => $cleared,
+        ];
+    }
+
+    /**
+     * Undo a "supersedes" verdict: the node becomes a live neuron again, no
+     * longer points at a replacement, and its synapses are re-wired so it
+     * rejoins the graph exactly where it used to sit.
+     */
+    public function restoreNode(int $noteId): AiTrainingNote
+    {
+        $note = AiTrainingNote::findOrFail($noteId);
+        $note->update([
+            'is_stale' => false,
+            'superseded_by_note_id' => null,
+        ]);
+
+        $this->pruneLinksFor((int) $note->id);
+        $this->linkNewNote($note, (array) $note->related_keywords, true);
+
+        return $note->refresh();
     }
 
     /**
@@ -398,19 +525,21 @@ class AiMemoryGraphService
      *                                   kinds, or null to include every active
      *                                   non-rule neuron (rules load separately).
      */
-    public function candidateNotes(?string $query, array|string|null $kind = null, int $limit = 200): \Illuminate\Support\Collection
+    public function candidateNotes(?string $query, array|string|null $kind = null, int $limit = 200): Collection
     {
-        $tokens = $this->tokenize(trim((string)$query));
+        $tokens = $this->tokenize(trim((string) $query));
         $ids = $this->candidateNoteIds($tokens, $limit);
 
         if ($ids === []) {
             return collect();
         }
 
-        $query = AiTrainingNote::whereIn('id', $ids)->where('is_active', true);
+        $query = AiTrainingNote::whereIn('id', $ids)
+            ->where('is_active', true)
+            ->where('is_stale', false);
         if (is_array($kind)) {
             $kinds = array_values(array_filter(array_map(
-                fn($k) => $this->normalizeKind(is_string($k) ? $k : null),
+                fn ($k) => $this->normalizeKind(is_string($k) ? $k : null),
                 $kind
             )));
             $query->whereIn('kind', $kinds === [] ? self::NON_RULE_KINDS : $kinds);
@@ -441,8 +570,10 @@ class AiMemoryGraphService
             return true;
         }
 
-        // Cheap exact check first (indexed, scans all rows quickly).
-        if (AiTrainingNote::where('content_hash', md5($normalized))->exists()) {
+        // Cheap exact check first (indexed, scans all rows quickly). Stale nodes are
+        // skipped: their fact is outdated, so re-recording the current wording
+        // is not a duplicate of the live memory.
+        if (AiTrainingNote::where('content_hash', md5($normalized))->where('is_stale', false)->exists()) {
             return true;
         }
 
@@ -455,7 +586,7 @@ class AiMemoryGraphService
             ->get(['content']);
 
         foreach ($candidates as $existing) {
-            $existingTokens = $this->tokenize((string)$existing->content);
+            $existingTokens = $this->tokenize((string) $existing->content);
             if (count($existingTokens) < 3) {
                 continue;
             }
@@ -479,13 +610,13 @@ class AiMemoryGraphService
      */
     public function registerUsage(array $ids): void
     {
-        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($id) => $id > 0)));
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn ($id) => $id > 0)));
         if ($ids === []) {
             return;
         }
 
         AiTrainingNote::whereIn('id', $ids)->update([
-            'used_count' => \Illuminate\Support\Facades\DB::raw('used_count + 1'),
+            'used_count' => DB::raw('used_count + 1'),
             'last_used_at' => now(),
         ]);
     }
@@ -511,24 +642,24 @@ class AiMemoryGraphService
 
         $nodes = $notes->map(function ($n) use ($degree) {
             return [
-                'id' => (int)$n->id,
-                'title' => $n->title ?: $this->titleFromContent((string)$n->content),
-                'content' => (string)$n->content,
+                'id' => (int) $n->id,
+                'title' => $n->title ?: $this->titleFromContent((string) $n->content),
+                'content' => (string) $n->content,
                 'kind' => $n->kind,
                 'is_active' => $n->is_active,
                 'author_name' => $n->author_name ?? 'System',
                 'degree' => $degree[$n->id] ?? 0,
-                'used_count' => (int)($n->used_count ?? 0),
+                'used_count' => (int) ($n->used_count ?? 0),
             ];
         })->values()->all();
 
-        $linkIds = $linkRows->map(fn($l) => [
-            'id' => (int)$l->id,
-            'source' => (int)$l->note_id,
-            'target' => (int)$l->linked_note_id,
+        $linkIds = $linkRows->map(fn ($l) => [
+            'id' => (int) $l->id,
+            'source' => (int) $l->note_id,
+            'target' => (int) $l->linked_note_id,
             'label' => $l->label,
             'relation' => $l->relation,
-            'weight' => $l->weight !== null ? (float)$l->weight : null,
+            'weight' => $l->weight !== null ? (float) $l->weight : null,
             'reason' => $l->reason,
         ])->values()->all();
 
@@ -540,8 +671,8 @@ class AiMemoryGraphService
      */
     public function titleFromContent(string $content): string
     {
-        $clean = trim((string)preg_replace('/[\s]+/', ' ', strip_tags($content)));
-        $clean = (string)preg_replace('/^[\s\-*#>\d.]+\s*/', '', $clean);
+        $clean = trim((string) preg_replace('/[\s]+/', ' ', strip_tags($content)));
+        $clean = (string) preg_replace('/^[\s\-*#>\d.]+\s*/', '', $clean);
 
         if ($clean === '') {
             return 'Memory #';
@@ -564,6 +695,7 @@ class AiMemoryGraphService
     {
         if ($hintMatches !== []) {
             $keywords = implode(', ', array_slice($hintMatches, 0, 3));
+
             return ['persistent_hint', "AI-linked via keyword: {$keywords}"];
         }
 
@@ -604,8 +736,9 @@ class AiMemoryGraphService
      */
     protected function labelSource(AiTrainingNote $note): string
     {
-        $title = (string)($note->title ?? '');
-        return trim($title . ' ' . $note->content);
+        $title = (string) ($note->title ?? '');
+
+        return trim($title.' '.$note->content);
     }
 
     protected function containsTokenOrText(AiTrainingNote $note, string $hint): bool
@@ -618,16 +751,16 @@ class AiMemoryGraphService
             return false;
         }
 
-        $title = (string)$note->title;
-        $content = (string)$note->content;
-        $related = (array)($note->related_keywords ?? []);
+        $title = (string) $note->title;
+        $content = (string) $note->content;
+        $related = (array) ($note->related_keywords ?? []);
 
         if (str_contains(strtolower($content), $hint) || str_contains(strtolower($title), $hint)) {
             return true;
         }
 
         foreach ($related as $keyword) {
-            if (strtolower(trim((string)$keyword)) === $hint) {
+            if (strtolower(trim((string) $keyword)) === $hint) {
                 return true;
             }
         }
@@ -650,7 +783,8 @@ class AiMemoryGraphService
             if (strlen($t) < 3) {
                 return false;
             }
-            return !in_array($t, self::STOPWORDS, true);
+
+            return ! in_array($t, self::STOPWORDS, true);
         });
 
         return array_values(array_unique($tokens));
@@ -659,18 +793,18 @@ class AiMemoryGraphService
     protected function pickLabel(array $sharedTokens, array $hintMatches = []): ?string
     {
         foreach ($hintMatches as $hint) {
-            if (strlen((string)$hint) >= 3) {
+            if (strlen((string) $hint) >= 3) {
                 return $hint;
             }
         }
 
         foreach ($sharedTokens as $token) {
-            if (strlen((string)$token) >= 4) {
-                return (string)$token;
+            if (strlen((string) $token) >= 4) {
+                return (string) $token;
             }
         }
 
-        return $sharedTokens === [] ? null : (string)$sharedTokens[0];
+        return $sharedTokens === [] ? null : (string) $sharedTokens[0];
     }
 
     /**
@@ -682,6 +816,7 @@ class AiMemoryGraphService
         foreach ($notes as $note) {
             $docs[$note->id] = $this->tokenize($this->labelSource($note));
         }
+
         return $docs;
     }
 
@@ -702,6 +837,7 @@ class AiMemoryGraphService
         foreach ($df as $token => $count) {
             $idf[$token] = log(1 + $n / (1 + $count));
         }
+
         return $idf;
     }
 
@@ -711,6 +847,7 @@ class AiMemoryGraphService
         foreach (array_unique($tokens) as $token) {
             $vec[$token] = $idf[$token] ?? 1.0;
         }
+
         return $vec;
     }
 
@@ -730,8 +867,8 @@ class AiMemoryGraphService
             return 0.0;
         }
 
-        $normA = sqrt(array_sum(array_map(fn($w) => $w * $w, $a)));
-        $normB = sqrt(array_sum(array_map(fn($w) => $w * $w, $b)));
+        $normA = sqrt(array_sum(array_map(fn ($w) => $w * $w, $a)));
+        $normB = sqrt(array_sum(array_map(fn ($w) => $w * $w, $b)));
         if ($normA <= 0.0 || $normB <= 0.0) {
             return 0.0;
         }
