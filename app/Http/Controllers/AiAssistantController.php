@@ -1276,7 +1276,7 @@ class AiAssistantController extends Controller
         $sessionId = $request->input('session_id');
         $messageId = $request->input('message_id');
 
-        $result = $this->aiActionService->execute($action, $payload, $user);
+        $result = $this->aiActionService->execute($action, $payload, $user, $sessionId ? (int) $sessionId : null);
 
         if ($result['success']) {
             // Update the proposal message status to 'executed' and save undo metadata if message_id provided

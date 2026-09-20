@@ -42,6 +42,26 @@ export interface ActionProposalData {
     payload: Record<string, any>;
 }
 
+export interface GeneratedProjectFileNode {
+    id: number;
+    name: string;
+    is_folder: boolean;
+    kind: string;
+    mime_type?: string | null;
+    size_bytes?: number;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export interface GeneratedFile {
+    name: string;
+    path: string;
+    mime: string;
+    size: number;
+    url: string;
+    project_file?: GeneratedProjectFileNode;
+}
+
 interface AiActionProposalCardProps {
     proposal: ActionProposalData;
     sessionId: number | null;
@@ -51,6 +71,7 @@ interface AiActionProposalCardProps {
     onExecuted?: (resultMessage: string) => void;
     onStatusChange?: (newStatus: 'pending' | 'executing' | 'executed' | 'rejected') => void;
     onFeedbackComment?: (defaultText?: string) => void;
+    onFilesSaved?: (files: GeneratedFile[]) => void;
 }
 
 export default function AiActionProposalCard({
@@ -61,20 +82,15 @@ export default function AiActionProposalCard({
     isSuperadmin,
     onExecuted,
     onStatusChange,
-    onFeedbackComment
+    onFeedbackComment,
+    onFilesSaved
 }: AiActionProposalCardProps) {
     const [status, setStatus] = useState<'pending' | 'executing' | 'executed' | 'rejected'>(
         initialStatus || 'pending'
     );
     const [resultMessage, setResultMessage] = useState<string | null>(null);
     const [executionOutput, setExecutionOutput] = useState<string | null>(null);
-    const [generatedFiles, setGeneratedFiles] = useState<Array<{
-        name: string;
-        path: string;
-        mime: string;
-        size: number;
-        url: string;
-    }>>([]);
+    const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
     const [isChangesExpanded, setIsChangesExpanded] = useState<boolean>(true);
     const [isEditingProposal, setIsEditingProposal] = useState<boolean>(false);
     const [editableChanges, setEditableChanges] = useState<Array<{ field: string; old: string | number; new: string | number }>>(
@@ -340,6 +356,9 @@ export default function AiActionProposalCard({
                 }
                 if (Array.isArray(data.files) && data.files.length > 0) {
                     setGeneratedFiles(data.files);
+                    if (onFilesSaved) {
+                        onFilesSaved(data.files);
+                    }
                 }
                 if (onExecuted) {
                     onExecuted(data.message);
@@ -584,6 +603,14 @@ export default function AiActionProposalCard({
                                 >
                                     {fileIcon(f.name)}
                                     <span className="max-w-[180px] truncate">{f.name}</span>
+                                    {f.project_file && (
+                                        <span
+                                            title="Saved into this project's file tree"
+                                            className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[9px] font-semibold shrink-0"
+                                        >
+                                            <Check className="h-2.5 w-2.5" /> In project
+                                        </span>
+                                    )}
                                     <span className="text-[9.5px] font-mono text-muted-foreground shrink-0">
                                         {(f.size / 1024).toFixed(1)} KB
                                     </span>

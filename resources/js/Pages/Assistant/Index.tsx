@@ -45,7 +45,7 @@ import {
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
-import AiActionProposalCard, { ActionProposalData } from '@/Components/AiActionProposalCard';
+import AiActionProposalCard, { ActionProposalData, GeneratedFile } from '@/Components/AiActionProposalCard';
 import NeuronFiringMap from '@/Components/NeuronFiringMap';
 import FileViewerModal from '@/Components/Assistant/FileViewerModal';
 import { consumeNdjson } from '@/lib/ndjson';
@@ -1824,6 +1824,29 @@ function playCompletionChime(soundEnabled: boolean): void {
                                                             setTimeout(() => {
                                                                 inputRef.current?.focus();
                                                             }, 50);
+                                                        }}
+                                                        onFilesSaved={(files) => {
+                                                            const savedNodes = files
+                                                                .map(f => f.project_file)
+                                                                .filter((n): n is NonNullable<typeof n> => Boolean(n))
+                                                                .map(n => ({ ...n, children: [] }));
+
+                                                            if (savedNodes.length === 0) return;
+
+                                                            const projectId = sessionList.find(s => s.id === currentSessionId)?.project_id;
+                                                            if (!projectId) return;
+
+                                                            updateFileTree(projectId, tree =>
+                                                                savedNodes.reduce(
+                                                                    (acc, node) => insertFileNode(acc, null, node),
+                                                                    tree
+                                                                )
+                                                            );
+                                                            setExpandedProjects(prev => new Set(prev).add(projectId));
+                                                            showCornerToast(
+                                                                `Saved ${savedNodes.length} file${savedNodes.length > 1 ? 's' : ''} to project`,
+                                                                savedNodes.map(n => n.name).join(', ')
+                                                            );
                                                         }}
                                                     />
                                                 </div>

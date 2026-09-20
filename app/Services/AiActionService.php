@@ -20,7 +20,7 @@ class AiActionService
     /**
      * Execute an action proposal approved by Superadmin.
      */
-    public function execute(string $action, array $payload, User $user): array
+    public function execute(string $action, array $payload, User $user, ?int $sessionId = null): array
     {
         if ($user->role !== 'superadmin') {
             return [
@@ -59,7 +59,7 @@ class AiActionService
                     return $this->executeAddParameter($payload, $user);
 
                 case 'run_python_script':
-                    return $this->executeRunPythonScript($payload, $user);
+                    return $this->executeRunPythonScript($payload, $user, $sessionId);
 
                 case 'learn_repo':
                     return $this->executeLearnRepo($payload, $user);
@@ -1063,9 +1063,12 @@ class AiActionService
      *
      * Any file the script writes to its working directory (the run's dedicated
      * output folder, also exposed via the OUTPUT_DIR env var) is persisted and
-     * returned as a downloadable artifact in `files`.
+     * returned as a downloadable artifact in `files`. When the run belongs to
+     * a project session, each generated file is ALSO inserted into the
+     * project's file tree so it appears in the sidebar and can be @-referenced
+     * or previewed like any uploaded file.
      */
-    protected function executeRunPythonScript(array $payload, User $user): array
+    protected function executeRunPythonScript(array $payload, User $user, ?int $sessionId = null): array
     {
         $scriptContent = $payload['code'] ?? null;
         if (empty($scriptContent)) {
@@ -1139,17 +1142,77 @@ class AiActionService
             }
             usort($files, fn ($a, $b) => strcmp($a['name'], $b['name']));
 
+            // Insert generated files into the owning project's file tree so they
+            // show up in the sidebar (and stay downloadable as run artifacts).
+            $projectSavedNote = '';
+            if ($sessionId && $files !== []) {
+                try {
+                    $session = \App\Models\AiSession::with('project')
+                        ->where('id', $sessionId)
+                        ->where('user_id', $user->id)
+                        ->first();
+
+                    if ($session?->project) {
+                        $ingest = app(\App\Services\AiFileIngestService::class);
+                        $saved = 0;
+                        foreach ($files as $i => $fileEntry) {
+                            $src = $outputDir . '/' . $fileEntry['name'];
+                            if (! is_file($src)) {
+                                continue;
+                            }
+
+                            $node = $this->persistGeneratedProjectFile(
+                                $session->project,
+                                $user,
+                                $src,
+                                $fileEntry['name'],
+                                $fileEntry['mime'],
+                                $ingest
+                            );
+
+                            if ($node !== null) {
+                                $files[$i]['project_file'] = [
+                                    'id' => (int) $node->id,
+                                    'name' => $node->name,
+                                    'is_folder' => (bool) $node->is_folder,
+                                    'kind' => $node->kind,
+                                    'mime_type' => $node->mime_type,
+                                    'size_bytes' => (int) $node->size_bytes,
+                                    'created_at' => $node->created_at,
+                                    'updated_at' => $node->updated_at,
+                                ];
+                                $saved++;
+                            }
+                        }
+
+                        if ($saved > 0) {
+                            $projectSavedNote = " Saved {$saved} file"
+                                . ($saved > 1 ? 's' : '')
+                                . " into project \"{$session->project->title}\" and added to the file tree.";
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    Log::error('AI Action: failed to insert generated file into project tree', [
+                        'session_id' => $sessionId,
+                        'user_id' => $user->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             ActivityLog::log('ai_run_python', null, null, [
                 'exit_code' => $exitCode,
                 'code_snippet' => mb_substr($scriptContent, 0, 200),
                 'output_snippet' => mb_substr($stdout, 0, 200),
                 'generated_files' => array_map(fn ($f) => $f['name'], $files),
+                'saved_to_project' => $projectSavedNote !== '',
             ]);
 
             if ($exitCode !== 0) {
                 return [
                     'success' => false,
-                    'message' => 'Python script returned error: ' . ($stderr ?: $stdout ?: "Exit code {$exitCode}"),
+                    'message' => 'Python script returned error: ' . ($stderr ?: $stdout ?: "Exit code {$exitCode}")
+                        . $projectSavedNote,
                     'output' => $stderr ?: $stdout,
                     'files' => $files,
                 ];
@@ -1157,7 +1220,7 @@ class AiActionService
 
             return [
                 'success' => true,
-                'message' => 'Python script executed successfully.',
+                'message' => 'Python script executed successfully.' . $projectSavedNote,
                 'output' => trim($stdout),
                 'files' => $files,
             ];
@@ -1319,6 +1382,100 @@ class AiActionService
         }
 
         return $map;
+    }
+
+    /**
+     * Copy a generated run artifact into the owning project's file tree (root
+     * level), mirroring how uploads are stored and indexed so the file can be
+     * previewed and @-referenced like any uploaded project file.
+     *
+     * The original artifact in ai_generated is left untouched — it stays
+     * downloadable from the run itself. Returns the new record or null when a
+     * single file fails (other files still get saved).
+     */
+    protected function persistGeneratedProjectFile(
+        \App\Models\AiProject $project,
+        User $user,
+        string $sourcePath,
+        string $fileName,
+        string|false $mime,
+        \App\Services\AiFileIngestService $ingest
+    ): ?\App\Models\AiProjectFile {
+        try {
+            $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+            $storageName = 'ai-projects/' . md5($sourcePath . microtime()) . ($ext !== '' ? '.' . $ext : '');
+            $targetFull = storage_path('app/private/' . $storageName);
+
+            if (! is_dir(dirname($targetFull))) {
+                mkdir(dirname($targetFull), 0755, true);
+            }
+            if (! @copy($sourcePath, $targetFull)) {
+                return null;
+            }
+
+            $mime = $mime ?: 'application/octet-stream';
+            $name = $this->uniqueGeneratedName($project, $fileName);
+            $kind = $ingest->classify($fileName, $mime);
+            $text = $ingest->extractText(
+                $targetFull,
+                $mime,
+                $fileName,
+                \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX
+            );
+
+            $record = \App\Models\AiProjectFile::create([
+                'user_id' => $user->id,
+                'project_id' => $project->id,
+                'parent_id' => null,
+                'name' => $name,
+                'is_folder' => false,
+                'mime_type' => $mime,
+                'size_bytes' => filesize($targetFull),
+                'kind' => $kind,
+                'storage_path' => $storageName,
+                'extracted_text' => $text === '' ? null : $text,
+                'content_hash' => md5_file($targetFull) ?: null,
+            ]);
+
+            $project->touch();
+
+            return $record;
+        } catch (\Throwable $e) {
+            Log::error('AI Action: failed to persist generated project file', [
+                'file' => $fileName,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Deduplicate a generated file name at the project root so repeated runs
+     * become "report.html", "report (2).html", ... instead of overwriting a
+     * sibling that may already be referenced in a conversation.
+     */
+    protected function uniqueGeneratedName(\App\Models\AiProject $project, string $name): string
+    {
+        $taken = \App\Models\AiProjectFile::where('project_id', $project->id)
+            ->whereNull('parent_id')
+            ->pluck('name');
+
+        if (! $taken->contains($name)) {
+            return $name;
+        }
+
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $base = $ext !== '' ? substr($name, 0, -(strlen($ext) + 1)) : $name;
+
+        for ($i = 2; $i <= 999; $i++) {
+            $candidate = $ext !== '' ? "{$base} ({$i}).{$ext}" : "{$base} ({$i})";
+            if (! $taken->contains($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $name . ' ' . uniqid();
     }
 }
 

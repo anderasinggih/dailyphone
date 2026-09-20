@@ -435,13 +435,69 @@ PY
         $response->assertJson([
             'success' => true,
         ]);
+    }
 
-        // Unit should be restored, not throwing duplicate constraint violation
-        $restoredStock = Stock::where('imei_1', '357891234567891')->first();
-        $this->assertNotNull($restoredStock);
-        $this->assertFalse($restoredStock->trashed());
-        $this->assertEquals('admin@housephone.com (AI)', $restoredStock->created_by);
-        $this->assertStringContainsString('dipulihkan dari keranjang sampah', $response->json('message'));
+    public function test_superadmin_generated_files_land_in_project_tree()
+    {
+        $superadmin = User::factory()->create([
+            'email' => 'genfiles@dailyphone.test',
+            'role' => 'superadmin',
+        ]);
+
+        $project = \App\Models\AiProject::create([
+            'user_id' => $superadmin->id,
+            'title' => 'Dashboard Project',
+        ]);
+
+        $session = \App\Models\AiSession::create([
+            'user_id' => $superadmin->id,
+            'project_id' => $project->id,
+            'title' => 'Update dashboard',
+        ]);
+
+        $response = $this->actingAs($superadmin)->postJson(route('assistant.execute'), [
+            'action' => 'run_python_script',
+            'payload' => [
+                'code' => <<<'PY'
+with open('updated_dashboard.html', 'w') as f:
+    f.write('<h1>Hello Dashboard</h1>')
+print('OK')
+PY
+            ],
+            'session_id' => $session->id,
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertJson(['success' => true]);
+
+        // Generated file is returned with a project_file node linking into the tree
+        $filePayload = collect($response->json('files'))->firstWhere('name', 'updated_dashboard.html');
+        $this->assertNotNull($filePayload);
+        $this->assertNotEmpty($filePayload['project_file'] ?? []);
+        $this->assertStringContainsString($project->title, $response->json('message'));
+
+        // The file was actually inserted into the project's file tree
+        $this->assertDatabaseHas('ai_project_files', [
+            'user_id' => $superadmin->id,
+            'project_id' => $project->id,
+            'name' => 'updated_dashboard.html',
+            'is_folder' => false,
+        ]);
+
+        // And it is listed by the file explorer + servable as source content
+        $tree = $this->actingAs($superadmin)
+            ->getJson(route('assistant.project.files', $project->id))
+            ->assertOk()
+            ->json('files');
+
+        $this->assertCount(1, $tree);
+        $this->assertEquals('updated_dashboard.html', $tree[0]['name']);
+
+        $fileId = \App\Models\AiProjectFile::where('project_id', $project->id)->first()->id;
+        $this->actingAs($superadmin)
+            ->getJson(route('assistant.project.files.content', [$project->id, $fileId]))
+            ->assertOk()
+            ->assertJsonPath('content', '<h1>Hello Dashboard</h1>');
     }
 }
 

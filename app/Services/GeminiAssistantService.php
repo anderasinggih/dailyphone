@@ -1228,17 +1228,15 @@ PROMPT;
                     // Token streaming: relay each visible delta to $onChunk while
                     // the rest of the route continues to think, so the UI renders
                     // words ~1s after the user sends the message.
-                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:streamGenerateContent?alt=json&key={$apiKey}";
-                    $response = Http::withOptions(['stream' => true])
-                        ->timeout(300)
-                        ->connectTimeout(15)
-                        ->post($url, $payload);
-
-                    if (! $response->successful()) {
-                        $lastErrorMsg = $this->streamErrorBody($response, $i, $totalKeys, $useModel);
-
-                        continue;
-                    }
+                    //
+                    // NOTE: the Laravel/Guzzle streaming client buffers ~8KB of
+                    // the body before a read() yields, which collapsed every
+                    // streamed object into one burst — the chat showed a blank
+                    // waiting spinner for seconds and then the whole reply at
+                    // once. cURL's WRITEFUNCTION fires as each network chunk
+                    // lands, so the SSE parser below emits per-event deltas and
+                    // tokens actually flow to the UI live.
+                    $url = "https://generativelanguage.googleapis.com/v1beta/models/{$useModel}:streamGenerateContent?alt=sse&key={$apiKey}";
 
                     $meta = [];
                     $raw = null;
@@ -1247,11 +1245,19 @@ PROMPT;
                     $modelParts = [];
                     $usage = null;
                     $grounding = null;
-                    $text = $this->streamGeminiContent($response, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding, $modelParts);
+                    $streamResult = $this->streamGeminiSSE($url, $payload, $onChunk, $meta, $raw, $images, $calls, $usage, $grounding, $modelParts);
+
+                    if (! $streamResult['success']) {
+                        $lastErrorMsg = $streamResult['error'];
+                        Log::warning("Gemini model {$useModel} stream failed: {$lastErrorMsg}");
+                        $this->logKeyRotation($i, $totalKeys);
+
+                        continue;
+                    }
 
                     return [
                         'success' => true,
-                        'text' => $text,
+                        'text' => $streamResult['text'],
                         'calls' => $calls,
                         'modelParts' => $modelParts,
                         'usage' => $usage,
@@ -1425,20 +1431,6 @@ PROMPT;
         }
 
         return mb_substr($rawBody, 0, 500);
-    }
-
-    /**
-     * Surface the real error body of a failed streaming request (responses are
-     * not buffered, so the raw PSR stream must be read to explain the failure).
-     */
-    protected function streamErrorBody($response, int $index, int $totalKeys, string $useModel): string
-    {
-        $lastErrorMsg = $this->errorMessageFrom($response);
-
-        Log::warning('Gemini stream key #'.($index + 1)."/{$totalKeys} failed ({$response->status()}) on {$useModel}: {$lastErrorMsg}");
-        $this->logKeyRotation($index, $totalKeys);
-
-        return $lastErrorMsg;
     }
 
     /**
@@ -1629,7 +1621,7 @@ SYSTEM;
     }
 
     /**
-     * Consume a :streamGenerateContent?alt=json response and relay each visible
+     * Consume a :streamGenerateContent?alt=sse response and relay each visible
      * text delta to the callback. ```ai_memo blocks are dropped live so the
      * client never flashes the temporary memory JSON, but the FULL raw text
      * (memos included) is still appended to $raw so the caller can persist the
@@ -1639,10 +1631,14 @@ SYSTEM;
      * search-grounding metadata — those are collected through the by-reference
      * accumulators so the function-calling loop and observability logging work
      * on streamed turns exactly like they do on blocking ones.
+     *
+     * Unlike the Laravel HTTP client (which buffers ~8KB before read() yields),
+     * this runs a raw cURL handle whose WRITEFUNCTION is invoked the moment each
+     * network chunk arrives, so the SSE parser can fire $onChunk per event while
+     * the reply is still being generated — the UI sees words appear live.
      */
-    protected function streamGeminiContent($response, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null, ?array &$calls = null, ?array &$usage = null, ?array &$grounding = null, ?array &$modelParts = null): string
+    protected function streamGeminiSSE(string $url, array $payload, callable $onChunk, ?array &$meta = null, ?string &$raw = null, ?array &$images = null, ?array &$calls = null, ?array &$usage = null, ?array &$grounding = null, ?array &$modelParts = null): array
     {
-        $body = $response->toPsrResponse()->getBody();
 
         $out = '';
         $pending = '';
@@ -1722,94 +1718,81 @@ SYSTEM;
             });
         };
 
-        // Gemini's :streamGenerateContent?alt=json streams a *pretty-printed*
-        // JSON array  [ { ... }, { ... } ]  where each top-level object spans
-        // many lines — so a naive line-by-line json_decode() always fails and
-        // yields nothing ("empty stream"). Scan the byte stream for balanced
-        // top-level objects, honouring braces inside JSON strings, and decode
-        // each complete object as soon as it arrives (keeps live token flow).
-        //
-        // IMPORTANT: bytes before a consumed object are dropped, never seen
-        // again; the remainder is re-scanned only with a RESET scanner state
-        // (depth/start/inStr), so braces that span chunk boundaries cannot be
-        // re-counted. Re-scanning a whole uncleared buffer per read inflates
-        // $depth and the closing brace never reaches 0 — which silently drops
-        // the tail of the response (the model appears to "stop mid-sentence").
-        // $scan is a cursor of already-examined bytes in the current buffer.
-        $buffer = '';
-        $depth = 0;
-        $start = -1;   // index of the current object's opening brace; -1 = idle
-        $scan = 0;     // bytes already examined in the current buffer
-        $inStr = false;
-        $esc = false;
+        // Server-sent events: each complete "data: { ... }\n\n" carries one
+        // generation chunk. Events can split across cURL write callbacks, so a
+        // small parcel buffer is kept between invocations.
+        $httpStatus = 0;
+        $errorBody = '';
+        $eventBuf = '';
 
-        while (! $body->eof()) {
-            $buffer .= $body->read(8192);
-            $len = strlen($buffer);
-
-            // When idle (between objects), drop leading separators so the
-            // buffer always starts exactly at the next object boundary.
-            if ($start < 0) {
-                $cut = 0;
-                while ($cut < $len && strpos(" \t\r\n[],", $buffer[$cut]) !== false) {
-                    $cut++;
-                }
-                if ($cut > 0) {
-                    $buffer = substr($buffer, $cut);
-                    $len = strlen($buffer);
-                    $scan = 0;
-                }
-            }
-
-            $i = $scan;
-            while ($i < $len) {
-                $ch = $buffer[$i];
-
-                if ($inStr) {
-                    if ($esc) {
-                        $esc = false;
-                    } elseif ($ch === '\\') {
-                        $esc = true;
-                    } elseif ($ch === '"') {
-                        $inStr = false;
-                    }
-                    $i++;
-
-                    continue;
+        $curl = curl_init($url);
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_CONNECTTIMEOUT => 20,
+            CURLOPT_TIMEOUT => 300,
+            CURLOPT_HEADERFUNCTION => function ($ch, string $headerLine) use (&$httpStatus): int {
+                if (preg_match('#^HTTP/\S+ (\d{3})#', $headerLine, $m)) {
+                    $httpStatus = (int) $m[1];
                 }
 
-                if ($ch === '"') {
-                    $inStr = true;
-                } elseif ($ch === '{') {
-                    if ($start < 0) {
-                        $start = $i;
-                    }
-                    $depth++;
-                } elseif ($ch === '}') {
-                    $depth--;
-                    if ($depth === 0 && $start >= 0) {
-                        $json = json_decode(substr($buffer, $start, $i - $start + 1), true);
-                        if (is_array($json)) {
-                            $emitJson($json);
+                return strlen($headerLine);
+            },
+            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use (&$httpStatus, &$errorBody, &$eventBuf, $emitJson): int {
+                if ($httpStatus >= 400) {
+                    $errorBody .= $data;
+
+                    return strlen($data);
+                }
+
+                $eventBuf .= $data;
+                while (($nl = strpos($eventBuf, "\n\n")) !== false) {
+                    $event = substr($eventBuf, 0, $nl);
+                    $eventBuf = substr($eventBuf, $nl + 2);
+                    foreach (preg_split('/\r?\n/', $event) as $line) {
+                        if (str_starts_with($line, 'data:')) {
+                            $eventData = trim(substr($line, 5));
+                            if ($eventData === '' || $eventData === '[DONE]' || $eventData === '[]') {
+                                continue;
+                            }
+                            $json = json_decode($eventData, true);
+                            if (is_array($json) && $json !== []) {
+                                $emitJson($json);
+                            }
                         }
-                        // Drop the consumed object and restart scanning the
-                        // remainder from 0: at this point $inStr is false and
-                        // depth/start were reset, so re-examining the remainder
-                        // is safe — it cannot re-count the object just emitted.
-                        $buffer = substr($buffer, $i + 1);
-                        $len = strlen($buffer);
-                        $depth = 0;
-                        $start = -1;
-                        $scan = 0;
-                        $i = 0;
-
-                        continue;
                     }
                 }
-                $i++;
+
+                return strlen($data);
+            },
+        ]);
+
+        $exec = curl_exec($curl);
+        if ($exec === false) {
+            $err = curl_error($curl);
+            curl_close($curl);
+
+            return ['success' => false, 'error' => $err !== '' ? $err : 'cURL stream request failed'];
+        }
+        curl_close($curl);
+
+        // A failed request answers with the plain JSON error object (not SSE);
+        // surface its message the same way buffered requests do.
+        if ($httpStatus >= 400) {
+            $trimmed = trim($errorBody);
+            if ($trimmed !== '') {
+                $decoded = json_decode($trimmed, true);
+                if (is_array($decoded)) {
+                    $msg = trim((string) ($decoded['error']['message'] ?? $decoded['message'] ?? ''));
+                    if ($msg !== '') {
+                        return ['success' => false, 'error' => $msg];
+                    }
+                }
             }
 
-            $scan = $len;
+            return ['success' => false, 'error' => 'HTTP '.$httpStatus];
         }
 
         $this->streamVisible($pending, $inMemo, function (string $s) use (&$out, $onChunk): void {
@@ -1828,7 +1811,7 @@ SYSTEM;
             $raw .= $md;
         }
 
-        return $out;
+        return ['success' => true, 'text' => $out];
     }
 
     /**
