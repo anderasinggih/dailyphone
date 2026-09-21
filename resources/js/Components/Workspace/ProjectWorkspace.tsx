@@ -12,6 +12,8 @@ import {
     Folder,
     FolderOpen,
     GitCompareArrows,
+    GitBranch,
+    GitCommitHorizontal,
     Image as ImageIcon,
     Loader2,
     MessageSquare,
@@ -20,8 +22,10 @@ import {
     Pencil,
     RefreshCw,
     RotateCw,
+    Unplug,
     X,
 } from 'lucide-react';
+import GithubMark from '@/Components/GithubMark';
 import { diffLines, diffStatsOf, DiffLine, DiffStats } from '@/lib/diff';
 import { LANG_LABELS, formatBytes } from '@/Components/Assistant/FileViewerModal';
 
@@ -63,6 +67,16 @@ interface Props {
     // so the top bar can toggle its visibility.
     chatPaneOpen?: boolean;
     onToggleChatPane?: () => void;
+    // Git repo backing: when repoUrl is set the workspace can commit & push
+    // its changes back to the remote repository.
+    repoUrl?: string | null;
+    repoBranch?: string | null;
+    repoError?: string | null;
+    repoWorking?: 'commit' | 'pull' | 'connect' | null;
+    onConnectRepo?: () => void;
+    onCommitRepo?: () => void;
+    onPullRepo?: () => void;
+    onDisconnectRepo?: () => void;
 }
 
 const PREVIEW_KINDS = new Set(['image', 'pdf']);
@@ -70,7 +84,7 @@ const PREVIEW_KINDS = new Set(['image', 'pdf']);
 const csrfToken = (): string =>
     (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '';
 
-export default function ProjectWorkspace({ projectId, projectTitle, onClose, refreshSignal = 0, chatPaneOpen = true, onToggleChatPane }: Props) {
+export default function ProjectWorkspace({ projectId, projectTitle, onClose, refreshSignal = 0, chatPaneOpen = true, onToggleChatPane, repoUrl = null, repoBranch = null, repoError = null, repoWorking = null, onConnectRepo, onCommitRepo, onPullRepo, onDisconnectRepo }: Props) {
     const [files, setFiles] = useState<WorkspaceProjectFile[]>([]);
     const [loadingTree, setLoadingTree] = useState(true);
     const [treeError, setTreeError] = useState<string | null>(null);
@@ -89,6 +103,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
     const [isSavingEdit, setIsSavingEdit] = useState(false);
     const editAreaRef = useRef<HTMLTextAreaElement>(null);
     const editGutterRef = useRef<HTMLDivElement>(null);
+    const [gitMenuOpen, setGitMenuOpen] = useState(false);
 
     const reloadTree = useCallback(async () => {
         setLoadingTree(true);
@@ -684,6 +699,89 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                         <span className="text-rose-600 dark:text-rose-400">-{totalStats.deletions}</span>
                     </span>
                 )}
+
+                {/* Git repo menu */}
+                <div className="relative">
+                    {repoUrl ? (
+                        <button
+                            type="button"
+                            onClick={() => setGitMenuOpen(v => !v)}
+                            title={repoUrl}
+                            className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
+                                gitMenuOpen ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                            }`}
+                        >
+                            {repoWorking
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                                : <GitBranch className="h-3.5 w-3.5" />}
+                            <span className="hidden lg:inline">{repoBranch || 'main'}</span>
+                            {repoError && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-red-500 shrink-0" title={repoError} />}
+                        </button>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={onConnectRepo}
+                            title="Connect a Git repository"
+                            className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                        >
+                            {repoWorking === 'connect'
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                                : <GithubMark className="h-3.5 w-3.5" />}
+                            <span className="hidden lg:inline">Git</span>
+                        </button>
+                    )}
+
+                    {gitMenuOpen && repoUrl && (
+                        <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-xl border border-border/60 bg-card/95 backdrop-blur-2xl shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
+                            <div className="px-2.5 py-2 border-b border-border/30">
+                                <div className="text-[9.5px] font-bold tracking-[0.08em] text-muted-foreground/60">GIT REPOSITORY</div>
+                                <div className="text-[11px] text-foreground font-medium mt-0.5 truncate" title={repoUrl}>
+                                    {repoUrl}
+                                </div>
+                                <div className="text-[10px] text-muted-foreground mt-0.5">
+                                    Branch <span className="font-mono text-primary">{repoBranch || 'main'}</span>
+                                    {repoError && <span className="text-red-500 block mt-0.5 break-words">⚠ {repoError}</span>}
+                                </div>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => { setGitMenuOpen(false); onCommitRepo?.(); }}
+                                disabled={repoWorking !== null}
+                                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-[11px] font-semibold text-foreground hover:bg-primary/10 hover:text-primary transition disabled:opacity-50"
+                            >
+                                {repoWorking === 'commit'
+                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                                    : <GitCommitHorizontal className="h-3.5 w-3.5 text-primary" />}
+                                Commit & Push
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setGitMenuOpen(false); onPullRepo?.(); }}
+                                disabled={repoWorking !== null}
+                                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-[11px] font-medium text-foreground hover:bg-muted/60 transition disabled:opacity-50"
+                            >
+                                {repoWorking === 'pull'
+                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                                    : <RefreshCw className="h-3.5 w-3.5" />}
+                                Pull Latest
+                            </button>
+
+                            <div className="border-t border-border/30 pt-0.5 mt-0.5">
+                                <button
+                                    type="button"
+                                    onClick={() => { setGitMenuOpen(false); onDisconnectRepo?.(); }}
+                                    disabled={repoWorking !== null}
+                                    className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-[11px] font-medium text-destructive hover:bg-destructive/10 transition disabled:opacity-50"
+                                >
+                                    <Unplug className="h-3.5 w-3.5" />
+                                    Disconnect
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
                 <button
                     type="button"
                     onClick={() => reloadTree()}

@@ -136,6 +136,13 @@ Route::prefix('application/dp')->group(function () {
         Route::get('/assistant/projects/{project}/files/{file}/download', [AiAssistantController::class, 'downloadProjectFile'])->name('assistant.project.files.download');
         Route::delete('/assistant/projects/{project}/files/{file}', [AiAssistantController::class, 'deleteProjectFile'])->name('assistant.project.files.destroy');
 
+        // Git repo-backed projects
+        Route::post('/assistant/projects/from-repo', [AiAssistantController::class, 'createProjectFromRepo'])->name('assistant.project.create.repo');
+        Route::post('/assistant/projects/{project}/repo', [AiAssistantController::class, 'connectRepo'])->name('assistant.project.repo.connect');
+        Route::post('/assistant/projects/{project}/repo/pull', [AiAssistantController::class, 'pullRepo'])->name('assistant.project.repo.pull');
+        Route::post('/assistant/projects/{project}/repo/commit', [AiAssistantController::class, 'commitRepo'])->name('assistant.project.repo.commit');
+        Route::delete('/assistant/projects/{project}/repo', [AiAssistantController::class, 'disconnectRepo'])->name('assistant.project.repo.disconnect');
+
         Route::post('/assistant/upload', [AiAssistantController::class, 'upload'])->name('assistant.upload');
         Route::post('/assistant/checkout-summary', [AiAssistantController::class, 'checkoutSummary'])->name('assistant.checkout-summary');
         Route::post('/assistant/execute', [AiAssistantController::class, 'executeAction'])->name('assistant.execute');

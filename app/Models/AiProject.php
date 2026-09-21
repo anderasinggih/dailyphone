@@ -14,7 +14,16 @@ class AiProject extends Model
         'user_id',
         'title',
         'description',
+        'repo_url',
+        'repo_branch',
+        'repo_imported',
+        'repo_error',
     ];
+
+    public function isRepoProject(): bool
+    {
+        return filled($this->repo_url);
+    }
 
     public function user(): BelongsTo
     {
@@ -47,6 +56,14 @@ class AiProject extends Model
 
                 if ($paths) {
                     Storage::disk('local')->delete($paths);
+                }
+
+                if ($project->repo_url) {
+                    try {
+                        app(\App\Services\GitRepoService::class)->removeClone($project);
+                    } catch (\Throwable $e) {
+                        Log::warning('Failed to remove repo clone: '.$e->getMessage());
+                    }
                 }
 
                 foreach ($project->sessions as $session) {

@@ -42,8 +42,12 @@ import {
     FolderKanban,
     Paperclip,
     Download,
-    Upload
+    Upload,
+    GitBranch,
+    GitCommitHorizontal,
+    Unplug
 } from 'lucide-react';
+import GithubMark from '@/Components/GithubMark';
 import GeminiStar from '@/Components/GeminiStar';
 import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData, GeneratedFile } from '@/Components/AiActionProposalCard';
@@ -132,6 +136,10 @@ interface AiProject {
     updated_at: string;
     sessions: ProjectSession[];
     files: ProjectFileNode[];
+    repo_url?: string | null;
+    repo_branch?: string | null;
+    repo_imported?: boolean;
+    repo_error?: string | null;
 }
 
 const AVAILABLE_MODELS = [
@@ -251,7 +259,23 @@ export default function Assistant({
     // Bumped whenever a project file mutates so the open workspace reloads its tree.
     const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
     // IDE split: whether the chat column stays visible beside an open workspace.
-    const [workspaceChatOpen, setWorkspaceChatOpen] = useState(true);
+    const [workspaceChatOpen, setWorkspaceChatOpen] = useState(false);
+    // Git repo modal: create a project from a repo, or connect one to a project.
+    const [repoModal, setRepoModal] = useState<{ mode: 'create' | 'connect'; projectId?: number } | null>(null);
+    const [repoUrl, setRepoUrl] = useState('');
+    const [repoBranch, setRepoBranch] = useState('main');
+    const [repoBusy, setRepoBusy] = useState(false);
+    const [repoError, setRepoError] = useState<string | null>(null);
+    // Live git operation indicator for an open workspace.
+    const [repoWorking, setRepoWorking] = useState<{ projectId: number; action: 'commit' | 'pull' | 'connect' } | null>(null);
+    const [repoToast, setRepoToast] = useState<string | null>(null);
+    const repoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const showRepoToast = (message: string) => {
+        setRepoToast(message);
+        if (repoToastTimerRef.current) clearTimeout(repoToastTimerRef.current);
+        repoToastTimerRef.current = setTimeout(() => setRepoToast(null), 3500);
+    };
     // Drag & drop file attach state for the chat panel.
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
@@ -930,6 +954,144 @@ function playCompletionChime(soundEnabled: boolean): void {
         }
     };
 
+    const openRepoModal = (mode: 'create' | 'connect', projectId?: number) => {
+        setRepoModal({ mode, projectId });
+        setRepoUrl('');
+        setRepoBranch('main');
+        setRepoError(null);
+    };
+
+    // Create a new project from a GitHub repo, or connect a repo to an existing one.
+    const submitRepoModal = async () => {
+        const url = repoUrl.trim();
+        if (!url) {
+            setRepoError('Please paste a repository URL or "user/repo" shorthand.');
+            return;
+        }
+        if (!repoModal) return;
+        setRepoBusy(true);
+        setRepoError(null);
+        try {
+            if (repoModal.mode === 'create') {
+                const res = await fetch(route('assistant.project.create.repo'), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    body: JSON.stringify({ repo_url: url, repo_branch: repoBranch || undefined }),
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    setRepoError(data.message || `Failed (${res.status})`);
+                    setRepoBusy(false);
+                    return;
+                }
+                const proj: AiProject = data.project;
+                setProjectList(prev => [proj, ...prev]);
+                setExpandedProjects(prev => new Set(prev).add(proj.id));
+                const first = proj.sessions[0];
+                if (first) {
+                    const nextSession: Session = { ...first, project_id: proj.id, custom_rules: null, ai_model: null };
+                    setSessionList(prev => [nextSession, ...prev]);
+                    setCurrentSessionId(first.id);
+                    syncUrlSessionId(first.id);
+                    setMessages([welcomeMessage]);
+                }
+                setRepoModal(null);
+                setIsSidebarOpen(false);
+                setWorkspaceProjectId(proj.id);
+                setWorkspaceRefresh(v => v + 1);
+                showRepoToast(`Cloned ${data.project?.repo_url ?? url} into "${proj.title}".`);
+            } else if (repoModal.projectId) {
+                const pid = repoModal.projectId;
+                const res = await fetch(route('assistant.project.repo.connect', pid), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    body: JSON.stringify({ repo_url: url, repo_branch: repoBranch || undefined }),
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    setRepoError(data.message || `Failed (${res.status})`);
+                    setRepoBusy(false);
+                    return;
+                }
+                const updated: Partial<AiProject> = data.project || {};
+                setProjectList(prev => prev.map(p => (p.id === pid ? { ...p, ...updated, files: data.files ?? p.files } : p)));
+                setRepoModal(null);
+                setWorkspaceRefresh(v => v + 1);
+                showRepoToast('Repository connected. Workspace reloaded with repo files.');
+            }
+        } catch (err: any) {
+            setRepoError(err?.message || 'Something went wrong.');
+        } finally {
+            setRepoBusy(false);
+        }
+    };
+
+    const runRepoAction = async (action: 'commit' | 'pull' | 'connect', projectId: number, repo?: { url?: string | null; branch?: string | null }) => {
+        setRepoWorking({ projectId, action });
+        try {
+            let res: Response;
+            if (action === 'connect') {
+                openRepoModal('connect', projectId);
+                setRepoWorking(null);
+                return;
+            }
+            const endpoint = action === 'commit'
+                ? route('assistant.project.repo.commit', projectId)
+                : route('assistant.project.repo.pull', projectId);
+            res = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken(),
+                },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                showRepoToast(data.message || `Git ${action} failed.`);
+                if (data.project) {
+                    setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, ...data.project } : p)));
+                }
+                return;
+            }
+            if (data.project) {
+                setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, ...data.project, files: data.files ?? p.files } : p)));
+            }
+            showRepoToast(data.message || `Git ${action} completed.`);
+            setWorkspaceRefresh(v => v + 1);
+        } catch (err: any) {
+            showRepoToast(`Git ${action} failed: ${err?.message || 'unknown error'}`);
+        } finally {
+            setRepoWorking(null);
+        }
+    };
+
+    const disconnectRepo = async (projectId: number) => {
+        if (!window.confirm('Disconnect this repository? The working clone is removed, but your files stay in the project.')) return;
+        setRepoWorking({ projectId, action: 'connect' });
+        try {
+            const res = await fetch(route('assistant.project.repo.disconnect', projectId), {
+                method: 'DELETE',
+                headers: { 'X-CSRF-TOKEN': csrfToken() },
+            });
+            const data = await res.json();
+            setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, ...(data.project || {}), files: data.files ?? p.files } : p)));
+            showRepoToast(data.success ? 'Repository disconnected.' : (data.message || 'Disconnect failed.'));
+            setWorkspaceRefresh(v => v + 1);
+        } catch (err: any) {
+            showRepoToast(`Disconnect failed: ${err?.message || 'unknown error'}`);
+        } finally {
+            setRepoWorking(null);
+        }
+    };
+
     const startEditingProject = (project: AiProject, e: React.MouseEvent) => {
         e.stopPropagation();
         setEditingProjectId(project.id);
@@ -1530,14 +1692,16 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
     );
 
     return (
-        <AuthenticatedLayout hideMobileNav={true} hideNavbar={chatOnly}>
+        <AuthenticatedLayout hideMobileNav={true} hideNavbar={chatOnly || workspaceProjectId !== null}>
             <Head title={chatOnly ? 'Chat - Daily Phone Intelligence' : 'Assistant - Daily Phone Intelligence'} />
 
             {/* Container: Fullscreen on mobile/tablet, wide & spacious on desktop (w-full max-w-7xl).
                 Chat-only mode drops the app nav shell, so it always fills the full viewport height. */}
             <div
                 className={
-                    chatOnly
+                    workspaceProjectId !== null
+                        ? 'p-0 w-full h-[100dvh] flex flex-col relative'
+                        : chatOnly
                         ? 'p-0 sm:p-0 w-full max-w-7xl mx-auto h-[100dvh] sm:h-[100dvh] md:h-[100dvh] flex flex-col relative'
                         : 'p-0 sm:p-0 md:py-4 md:px-4 lg:px-6 w-full max-w-7xl mx-auto h-[100dvh] sm:h-[100dvh] md:h-[calc(100vh-80px)] flex flex-col relative'
                 }
@@ -1548,21 +1712,37 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
             >
 
                 {/* Main IDE container: sessions sidebar (closed) or project workspace (open), with chat on the right */}
-                <div className="flex-1 min-h-0 flex overflow-hidden bg-background relative md:border md:border-border/50 md:rounded-2xl md:bg-card">
+                <div className={
+                    workspaceProjectId !== null
+                        ? 'flex-1 min-h-0 flex overflow-hidden bg-background relative'
+                        : 'flex-1 min-h-0 flex overflow-hidden bg-background relative md:border md:border-border/50 md:rounded-2xl md:bg-card'
+                }>
 
                     {/* IDE split: the project workspace fills the main column, the chat stays in the right pane */}
-                    {workspaceProjectId !== null && (
+                    {workspaceProjectId !== null && (() => {
+                        const workspaceProject = projectList.find(p => p.id === workspaceProjectId) ?? null;
+                        const working = repoWorking?.projectId === workspaceProjectId ? repoWorking.action : null;
+                        return (
                         <div className="flex-1 min-w-0 min-h-0">
                             <ProjectWorkspace
                                 projectId={workspaceProjectId}
-                                projectTitle={projectList.find(p => p.id === workspaceProjectId)?.title || 'Project Workspace'}
+                                projectTitle={workspaceProject?.title || 'Project Workspace'}
                                 onClose={() => setWorkspaceProjectId(null)}
                                 refreshSignal={workspaceRefresh}
                                 chatPaneOpen={workspaceChatOpen}
                                 onToggleChatPane={() => setWorkspaceChatOpen(v => !v)}
+                                repoUrl={workspaceProject?.repo_url ?? null}
+                                repoBranch={workspaceProject?.repo_branch ?? null}
+                                repoError={workspaceProject?.repo_error ?? null}
+                                repoWorking={working}
+                                onConnectRepo={() => openRepoModal('connect', workspaceProjectId)}
+                                onCommitRepo={() => runRepoAction('commit', workspaceProjectId)}
+                                onPullRepo={() => runRepoAction('pull', workspaceProjectId)}
+                                onDisconnectRepo={() => disconnectRepo(workspaceProjectId)}
                             />
                         </div>
-                    )}
+                        );
+                    })()}
 
                     {/* Left Sidebar: Chat Sessions History (tucked away while the workspace is open) */}
                     {workspaceProjectId === null && (
@@ -1582,6 +1762,13 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                 >
                                     <FolderPlus className="h-3.5 w-3.5" />
                                     <span>New Project</span>
+                                </button>
+                                <button
+                                    onClick={() => openRepoModal('create')}
+                                    title="New project from GitHub repo"
+                                    className="flex items-center justify-center gap-1.5 rounded-xl border border-border/50 bg-background/60 px-2.5 py-2 text-xs font-semibold text-foreground hover:bg-muted/80 active:scale-[0.98] transition"
+                                >
+                                    <GithubMark className="h-3.5 w-3.5 text-primary" />
                                 </button>
                                 <button
                                     onClick={() => setIsSidebarOpen(false)}
@@ -2420,6 +2607,112 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                     onClose={() => setViewerFile(null)}
                     onDelete={(f) => deleteProjectFileEntry(viewerFile.projectId, f)}
                 />
+            )}
+
+            {/* Git repo modal — create a project from a repo, or connect one */}
+            {repoModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in-50 duration-150">
+                    <div className="w-full max-w-md rounded-2xl bg-card border border-border/70 p-5 shadow-2xl space-y-4">
+                        <div className="flex items-center justify-between border-b border-border/40 pb-3">
+                            <div className="flex items-center gap-2">
+                                <div className="h-8 w-8 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+                                    <GithubMark className="h-4 w-4" />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-semibold text-foreground">
+                                        {repoModal.mode === 'create' ? 'New Project from GitHub' : 'Connect a Repository'}
+                                    </h3>
+                                    <p className="text-[11px] text-muted-foreground">
+                                        {repoModal.mode === 'create'
+                                            ? 'Clones the repo into a new project with its files in the workspace.'
+                                            : 'Clones the repo into this project so you can edit, run the AI agent, and commit & push.'}
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setRepoModal(null)}
+                                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                                title="Close"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+
+                        <div className="space-y-2">
+                            <label className="text-xs font-medium text-foreground">
+                                Repository URL
+                            </label>
+                            <input
+                                type="text"
+                                value={repoUrl}
+                                onChange={(e) => setRepoUrl(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') submitRepoModal(); }}
+                                placeholder="https://github.com/user/repo.git"
+                                autoFocus
+                                className="w-full rounded-xl border border-border bg-background dark:bg-muted/30 text-foreground px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-muted-foreground/60"
+                            />
+                            <p className="text-[10.5px] text-muted-foreground">
+                                Accepts full URLs, <span className="font-mono">git@github.com:user/repo.git</span>, or <span className="font-mono">user/repo</span>. Public repos work out of the box; pushing uses the server's git credentials.
+                            </p>
+                        </div>
+
+                        <div className="space-y-2">
+                            <label className="text-xs font-medium text-foreground">
+                                Branch
+                            </label>
+                            <input
+                                type="text"
+                                value={repoBranch}
+                                onChange={(e) => setRepoBranch(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') submitRepoModal(); }}
+                                placeholder="main"
+                                className="w-full rounded-xl border border-border bg-background dark:bg-muted/30 text-foreground px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-muted-foreground/60"
+                            />
+                        </div>
+
+                        {repoError && (
+                            <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive leading-relaxed break-words">
+                                {repoError}
+                            </div>
+                        )}
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/30">
+                            <button
+                                type="button"
+                                onClick={() => setRepoModal(null)}
+                                disabled={repoBusy}
+                                className="px-3 py-1.5 rounded-xl border border-border text-xs font-medium text-foreground hover:bg-muted transition disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={submitRepoModal}
+                                disabled={repoBusy}
+                                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-primary text-xs font-semibold text-primary-foreground hover:opacity-90 active:scale-95 transition disabled:opacity-50"
+                            >
+                                {repoBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GithubMark className="h-3.5 w-3.5" />}
+                                {repoBusy ? 'Cloning…' : repoModal.mode === 'create' ? 'Create & Clone' : 'Connect'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Git operation toast */}
+            {repoToast && (
+                <div
+                    role="status"
+                    className="fixed bottom-5 right-20 z-50 flex items-center gap-2.5 pl-3 pr-4 py-2.5 rounded-full bg-card/90 dark:bg-black/80 backdrop-blur-2xl border border-border/60 shadow-xl shadow-black/10 dark:shadow-black/40 animate-in slide-in-from-bottom-4 fade-in duration-300 max-w-[320px]"
+                >
+                    <span className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                        <GitBranch className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="text-xs font-medium text-foreground truncate leading-snug">
+                        {repoToast}
+                    </span>
+                </div>
             )}
 
             {/* Floating corner toast — confirms a new AI memory node was saved */}

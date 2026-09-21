@@ -304,6 +304,245 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Create a project that is connected to a remote git repository. Clones
+     * the repo, imports its file tree into the project, then creates the first
+     * chat session so the workspace is immediately usable.
+     */
+    public function createProjectFromRepo(Request $request): JsonResponse
+    {
+        $request->validate([
+            'repo_url' => 'required|string|max:500',
+            'repo_branch' => 'nullable|string|max:120',
+            'title' => 'nullable|string|max:120',
+        ]);
+
+        $user = $request->user();
+        $gitRepo = app(\App\Services\GitRepoService::class);
+        $url = $gitRepo->normalizeUrl($request->input('repo_url'));
+
+        if ($url === '') {
+            return response()->json(['success' => false, 'message' => 'Repository URL is required.'], 422);
+        }
+
+        $title = trim((string) $request->input('title'));
+        if ($title === '') {
+            $title = basename((string) preg_replace('#\.git$#', '', $url));
+            $title = (string) preg_replace('/^git@[^:]+:/', '', $title);
+            $title = $title === '' ? 'Repo Project' : $title;
+        }
+
+        $project = \App\Models\AiProject::create([
+            'user_id' => $user->id,
+            'title' => mb_substr($title, 0, 120),
+            'description' => 'Connected to ' . $gitRepo->displayUrl($url),
+            'repo_url' => $url,
+            'repo_branch' => trim((string) $request->input('repo_branch')) ?: 'main',
+        ]);
+
+        try {
+            app(\App\Services\GitRepoService::class)->importIntoTree($project, $user);
+        } catch (\Throwable $e) {
+            $project->update(['repo_error' => mb_substr($e->getMessage(), 0, 2000)]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Project created, but the repository could not be cloned: ' . $e->getMessage(),
+                'project' => $this->projectMiniPayload($project),
+            ], 422);
+        }
+
+        $session = \App\Models\AiSession::create([
+            'user_id' => $user->id,
+            'project_id' => $project->id,
+            'title' => 'New Chat',
+        ]);
+
+        $project->touch();
+
+        return response()->json([
+            'success' => true,
+            'project' => [
+                'id' => (int) $project->id,
+                'title' => $project->title,
+                'description' => $project->description,
+                'created_at' => $project->created_at,
+                'updated_at' => $project->updated_at,
+                'repo_url' => $project->repo_url,
+                'repo_branch' => $project->repo_branch,
+                'repo_error' => $project->repo_error,
+                'sessions' => [$session],
+                'files' => $this->buildProjectFileTree($project->id),
+            ],
+        ]);
+    }
+
+    /**
+     * Connect a repo to an existing project (clone + import file tree).
+     */
+    public function connectRepo(Request $request, $project): JsonResponse
+    {
+        $request->validate([
+            'repo_url' => 'required|string|max:500',
+            'repo_branch' => 'nullable|string|max:120',
+        ]);
+
+        $project = $this->resolveProject($project);
+        $gitRepo = app(\App\Services\GitRepoService::class);
+        $url = $gitRepo->normalizeUrl($request->input('repo_url'));
+
+        if ($url === '') {
+            return response()->json(['success' => false, 'message' => 'Repository URL is required.'], 422);
+        }
+
+        $project->update([
+            'repo_url' => $url,
+            'repo_branch' => trim((string) $request->input('repo_branch')) ?: 'main',
+            'repo_error' => null,
+        ]);
+
+        try {
+            $gitRepo->importIntoTree($project, $request->user());
+        } catch (\Throwable $e) {
+            $project->update(['repo_error' => mb_substr($e->getMessage(), 0, 2000)]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not connect the repository: ' . $e->getMessage(),
+                'project' => $this->projectMiniPayload($project),
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Repository connected.',
+            'project' => $this->projectMiniPayload($project),
+            'files' => $this->buildProjectFileTree($project->id),
+        ]);
+    }
+
+    /**
+     * Pull the latest remote changes into the working clone and re-import any
+     * new files into the tree.
+     */
+    public function pullRepo(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        if (! $project->repo_url) {
+            return response()->json(['success' => false, 'message' => 'This project is not connected to a repository.'], 422);
+        }
+
+        try {
+            app(\App\Services\GitRepoService::class)->pull($project);
+            app(\App\Services\GitRepoService::class)->importIntoTree($project, $request->user());
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Pull failed: ' . $e->getMessage(),
+                'project' => $this->projectMiniPayload($project),
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Repository pulled to latest.',
+            'project' => $this->projectMiniPayload($project),
+            'files' => $this->buildProjectFileTree($project->id),
+        ]);
+    }
+
+    /**
+     * Commit the workspace changes back to the remote repository and push them.
+     */
+    public function commitRepo(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        if (! $project->repo_url) {
+            return response()->json(['success' => false, 'message' => 'This project is not connected to a repository.'], 422);
+        }
+
+        try {
+            $result = app(\App\Services\GitRepoService::class)->commitAndPush($project);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Commit & push failed: ' . $e->getMessage(),
+                'project' => $this->projectMiniPayload($project),
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $result['output'],
+            'committed' => $result['committed'],
+            'project' => $this->projectMiniPayload($project),
+            'files' => $this->buildProjectFileTree($project->id),
+        ]);
+    }
+
+    /**
+     * Disconnect a repo: clears the connection and removes the clone. Any
+     * blob-backed rows created while connected are kept as plain project files.
+     */
+    public function disconnectRepo(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        app(\App\Services\GitRepoService::class)->removeClone($project);
+
+        $project->update([
+            'repo_url' => null,
+            'repo_branch' => null,
+            'repo_imported' => false,
+            'repo_error' => null,
+        ]);
+
+        // Repo-backed rows lose their on-disk blob after the clone is removed,
+        // so repoint them at a root-level blob copy if the file still exists on
+        // disk; otherwise drop the orphan row.
+        $prefix = \App\Services\GitRepoService::REPO_ROOT . '/project-' . $project->id . '/';
+        $repoRows = \App\Models\AiProjectFile::where('project_id', $project->id)
+            ->where('is_folder', false)
+            ->where('storage_path', 'like', $prefix . '%')
+            ->get();
+
+        $removed = 0;
+        foreach ($repoRows as $row) {
+            $source = storage_path('app/private/' . $row->storage_path);
+            if (is_file($source)) {
+                $target = storage_path('app/private/ai-projects/repo-' . $project->id . '-' . md5($row->storage_path));
+                if (! is_dir(dirname($target))) {
+                    mkdir(dirname($target), 0755, true);
+                }
+                @copy($source, $target);
+                $row->update(['storage_path' => 'ai-projects/repo-' . $project->id . '-' . md5($row->storage_path), 'extracted_text' => null]);
+            } else {
+                $row->delete();
+                $removed++;
+            }
+        }
+
+        $project->touch();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Repository disconnected.',
+            'project' => $this->projectMiniPayload($project),
+            'files' => $this->buildProjectFileTree($project->id),
+        ]);
+    }
+
+    protected function projectMiniPayload(\App\Models\AiProject $project): array
+    {
+        return [
+            'id' => (int) $project->id,
+            'title' => $project->title,
+            'description' => $project->description,
+            'updated_at' => $project->updated_at,
+            'repo_url' => $project->repo_url,
+            'repo_branch' => $project->repo_branch,
+            'repo_imported' => (bool) $project->repo_imported,
+            'repo_error' => $project->repo_error,
+        ];
+    }
+
+    /**
      * Rename a project / update its description.
      */
     public function updateProject(Request $request, $id): JsonResponse
