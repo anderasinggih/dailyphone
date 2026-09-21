@@ -8,10 +8,13 @@ import {
     File as FileIcon,
     FileArchive,
     FileCode2,
+    FilePlus2,
     FileSpreadsheet,
     FileText,
     Folder,
     FolderOpen,
+    FolderPlus,
+    Upload,
     GitBranch,
     GitCommitHorizontal,
     GitCompareArrows,
@@ -99,6 +102,10 @@ interface Props {
     onCommitRepo?: () => void;
     onPullRepo?: () => void;
     onDisconnectRepo?: () => void;
+    // Fired after any local file-tree mutation (create / upload / delete /
+    // move) so the parent can refresh its own project tree (customers besides
+    // the workspace: the chat panel's @-mention picker).
+    onProjectFilesChanged?: () => void;
 }
 
 const PREVIEW_KINDS = new Set(['image', 'pdf']);
@@ -136,7 +143,7 @@ interface ContextMenuState {
     node: WorkspaceProjectFile;
 }
 
-export default function ProjectWorkspace({ projectId, projectTitle, onClose, refreshSignal = 0, chatPaneOpen = true, onToggleChatPane, repoUrl = null, repoBranch = null, repoError = null, repoWorking = null, onConnectRepo, onCommitRepo, onPullRepo, onDisconnectRepo }: Props) {
+export default function ProjectWorkspace({ projectId, projectTitle, onClose, refreshSignal = 0, chatPaneOpen = true, onToggleChatPane, repoUrl = null, repoBranch = null, repoError = null, repoWorking = null, onConnectRepo, onCommitRepo, onPullRepo, onDisconnectRepo, onProjectFilesChanged }: Props) {
     const [files, setFiles] = useState<WorkspaceProjectFile[]>([]);
     const [loadingTree, setLoadingTree] = useState(true);
     const [treeError, setTreeError] = useState<string | null>(null);
@@ -652,6 +659,101 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
         }
     };
 
+    // ── Create folder / file / upload ──
+    const [creating, setCreating] = useState<{ kind: 'folder' | 'file'; parentId: number | null } | null>(null);
+    const [newEntryName, setNewEntryName] = useState('');
+    const [uploadBusy, setUploadBusy] = useState(false);
+    const uploadInputRef = useRef<HTMLInputElement>(null);
+    const uploadParentIdRef = useRef<number | null>(null);
+
+    const insertLocalNode = (parentId: number | null, node: WorkspaceProjectFile) => {
+        const full: WorkspaceProjectFile = { ...node, children: node.children ?? [] };
+        setFiles(prev => {
+            const insertInto = (list: WorkspaceProjectFile[]): WorkspaceProjectFile[] =>
+                parentId === null
+                    ? [...list, full]
+                    : list.map(n => (n.id === parentId ? { ...n, children: insertInto(n.children || []) } : n));
+            return insertInto(prev);
+        });
+        if (parentId !== null) {
+            setOpenFolders(prev => new Set(prev).add(parentId));
+        }
+        onProjectFilesChanged?.();
+    };
+
+    const uploadBlob = async (blob: Blob, fileName: string, parentId: number | null, fileType: string) => {
+        const form = new FormData();
+        form.append('file', blob, fileName);
+        if (parentId !== null) form.append('parent_id', String(parentId));
+        const res = await fetch(route('assistant.project.files.upload', projectId), {
+            method: 'POST',
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken() },
+            body: form,
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => null);
+            throw new Error(err?.message || `Failed to upload (${res.status})`);
+        }
+        const data = await res.json();
+        if (data.success && data.file) {
+            insertLocalNode(parentId, data.file as WorkspaceProjectFile);
+        }
+    };
+
+    const createEntry = async () => {
+        if (!creating) return;
+        const name = newEntryName.trim();
+        if (name === '') { setCreating(null); setNewEntryName(''); return; }
+        try {
+            if (creating.kind === 'folder') {
+                const res = await fetch(route('assistant.project.folders.store', projectId), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken() },
+                    body: JSON.stringify({ name, parent_id: creating.parentId ?? null }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(err?.message || `Failed to create folder (${res.status})`);
+                }
+                const data = await res.json();
+                if (data.success && data.file) insertLocalNode(creating.parentId, data.file as WorkspaceProjectFile);
+            } else {
+                await uploadBlob(new Blob([''], { type: 'text/plain' }), name, creating.parentId, 'text/plain');
+            }
+        } catch (err: any) {
+            alert('Failed to create: ' + (err?.message || 'unknown error'));
+        } finally {
+            setCreating(null);
+            setNewEntryName('');
+        }
+    };
+
+    const triggerUpload = (parentId: number | null) => {
+        uploadParentIdRef.current = parentId;
+        uploadInputRef.current?.click();
+    };
+
+    const onUploadInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const picked = Array.from(e.target.files || []);
+        e.target.value = '';
+        if (picked.length === 0) return;
+        const parentId = uploadParentIdRef.current;
+        setUploadBusy(true);
+        try {
+            for (const f of picked) {
+                if (f.size > 10 * 1024 * 1024) {
+                    alert(`"${f.name}" is larger than the 10 MB per-file limit for project files.`);
+                    continue;
+                }
+                await uploadBlob(f, f.name, parentId, f.type || 'application/octet-stream');
+            }
+        } catch (err: any) {
+            alert('Failed to upload: ' + (err?.message || 'unknown error'));
+        } finally {
+            setUploadBusy(false);
+        }
+    };
+
     // ── Right-click context menu ──
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
@@ -708,11 +810,33 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
         e.preventDefault();
         e.stopPropagation();
         const id = e.dataTransfer.getData(DRAG_MOVE);
+        const osFiles = Array.from(e.dataTransfer.files || []);
         setDragOverFolderId(null);
         setDragOverRoot(false);
         setDraggingId(null);
+        if (osFiles.length > 0) {
+            uploadDroppedFiles(osFiles, node.id);
+            return;
+        }
         if (!id || Number(id) === node.id) return;
         moveEntry(Number(id), node.id);
+    };
+
+    const uploadDroppedFiles = async (osFiles: File[], parentId: number | null) => {
+        setUploadBusy(true);
+        try {
+            for (const f of osFiles) {
+                if (f.size > 10 * 1024 * 1024) {
+                    alert(`"${f.name}" is larger than the 10 MB per-file limit for project files.`);
+                    continue;
+                }
+                await uploadBlob(f, f.name, parentId, f.type || 'application/octet-stream');
+            }
+        } catch (err: any) {
+            alert('Failed to upload: ' + (err?.message || 'unknown error'));
+        } finally {
+            setUploadBusy(false);
+        }
     };
 
     const onRootDragOver = (e: React.DragEvent) => {
@@ -726,8 +850,13 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
         e.preventDefault();
         e.stopPropagation();
         const id = e.dataTransfer.getData(DRAG_MOVE);
+        const osFiles = Array.from(e.dataTransfer.files || []);
         setDragOverRoot(false);
         setDraggingId(null);
+        if (osFiles.length > 0) {
+            uploadDroppedFiles(osFiles, null);
+            return;
+        }
         if (id) moveEntry(Number(id), null);
     };
 
@@ -1037,7 +1166,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                         onClick={onToggleChatPane}
                         title={chatPaneOpen ? 'Hide chat panel' : 'Show chat panel'}
                         className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
-                            chatPaneOpen ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                            chatPaneOpen ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
                         }`}
                     >
                         <MessageSquare className="h-3.5 w-3.5" />
@@ -1056,7 +1185,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                     onClick={() => setShowTree(v => !v)}
                     title={showTree ? 'Hide files' : 'Show files'}
                     className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
-                        showTree ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                        showTree ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
                     }`}
                 >
                     <PanelLeft className="h-3.5 w-3.5" />
@@ -1067,7 +1196,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                     onClick={() => setShowChanges(v => !v)}
                     title={showChanges ? 'Hide changes' : 'Show changes'}
                     className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
-                        showChanges ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                        showChanges ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
                     }`}
                 >
                     <PanelRight className="h-3.5 w-3.5" />
@@ -1093,7 +1222,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                             onClick={() => setGitMenuOpen(v => !v)}
                             title={repoUrl}
                             className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
-                                gitMenuOpen ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                                gitMenuOpen ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
                             }`}
                         >
                             {repoWorking
@@ -1197,11 +1326,65 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                     }`}
                 >
                     <div className="px-3 py-2.5 border-b border-border/40 shrink-0">
-                        <div className="text-[10.5px] font-bold tracking-[0.08em] text-muted-foreground/60">EXPLORER</div>
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="text-[10.5px] font-bold tracking-[0.08em] text-muted-foreground/60">EXPLORER</div>
+                            <div className="flex items-center gap-0.5">
+                                <button
+                                    type="button"
+                                    title="New folder"
+                                    onClick={() => { setCreating({ kind: 'folder', parentId: null }); setNewEntryName(''); }}
+                                    className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                >
+                                    <FolderPlus className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    title="New file"
+                                    onClick={() => { setCreating({ kind: 'file', parentId: null }); setNewEntryName(''); }}
+                                    className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                >
+                                    <FilePlus2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    title="Upload files"
+                                    onClick={() => triggerUpload(null)}
+                                    className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition"
+                                >
+                                    <Upload className={`h-3.5 w-3.5 ${uploadBusy ? 'animate-pulse text-primary' : ''}`} />
+                                </button>
+                                <input ref={uploadInputRef} type="file" multiple className="hidden" onChange={onUploadInput} />
+                            </div>
+                        </div>
                         <div className="text-[10px] text-muted-foreground mt-0.5">
                             {flatFiles.length} file{flatFiles.length !== 1 ? 's' : ''}
                             {changedFiles.length > 0 && ` · ${changedFiles.length} changed`}
                         </div>
+                        {creating && (
+                            <form
+                                className="flex items-center gap-1 mt-2"
+                                onSubmit={(e) => { e.preventDefault(); createEntry(); }}
+                            >
+                                <input
+                                    autoFocus
+                                    value={newEntryName}
+                                    onChange={(e) => setNewEntryName(e.target.value)}
+                                    onFocus={(e) => e.currentTarget.select()}
+                                    onKeyDown={(e) => {
+                                        e.stopPropagation();
+                                        if (e.key === 'Escape') { setCreating(null); setNewEntryName(''); }
+                                    }}
+                                    placeholder={creating.kind === 'folder' ? 'Folder name…' : 'File name (e.g. notes.md)…'}
+                                    className="flex-1 min-w-0 bg-background text-foreground text-[11px] rounded-md px-1.5 py-1 border border-primary/60 outline-none ring-1 ring-primary/20"
+                                />
+                                <button type="submit" className="shrink-0 p-1 rounded-md text-primary hover:bg-primary/10 transition" title="Create">
+                                    <Check className="h-3.5 w-3.5" />
+                                </button>
+                                <button type="button" onClick={() => { setCreating(null); setNewEntryName(''); }} className="shrink-0 p-1 rounded-md text-muted-foreground hover:bg-muted/60 transition" title="Cancel">
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            </form>
+                        )}
                     </div>
                     <div
                         className={`flex-1 overflow-y-auto py-1.5 px-1 space-y-0.5 ${dragOverRoot ? 'rounded-lg ring-1 ring-inset ring-dashed ring-primary/50 bg-primary/[0.03]' : ''}`}
@@ -1217,7 +1400,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                             <p className="text-[11px] text-destructive px-3 py-6">{treeError}</p>
                         ) : files.length === 0 ? (
                             <p className="text-[11px] text-muted-foreground text-center py-10 px-3">
-                                No files yet. Upload them from the chat sidebar, or ask the AI to generate them with a Python run.
+                                No files yet. Use the + buttons above to add a folder or file, upload from disk, or ask the AI to create them in the chat.
                             </p>
                         ) : (
                             renderTree(files, 0)
@@ -1509,6 +1692,33 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                         >
                             <Copy className="h-3.5 w-3.5 text-muted-foreground" /> Copy Path
                         </button>
+                        {contextMenu.node.is_folder && (
+                            <>
+                                <div className="border-t border-border/30 pt-0.5 mt-0.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => { closeContextMenu(); setCreating({ kind: 'folder', parentId: contextMenu.node.id }); setNewEntryName(''); }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px] font-medium text-foreground hover:bg-muted/60 transition"
+                                    >
+                                        <FolderPlus className="h-3.5 w-3.5 text-muted-foreground" /> New folder here
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { closeContextMenu(); setCreating({ kind: 'file', parentId: contextMenu.node.id }); setNewEntryName(''); }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px] font-medium text-foreground hover:bg-muted/60 transition"
+                                    >
+                                        <FilePlus2 className="h-3.5 w-3.5 text-muted-foreground" /> New file here
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { closeContextMenu(); triggerUpload(contextMenu.node.id); }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px] font-medium text-foreground hover:bg-muted/60 transition"
+                                    >
+                                        <Upload className="h-3.5 w-3.5 text-muted-foreground" /> Upload here
+                                    </button>
+                                </div>
+                            </>
+                        )}
                         {!contextMenu.node.is_folder && (
                             <a
                                 href={downloadUrl(contextMenu.node.id)}

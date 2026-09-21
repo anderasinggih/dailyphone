@@ -77,6 +77,10 @@ class AiAssistantController extends Controller
                     'description' => $p->description,
                     'created_at' => $p->created_at,
                     'updated_at' => $p->updated_at,
+                    'repo_url' => $p->repo_url,
+                    'repo_branch' => $p->repo_branch,
+                    'repo_imported' => (bool) $p->repo_imported,
+                    'repo_error' => $p->repo_error,
                     'sessions' => $p->sessions()->get(['id', 'title', 'created_at', 'updated_at']),
                     'files' => $this->buildProjectFileTree($p->id),
                 ];
@@ -134,6 +138,65 @@ class AiAssistantController extends Controller
             'activeSessionId' => $activeSession ? $activeSession->id : null,
             'initialMessages' => $messages,
         ]);
+    }
+
+    /**
+     * Build a bounded "project workspace" context block for the AI: the full
+     * folder/file tree of a project plus the readable text of smaller text
+     * files, so the model actually understands what the workspace contains
+     * (and can meaningfully write/edit those files). Content is capped to keep
+     * the token budget sane.
+     */
+    protected function projectFilesContext(\App\Models\AiProject $project): string
+    {
+        $rows = \App\Models\AiProjectFile::where('project_id', $project->id)->get();
+        if ($rows->isEmpty()) {
+            return '';
+        }
+
+        $byParent = $rows->groupBy(fn ($f) => (int) ($f->parent_id ?? 0));
+        $lines = [];
+        $contentBudget = 22000;
+        $perFileCap = 2600;
+
+        $walk = function (int $parentId, string $prefix) use (&$walk, $byParent, &$lines, &$contentBudget, $perFileCap) {
+            foreach ($byParent->get($parentId) ?? collect() as $f) {
+                $path = $prefix === '' ? $f->name : $prefix . '/' . $f->name;
+                if ($f->is_folder) {
+                    $lines[] = '[FOLDER] ' . $path . '/';
+                    $walk((int) $f->id, $path);
+                } else {
+                    $size = $f->size_bytes ? ' (' . number_format((float) $f->size_bytes) . ' B)' : '';
+                    $lines[] = '[FILE] ' . $path . $size . ' — kind: ' . ($f->kind ?? 'file');
+                    if ($f->extracted_text && $contentBudget > 0) {
+                        $text = $f->extracted_text;
+                        if (mb_strlen($text) > $perFileCap) {
+                            $text = mb_substr($text, 0, $perFileCap) . "\n...[content truncated]";
+                        }
+                        $used = mb_strlen($text) + 7;
+                        if ($used < $contentBudget) {
+                            $contentBudget -= $used;
+                            $lines[] = '```' . $path . "\n" . $text . "\n```";
+                        } else {
+                            $lines[] = '[CONTENT SKIPPED — beyond context budget]';
+                        }
+                    }
+                }
+            }
+        };
+        $walk(0, '');
+
+        if ($lines === []) {
+            return '';
+        }
+        $joined = implode("\n", $lines);
+        if (mb_strlen($joined) > 32000) {
+            $joined = mb_substr($joined, 0, 32000) . "\n...[file tree truncated]";
+        }
+
+        return "\nPROJECT FILE WORKSPACE \"{$project->title}\" (FAKTUAL — kumpulan file & folder project yang sedang kamu kerjakan di workspace):\n"
+            . $joined
+            . "\nGunakan daftar file ini untuk memahami isi project. Jika pengguna meminta membuat, mengubah, atau menyimpan file/teks ke dalam project ini, KELUARKAN aksi `write_project_file` dengan `path` relatif lengkap (termasuk folder, contoh \"docs/notes.md\") dan `content` isi file-nya, lalu selesaikan dengan `write_project_file` di blok action_proposal — jangan hanya berjanji menulis.\n";
     }
 
     /**
@@ -1122,11 +1185,17 @@ class AiAssistantController extends Controller
             if (!$sessionId) {
                 $session = \App\Models\AiSession::create([
                     'user_id' => $user->id,
+                    'project_id' => $request->input('project_id') ? (int) $request->input('project_id') : null,
                     'title' => mb_substr($userText, 0, 80) . (mb_strlen($userText) > 80 ? '...' : ''),
                 ]);
                 $sessionId = $session->id;
             } else {
                 $session = \App\Models\AiSession::where('user_id', $user->id)->findOrFail($sessionId);
+                // Attach to a project when a message targets one and the session
+                // is project-less (first message from a project workspace).
+                if (!$session->project_id && $request->input('project_id')) {
+                    $session->update(['project_id' => (int) $request->input('project_id')]);
+                }
                 // If it was default title "New Chat", rename based on first query
                 if ($session->title === 'New Chat') {
                     $session->update([
@@ -1383,14 +1452,29 @@ class AiAssistantController extends Controller
                 // 3. Send to Gemini with full session memory & custom session rules/training.
                 // Project @-referenced files are folded in together with ordinary
                 // uploads so the model sees their extracted text in the same block.
+                // Plus, when the chat lives inside a project, the whole workspace
+                // file tree is injected so the AI understands every folder/file.
+                $projectContext = '';
+                try {
+                    if ($session->project) {
+                        $projectContext = $this->projectFilesContext($session->project);
+                    }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('AI chat: failed to build project files context', [
+                        'session_id' => $sessionId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
                 $contextFiles = $attachments->concat($projectFiles);
+                $projectContextBlock = $projectContext !== '' ? "\n" . $projectContext : '';
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $contextFiles,
                     function (string $delta) use ($emit) {
                         $emit(['type' => 'chunk', 'text' => $delta]);
                     },
-                    $ingestNotice,
-                    $requestedModel,
-                    $sessionSummary,
+                    $ingestNotice . $projectContextBlock,
+                $requestedModel,
+                $sessionSummary,
                     // Live per-stage timing: context/payload/turnN fire the moment
                     // each finishes, keeping the thinking panel and the Reverb map
                     // in sync with the actual wall-clock split.

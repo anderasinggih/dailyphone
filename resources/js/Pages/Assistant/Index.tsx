@@ -192,7 +192,11 @@ const QUICK_PROMPTS = [
 ];
 
 // Constrain the resizable workspace chat width to a sane desktop range.
-const clampPaneWidth = (w: number) => Math.min(520, Math.max(280, w));
+const clampPaneWidth = (w: number) => Math.min(560, Math.max(320, w));
+
+// Remembers the last-open project workspace so a plain refresh (or a stray
+// navigation back to /assistant) reopens it instead of falling back to chat.
+const WORKSPACE_OPEN_KEY = 'dailyphone-workspace-open';
 
 export default function Assistant({
     aiConfig,
@@ -261,24 +265,64 @@ export default function Assistant({
     // Restored from the `project_id` URL param so a refresh (or a shared link)
     // reopens the exact same workspace instead of falling back to plain chat.
     const [workspaceProjectId, setWorkspaceProjectId] = useState<number | null>(() => {
+        // 1) The `project_id` URL param is the source of truth: a refresh (or a
+        //    shared link) reopens the exact same workspace. Trust it even if the
+        //    projects prop hasn't reconciled yet — a follow-up effect validates it.
         try {
             const raw = new URLSearchParams(window.location.search).get('project_id');
             if (raw) {
                 const pid = parseInt(raw, 10);
-                if (!Number.isNaN(pid) && projects.some(p => p.id === pid)) return pid;
+                if (!Number.isNaN(pid)) return pid;
             }
         } catch {
-            // Query parsing unavailable — start in normal chat mode.
+            // Query parsing unavailable — fall through to storage.
+        }
+        // 2) Storage fallback: reopen the last workspace when the URL lost its
+        //    param (e.g. an in-app link back to /assistant).
+        try {
+            const saved = parseInt(window.localStorage.getItem(WORKSPACE_OPEN_KEY) ?? '', 10);
+            if (!Number.isNaN(saved) && projects.some(p => p.id === saved)) return saved;
+        } catch {
+            // Unavailable storage — start in normal chat mode.
         }
         return null;
     });
+
+    // Remember the open workspace so a subsequent mount (refresh / back to the
+    // assistant page) can restore it; cleared when the workspace is closed.
+    useEffect(() => {
+        try {
+            if (workspaceProjectId === null) {
+                window.localStorage.removeItem(WORKSPACE_OPEN_KEY);
+            } else {
+                window.localStorage.setItem(WORKSPACE_OPEN_KEY, String(workspaceProjectId));
+            }
+        } catch {
+            // Unavailable storage — persistence simply won't hold.
+        }
+    }, [workspaceProjectId]);
+
+    // Reconcile the restored workspace against the known projects once the list
+    // is available: close it if the project no longer exists, and keep the URL
+    // param in sync so a refresh never drops the workspace.
+    useEffect(() => {
+        if (workspaceProjectId === null) return;
+        if (projectList.length > 0 && !projectList.some(p => p.id === workspaceProjectId)) {
+            setWorkspaceProjectId(null);
+            syncUrlProjectId(null);
+            return;
+        }
+        syncUrlProjectId(workspaceProjectId);
+    }, [projectList, workspaceProjectId]);
     // Bumped whenever a project file mutates so the open workspace reloads its tree.
     const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
     // IDE split: whether the chat column stays visible beside an open workspace.
     const [workspaceChatOpen, setWorkspaceChatOpen] = useState(false);
     // Resizable width of the workspace chat column, persisted per project so a
     // refresh keeps the split layout.
-    const [chatPaneWidth, setChatPaneWidth] = useState(340);
+    // Resizable width of the workspace chat column, persisted per project so a
+    // refresh keeps the split layout.
+    const [chatPaneWidth, setChatPaneWidth] = useState(420);
     const [isMobile, setIsMobile] = useState(() =>
         typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
     );
@@ -1011,7 +1055,7 @@ function playCompletionChime(soundEnabled: boolean): void {
 
     // ===================== Projects & Project Files =====================
 
-    const currentProjectId = sessionList.find(s => s.id === currentSessionId)?.project_id ?? null;
+    const currentProjectId = workspaceProjectId ?? sessionList.find(s => s.id === currentSessionId)?.project_id ?? null;
     const currentProject = projectList.find(p => p.id === currentProjectId) ?? null;
     const orphanSessions = sessionList.filter(s => !s.project_id);
 
@@ -1063,6 +1107,24 @@ function playCompletionChime(soundEnabled: boolean): void {
 
     const updateFileTree = (projectId: number, updater: (nodes: ProjectFileNode[]) => ProjectFileNode[]) => {
         setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, files: updater(p.files) } : p)));
+    };
+
+    // Re-fetch a project's file tree from the server and patch the chat-side
+    // project state — keeps the @-mention picker in sync after the workspace
+    // creates/upload/moves entries through its own tree.
+    const refreshProjectFiles = async (projectId: number) => {
+        try {
+            const res = await fetch(route('assistant.project.files', projectId), {
+                headers: { 'Accept': 'application/json' },
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (Array.isArray(data.files)) {
+                updateFileTree(projectId, () => data.files);
+            }
+        } catch {
+            // Non-fatal: the tree syncs again on the next full load.
+        }
     };
 
     const insertFileNode = (nodes: ProjectFileNode[], parentId: number | null, node: ProjectFileNode): ProjectFileNode[] => {
@@ -1890,6 +1952,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                 refreshSignal={workspaceRefresh}
                                 chatPaneOpen={workspaceChatOpen}
                                 onToggleChatPane={() => setWorkspaceChatOpen(v => !v)}
+                                onProjectFilesChanged={() => { if (workspaceProjectId !== null) refreshProjectFiles(workspaceProjectId); }}
                                 repoUrl={workspaceProject?.repo_url ?? null}
                                 repoBranch={workspaceProject?.repo_branch ?? null}
                                 repoError={workspaceProject?.repo_error ?? null}
@@ -2294,7 +2357,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                                             setWorkspaceRefresh(v => v + 1);
                                                         }}
                                                         onFileRejected={(file, node) => {
-                                                            const projectId = sessionList.find(s => s.id === currentSessionId)?.project_id;
+                                                            const projectId = currentProjectId;
                                                             if (!projectId) return;
                                                             updateFileTree(projectId, tree => removeFileNode(tree, node.id));
                                                             setWorkspaceRefresh(v => v + 1);
@@ -2302,26 +2365,22 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                                         onFilesSaved={(files) => {
                                                             const savedNodes = files
                                                                 .map(f => f.project_file)
-                                                                .filter((n): n is NonNullable<typeof n> => Boolean(n))
-                                                                .map(n => ({ ...n, children: [] }));
+                                                                .filter((n): n is NonNullable<typeof n> => Boolean(n));
 
-                                                            if (savedNodes.length === 0) return;
-
-                                                            const projectId = sessionList.find(s => s.id === currentSessionId)?.project_id;
+                                                            const projectId = currentProjectId;
                                                             if (!projectId) return;
 
-                                                            updateFileTree(projectId, tree =>
-                                                                savedNodes.reduce(
-                                                                    (acc, node) => insertFileNode(acc, null, node),
-                                                                    tree
-                                                                )
-                                                            );
+                                                            // Re-fetch the tree so files saved into sub-folders land at the
+                                                            // right place in the chat-side picker too.
+                                                            refreshProjectFiles(projectId);
                                                             setWorkspaceRefresh(v => v + 1);
                                                             setExpandedProjects(prev => new Set(prev).add(projectId));
-                                                            showCornerToast(
-                                                                `Saved ${savedNodes.length} file${savedNodes.length > 1 ? 's' : ''} to project`,
-                                                                savedNodes.map(n => n.name).join(', ')
-                                                            );
+                                                            if (savedNodes.length > 0) {
+                                                                showCornerToast(
+                                                                    `Saved ${savedNodes.length} file${savedNodes.length > 1 ? 's' : ''} to project`,
+                                                                    savedNodes.map(n => n.name).join(', ')
+                                                                );
+                                                            }
                                                         }}
                                                     />
                                                 </div>

@@ -922,6 +922,16 @@ Whenever the Superadmin explicitly asks or implies an action (such as changing a
       * IMPORTANT: never assume a third-party module is installed. Wrap optional imports (`openpyxl`, `fpdf`, `reportlab`, `PIL`) in try/except ImportError; if the module is missing, fall back to a pure-standard-library alternative (e.g. generate a `.csv` or `.txt` instead of `.xlsx`/`.pdf`) and tell the user which format you produced.
       * Keep the script SHORT and safe: no network calls, no database access, no subprocesses, no deleting/reading files outside the working directory. Never touch the Daily Phone database (it is MySQL, not SQLite — sqlite3 will fail). NEVER write a script to fake/simulate stock mutations or deletes; those MUST use the native actions above.
       * "changes": a summary row like { "field": "Generate File", "old": "-", "new": "stok-report.xlsx" } (or { "field": "Kalkulasi", "old": "-", "new": "Hasil nilai X" }).
+    - "write_project_file": When the user asks the AI to SAVE / WRITE / CREATE / UPDATE a file INSIDE the current project workspace (e.g. "simpan ini ke project", "buatkan file notes.md di project", "tulis script ini ke file", "catat di project file"), you MUST emit this action so the file is REALLY created/updated in the project file tree (it appears in the workspace explorer + as an AI change):
+       * MANDATORY payload:
+         {
+           "path": "relative path inside the project (auto-creates folders, e.g. \"docs/guides/launch-plan.md\" or \"notes.md\")",
+           "content": "the FULL file content to write"
+         }
+       * If the file already exists at that path, it is overwritten and flagged AI-MODIFIED (an old→new diff is shown). If it is new, it is flagged AI-CREATED.
+       * Use a path with proper extension (.md, .txt, .json, .js, .py, .sql, .csv, ...) so the file is classified correctly.
+       * DO NOT just promise to write a file in plain text — emit `write_project_file` immediately when the user asks to store text/code/notes into the project.
+       * "changes": a summary row like { "field": "Project File", "old": "-", "new": "docs/guides/launch-plan.md", "path": "docs/guides/launch-plan.md" }.
 
 3. STRUCTURED ACTION PROPOSAL FORMAT:
 When all criteria are met, formulate your response in two parts:
@@ -929,7 +939,7 @@ Part 1: A brief, polite explanation in friendly Markdown of the changes.
 Part 2: A single structured code block starting with ```action_proposal and ending with ``` containing valid JSON:
 ```action_proposal
 {
-  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "empty_trash" | "sell_stock" | "update_stock" | "create_money_note" | "add_parameter" | "learn_repo" | "run_python_script",
+  "action": "add_stock" | "add_bulk_stock" | "delete_stock" | "delete_all_stocks" | "empty_trash" | "sell_stock" | "update_stock" | "create_money_note" | "add_parameter" | "learn_repo" | "run_python_script" | "write_project_file",
   "title": "Short title of action",
   "summary": "1 sentence explanation of the action",
   "target": "Target identifier (e.g. New Unit iPhone 12 128GB, or 5 Units Bulk Import)",

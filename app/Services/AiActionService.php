@@ -61,6 +61,9 @@ class AiActionService
                 case 'run_python_script':
                     return $this->executeRunPythonScript($payload, $user, $sessionId);
 
+                case 'write_project_file':
+                    return $this->executeWriteProjectFile($payload, $user, $sessionId);
+
                 case 'learn_repo':
                     return $this->executeLearnRepo($payload, $user);
 
@@ -1240,6 +1243,264 @@ class AiActionService
                 @unlink($tempFile);
             }
         }
+    }
+
+    /**
+     * Write / create / update a text file directly inside the owning project's
+     * file tree (the workspace explorer). The AI emits this action when the
+     * user asks it to save notes, code, reports or any text into the project —
+     * instead of only promising, it actually creates the file. Sub-folders in
+     * `path` (e.g. "docs/guides/launch.md") are created on the fly.
+     */
+    protected function executeWriteProjectFile(array $payload, User $user, ?int $sessionId = null): array
+    {
+        $content = (string) ($payload['content'] ?? '');
+        $path = trim((string) ($payload['path'] ?? $payload['name'] ?? ''));
+        if ($path === '') {
+            return ['success' => false, 'message' => 'No file path provided for write_project_file.'];
+        }
+
+        // Normalize: strip leading/trash slashes + trailing slashes.
+        $path = trim($path, "/\\ \t\n\r\0\x0B");
+        if ($path === '' || str_contains($path, '..')) {
+            return ['success' => false, 'message' => 'Invalid file path for write_project_file.'];
+        }
+
+        $session = null;
+        if ($sessionId) {
+            $session = \App\Models\AiSession::with('project')
+                ->where('id', $sessionId)
+                ->where('user_id', $user->id)
+                ->first();
+        }
+        $project = $session?->project;
+        if (!$project) {
+            return [
+                'success' => false,
+                'message' => 'write_project_file requires an active project session — start a chat inside the project first.',
+            ];
+        }
+
+        try {
+            $ingest = app(\App\Services\AiFileIngestService::class);
+            $fileEntry = $this->persistProjectTextFile($project, $user, $path, $content, $ingest);
+            if ($fileEntry === null) {
+                return ['success' => false, 'message' => 'Failed to persist the project file.'];
+            }
+
+            ActivityLog::log('ai_write_project_file', \App\Models\AiProject::class, $project->id, [
+                'path' => $path,
+                'bytes' => strlen($content),
+                'project' => $project->title,
+            ]);
+
+            return [
+                'success' => true,
+                'message' => "File \"{$path}\" was saved into project \"{$project->title}\" and appears in the workspace file tree.",
+                'files' => [$fileEntry],
+            ];
+        } catch (\Throwable $e) {
+            Log::error('AI Action: write_project_file failed', [
+                'path' => $path,
+                'project_id' => $project->id,
+                'error' => $e->getMessage(),
+            ]);
+            return ['success' => false, 'message' => 'Execution error: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * Persist a plain-text file under an arbitrary folder path inside a
+     * project's tree. Folder segments are resolved or created on the fly.
+     * Existing files are overwritten and marked AI-MODIFIED (previous content
+     * kept for the diff); brand-new files are marked AI-CREATED.
+     */
+    protected function persistProjectTextFile(
+        \App\Models\AiProject $project,
+        User $user,
+        string $path,
+        string $content,
+        \App\Services\AiFileIngestService $ingest
+    ): ?array {
+        $segments = array_values(array_filter(explode('/', $path), fn ($s) => $s !== ''));
+
+        // Walk/create folder segments, leaving the final segment as the file name.
+        $parentId = null;
+        $folderFullPath = '';
+        for ($i = 0; $i < count($segments) - 1; $i++) {
+            $seg = $segments[$i];
+            $folder = \App\Models\AiProjectFile::where('project_id', $project->id)
+                ->where('parent_id', $parentId)
+                ->where('name', $seg)
+                ->where('is_folder', true)
+                ->first();
+
+            if (!$folder) {
+                $folder = \App\Models\AiProjectFile::create([
+                    'user_id' => $user->id,
+                    'project_id' => $project->id,
+                    'parent_id' => $parentId,
+                    'name' => $seg,
+                    'is_folder' => true,
+                ]);
+            }
+            $parentId = (int) $folder->id;
+            $folderFullPath = $folderFullPath === '' ? $seg : $folderFullPath . '/' . $seg;
+        }
+
+        $fileName = $segments[count($segments) - 1];
+        $mime = function_exists('mime_content_type')
+            ? ($this->mimeFromName($fileName) ?: 'text/plain')
+            : 'text/plain';
+
+        $existing = \App\Models\AiProjectFile::where('project_id', $project->id)
+            ->where('parent_id', $parentId)
+            ->where('name', $fileName)
+            ->where('is_folder', false)
+            ->first();
+
+        if ($existing) {
+            $oldFull = storage_path('app/private/' . $existing->storage_path);
+            $previous = $existing->extracted_text;
+            if ($previous === null && $existing->storage_path && is_file($oldFull)) {
+                $previous = @file_get_contents($oldFull) ?: null;
+            }
+
+            if (! is_dir(dirname($oldFull))) {
+                mkdir(dirname($oldFull), 0755, true);
+            }
+            if (@file_put_contents($oldFull, $content) === false) {
+                return null;
+            }
+
+            $text = $content === '' ? null : $content;
+            if (mb_strlen($content) > \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX) {
+                $text = mb_substr($content, 0, \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX);
+            }
+
+            $existing->update([
+                'previous_content' => $existing->previous_content ?: ($previous === null || $previous === '' ? null : $previous),
+                'previous_content_hash' => $existing->previous_content_hash ?: $existing->content_hash,
+                'extracted_text' => $text,
+                'content_hash' => md5($content) ?: null,
+                'size_bytes' => strlen($content),
+                'kind' => $ingest->classify($fileName, $mime),
+                'change_type' => 'modified',
+                'changed_at' => now(),
+            ]);
+            $project->touch();
+
+            $node = $existing->refresh();
+            return [
+                'name' => $node->name,
+                'path' => $folderFullPath === '' ? $node->name : $folderFullPath . '/' . $node->name,
+                'mime' => $mime,
+                'size' => (int) $node->size_bytes,
+                'content' => $node->extracted_text,
+                'previous_content' => $node->change_type === 'modified' ? $node->previous_content : null,
+                'project_file' => $this->projectFileEntryPayload($node),
+            ];
+        }
+
+        // Brand-new file.
+        $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+        $storageName = 'ai-projects/' . md5($fileName . microtime()) . ($ext !== '' ? '.' . $ext : '');
+        $targetFull = storage_path('app/private/' . $storageName);
+        if (! is_dir(dirname($targetFull))) {
+            mkdir(dirname($targetFull), 0755, true);
+        }
+        if (@file_put_contents($targetFull, $content) === false) {
+            return null;
+        }
+
+        $text = $content === '' ? null : $content;
+        if (mb_strlen($content) > \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX) {
+            $text = mb_substr($content, 0, \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX);
+        }
+
+        $record = \App\Models\AiProjectFile::create([
+            'user_id' => $user->id,
+            'project_id' => $project->id,
+            'parent_id' => $parentId,
+            'name' => $fileName,
+            'is_folder' => false,
+            'mime_type' => $mime,
+            'size_bytes' => strlen($content),
+            'kind' => $ingest->classify($fileName, $mime),
+            'storage_path' => $storageName,
+            'extracted_text' => $text,
+            'content_hash' => md5($content) ?: null,
+            'change_type' => 'created',
+            'changed_at' => now(),
+        ]);
+        $project->touch();
+
+        return [
+            'name' => $record->name,
+            'path' => $folderFullPath === '' ? $record->name : $folderFullPath . '/' . $record->name,
+            'mime' => $mime,
+            'size' => (int) $record->size_bytes,
+            'content' => $record->extracted_text,
+            'previous_content' => null,
+            'project_file' => $this->projectFileEntryPayload($record),
+        ];
+    }
+
+    /**
+     * Lightweight project-file payload (mirrors the shape used by
+     * run_python_script artifacts) so the chat panel can insert the node into
+     * its tree and open the change in the workspace diff.
+     */
+    protected function projectFileEntryPayload(\App\Models\AiProjectFile $node): array
+    {
+        return [
+            'id' => (int) $node->id,
+            'name' => $node->name,
+            'is_folder' => (bool) $node->is_folder,
+            'kind' => $node->kind,
+            'mime_type' => $node->mime_type,
+            'size_bytes' => (int) $node->size_bytes,
+            'created_at' => $node->created_at,
+            'updated_at' => $node->updated_at,
+            'change_type' => $node->change_type,
+            'changed_at' => $node->changed_at,
+        ];
+    }
+
+    /**
+     * Return a sensible MIME guess for a file name (text-centric default for
+     * AI-written files; images/archives still classified by the ingest service).
+     */
+    protected function mimeFromName(string $name): ?string
+    {
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $map = [
+            'md' => 'text/markdown',
+            'markdown' => 'text/markdown',
+            'txt' => 'text/plain',
+            'log' => 'text/plain',
+            'json' => 'application/json',
+            'csv' => 'text/csv',
+            'html' => 'text/html',
+            'htm' => 'text/html',
+            'css' => 'text/css',
+            'js' => 'application/javascript',
+            'mjs' => 'application/javascript',
+            'ts' => 'text/typescript',
+            'tsx' => 'text/typescript',
+            'jsx' => 'application/javascript',
+            'php' => 'application/x-php',
+            'py' => 'text/x-python',
+            'sql' => 'application/sql',
+            'xml' => 'application/xml',
+            'yaml' => 'application/yaml',
+            'yml' => 'application/yaml',
+            'sh' => 'application/x-sh',
+        ];
+
+        return $map[$ext] ?? (in_array($ext, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'xlsx', 'xls', 'doc', 'docx'], true)
+            ? ($ext === 'pdf' ? 'application/pdf' : 'application/octet-stream')
+            : null);
     }
 
     /**
