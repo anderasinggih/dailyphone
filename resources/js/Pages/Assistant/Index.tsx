@@ -260,6 +260,12 @@ export default function Assistant({
     const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
     // IDE split: whether the chat column stays visible beside an open workspace.
     const [workspaceChatOpen, setWorkspaceChatOpen] = useState(false);
+    // Resizable width of the workspace chat column, persisted per project so a
+    // refresh keeps the split layout.
+    const [chatPaneWidth, setChatPaneWidth] = useState(340);
+    const [isMobile, setIsMobile] = useState(() =>
+        typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+    );
     // Git repo modal: create a project from a repo, or connect one to a project.
     const [repoModal, setRepoModal] = useState<{ mode: 'create' | 'connect'; projectId?: number } | null>(null);
     const [repoUrl, setRepoUrl] = useState('');
@@ -1917,7 +1923,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                         workspaceProjectId !== null
                             ? `h-full min-w-0 overflow-hidden relative bg-background border-l border-border/40 shrink-0 transition-all duration-200 ease-in-out ${
                                 workspaceChatOpen
-                                    ? 'hidden md:flex w-[340px] xl:w-[400px]'
+                                    ? 'hidden md:flex md:flex-col w-[340px] xl:w-[400px]'
                                     : 'hidden w-0 border-l-0'
                               }`
                             : 'flex-1 flex flex-col h-full overflow-hidden bg-background md:bg-card relative'
@@ -2010,7 +2016,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                         {/* Messages List Area (Scrollable body) - Top padded for floating header */}
                         <div className={`flex-1 overflow-y-auto ${
                             workspaceProjectId !== null
-                                ? 'px-3 sm:px-4 pt-4 pb-24 space-y-5'
+                                ? 'px-3 pt-3 pb-24 space-y-4'
                                 : 'px-4 sm:px-8 md:px-12 lg:px-20 pt-16 pb-24 space-y-6'
                         }`}>
                             {messages.map((m) => {
