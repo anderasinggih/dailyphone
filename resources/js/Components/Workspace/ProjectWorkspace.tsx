@@ -1021,7 +1021,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
     return (
         <div className="flex flex-col h-full w-full overflow-hidden bg-background md:bg-card relative" onDragEnd={onRowDragEnd}>
             {/* Top bar */}
-            <div className="flex items-center gap-1.5 px-2.5 py-2 border-b border-border/50 shrink-0 bg-card/80 backdrop-blur-xl">
+            <div className="relative z-50 flex items-center gap-1.5 px-2.5 py-2 border-b border-border/50 shrink-0 bg-card/80 backdrop-blur-xl">
                 <button
                     type="button"
                     onClick={onClose}

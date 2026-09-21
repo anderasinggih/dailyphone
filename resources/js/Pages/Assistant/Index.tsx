@@ -191,6 +191,9 @@ const QUICK_PROMPTS = [
     },
 ];
 
+// Constrain the resizable workspace chat width to a sane desktop range.
+const clampPaneWidth = (w: number) => Math.min(520, Math.max(280, w));
+
 export default function Assistant({
     aiConfig,
     userRole,
@@ -255,7 +258,20 @@ export default function Assistant({
     // Built-in file viewer (code / image / pdf preview).
     const [viewerFile, setViewerFile] = useState<{ projectId: number; file: ProjectFileNode } | null>(null);
     // Full-screen opencode-style workspace (file tree + editor + diff) for a project.
-    const [workspaceProjectId, setWorkspaceProjectId] = useState<number | null>(null);
+    // Restored from the `project_id` URL param so a refresh (or a shared link)
+    // reopens the exact same workspace instead of falling back to plain chat.
+    const [workspaceProjectId, setWorkspaceProjectId] = useState<number | null>(() => {
+        try {
+            const raw = new URLSearchParams(window.location.search).get('project_id');
+            if (raw) {
+                const pid = parseInt(raw, 10);
+                if (!Number.isNaN(pid) && projects.some(p => p.id === pid)) return pid;
+            }
+        } catch {
+            // Query parsing unavailable — start in normal chat mode.
+        }
+        return null;
+    });
     // Bumped whenever a project file mutates so the open workspace reloads its tree.
     const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
     // IDE split: whether the chat column stays visible beside an open workspace.
@@ -304,6 +320,68 @@ export default function Assistant({
         setCornerToast({ key: Date.now(), title, detail });
         if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
         toastTimerRef.current = setTimeout(() => setCornerToast(null), 2600);
+    };
+
+    // Keep `isMobile` in sync with the media query so the chat resize handle
+    // stays desktop-only.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const mq = window.matchMedia('(max-width: 767px)');
+        const onChange = () => setIsMobile(mq.matches);
+        mq.addEventListener('change', onChange);
+        return () => mq.removeEventListener('change', onChange);
+    }, []);
+
+    // Restore the persisted workspace chat width per project on open.
+    useEffect(() => {
+        if (workspaceProjectId === null) return;
+        try {
+            const raw = localStorage.getItem(`dailyphone-chatpane-${workspaceProjectId}`);
+            if (raw) {
+                const w = parseInt(raw, 10);
+                if (!Number.isNaN(w)) setChatPaneWidth(clampPaneWidth(w));
+            }
+            setWorkspaceChatOpen(localStorage.getItem(`dailyphone-chatopen-${workspaceProjectId}`) === '1');
+        } catch {
+            // Unavailable storage — keep the default layout.
+        }
+    }, [workspaceProjectId]);
+
+    // Persist the chat width whenever it changes.
+    useEffect(() => {
+        if (workspaceProjectId === null) return;
+        try {
+            localStorage.setItem(`dailyphone-chatpane-${workspaceProjectId}`, String(chatPaneWidth));
+        } catch {
+            // Unavailable storage — the layout still works for this session.
+        }
+    }, [workspaceProjectId, chatPaneWidth]);
+
+    // Persist whether the workspace chat pane was left open, so the full
+    // workspace + chat split layout restores exactly on refresh.
+    useEffect(() => {
+        if (workspaceProjectId === null) return;
+        try {
+            localStorage.setItem(`dailyphone-chatopen-${workspaceProjectId}`, workspaceChatOpen ? '1' : '0');
+        } catch {
+            // Unavailable storage — the pane simply stays in its default state.
+        }
+    }, [workspaceProjectId, workspaceChatOpen]);
+
+    const startChatResize = (e: React.PointerEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startWidth = chatPaneWidth;
+        const onMove = (ev: PointerEvent) => {
+            setChatPaneWidth(clampPaneWidth(startWidth - (ev.clientX - startX)));
+        };
+        const onUp = () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
     };
 
     // Reuse a single AudioContext so completion chimes do not leak one context per
@@ -465,12 +543,26 @@ function playCompletionChime(soundEnabled: boolean): void {
         window.history.replaceState(window.history.state, '', url.toString());
     };
 
+    // Keep the address bar in sync with the open workspace so a refresh keeps
+    // the workspace (file tree + diff) instead of resetting to plain chat.
+    const syncUrlProjectId = (projectId: number | null) => {
+        const url = new URL(window.location.href);
+        if (projectId) {
+            url.searchParams.set('project_id', String(projectId));
+        } else {
+            url.searchParams.delete('project_id');
+        }
+        window.history.replaceState(window.history.state, '', url.toString());
+    };
+
     // Handle selecting a different session
     const selectSession = (sessionId: number) => {
         setIsSidebarOpen(false);
         setFilePanelProjectId(null);
         resetComposerRefs();
-        router.get(route('assistant.index'), { session_id: sessionId }, {
+        const params: Record<string, string> = { session_id: String(sessionId) };
+        if (workspaceProjectId !== null) params.project_id = String(workspaceProjectId);
+        router.get(route('assistant.index'), params, {
             preserveState: false,
             preserveScroll: true,
         });
@@ -1066,6 +1158,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                 setRepoModal(null);
                 setIsSidebarOpen(false);
                 setWorkspaceProjectId(proj.id);
+                syncUrlProjectId(proj.id);
                 setWorkspaceRefresh(v => v + 1);
                 showRepoToast(`Cloned ${data.project?.repo_url ?? url} into "${proj.title}".`);
             } else if (repoModal.projectId) {
@@ -1697,6 +1790,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                     e.stopPropagation();
                                     setIsSidebarOpen(false);
                                     setWorkspaceProjectId(proj.id);
+                                    syncUrlProjectId(proj.id);
                                     setWorkspaceRefresh(v => v + 1);
                                 }}
                                 className="p-1 rounded-lg hover:bg-muted hover:text-primary text-muted-foreground transition"
@@ -1792,7 +1886,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                             <ProjectWorkspace
                                 projectId={workspaceProjectId}
                                 projectTitle={workspaceProject?.title || 'Project Workspace'}
-                                onClose={() => setWorkspaceProjectId(null)}
+                                onClose={() => { setWorkspaceProjectId(null); syncUrlProjectId(null); }}
                                 refreshSignal={workspaceRefresh}
                                 chatPaneOpen={workspaceChatOpen}
                                 onToggleChatPane={() => setWorkspaceChatOpen(v => !v)}
@@ -1917,17 +2011,26 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                     )}
 
                     {/* Right Area: Active Chat / compact IDE chat pane (toggled by workspaceChatOpen) */}
+                    {workspaceProjectId !== null && workspaceChatOpen && !isMobile && (
+                        <div
+                            className="hidden md:block w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-primary/40 active:bg-primary/60 transition-colors"
+                            onPointerDown={startChatResize}
+                            title="Drag to resize chat"
+                        />
+                    )}
                     <div
                         data-chat-drop-zone
                         className={
                         workspaceProjectId !== null
-                            ? `h-full min-w-0 overflow-hidden relative bg-background border-l border-border/40 shrink-0 transition-all duration-200 ease-in-out ${
+                            ? `h-full min-w-0 overflow-hidden relative bg-background border-l border-border/40 shrink-0 ${
                                 workspaceChatOpen
-                                    ? 'hidden md:flex md:flex-col w-[340px] xl:w-[400px]'
+                                    ? 'hidden md:flex md:flex-col'
                                     : 'hidden w-0 border-l-0'
                               }`
                             : 'flex-1 flex flex-col h-full overflow-hidden bg-background md:bg-card relative'
-                    }>
+                    }
+                        style={workspaceProjectId !== null && workspaceChatOpen ? { width: chatPaneWidth } : undefined}
+                    >
 
                         {/* Floating Top Header - Liquid Glass Capsule (like mobile ChatGPT app) */}
                         {!workspaceProjectId && (
