@@ -74,13 +74,18 @@ class GitRepoService
      * Ensure a working clone exists for the project. Clones the first time and
      * fetches + checks out the target branch afterwards.
      *
+     * If the requested branch does not exist on the remote (a repo that uses
+     * "master" instead of "main", for example), the clone falls back to the
+     * remote's default branch and the project's repo_branch is corrected so
+     * the UI shows the real branch.
+     *
      * @return string absolute path to the working clone
      */
     public function ensureClone(AiProject $project): string
     {
         $dir = $this->repoFullPath($project);
-        $branch = $project->repo_branch ?: 'main';
         $url = $this->checkoutUrl($project);
+        $requested = $project->repo_branch ?: null;
 
         if (! is_dir($dir . '/.git')) {
             if (is_dir($dir)) {
@@ -90,31 +95,113 @@ class GitRepoService
                 throw new \RuntimeException('Could not create the repository directory.');
             }
 
-            $cmd = sprintf(
-                'git clone --branch %s --single-branch %s %s 2>&1',
-                escapeshellarg($branch),
-                escapeshellarg($url),
-                escapeshellarg($dir)
-            );
-            $output = [];
-            $code = 0;
-            exec($cmd, $output, $code);
+            // 1) Try the requested branch explicitly.
+            if ($requested !== null && $requested !== '') {
+                $output = [];
+                $code = 0;
+                exec(sprintf(
+                    'git clone --branch %s --single-branch %s %s 2>&1',
+                    escapeshellarg($requested),
+                    escapeshellarg($url),
+                    escapeshellarg($dir)
+                ), $output, $code);
 
-            if ($code !== 0 || ! is_dir($dir . '/.git')) {
+                if ($code === 0 && is_dir($dir . '/.git')) {
+                    return $this->reindexBranch($project, $dir);
+                }
+
+                // Branch did not exist (or another clone error): retry on the
+                // remote default branch below.
                 @exec('rm -rf ' . escapeshellarg($dir));
-                $message = trim(implode("\n", array_slice($output, -4)));
-                throw new \RuntimeException($message ?: "Could not clone repository on branch \"{$branch}\".");
+                if (is_dir($dir)) {
+                    @rmdir($dir);
+                }
             }
 
-            return $dir;
+            // 2) Fallback: clone with the remote's default branch.
+            $output = [];
+            $code = 0;
+            exec(sprintf('git clone %s %s 2>&1', escapeshellarg($url), escapeshellarg($dir)), $output, $code);
+
+            if ($code !== 0 || ! is_dir($dir . '/.git')) {
+                $message = trim(implode("\n", array_slice($output, -4)));
+                if ($message === '') {
+                    $first = trim(implode("\n", array_slice($output, 0, 3)));
+                    $message = $first !== '' ? $first : "Could not clone repository from {$url}.";
+                }
+                @exec('rm -rf ' . escapeshellarg($dir));
+                throw new \RuntimeException($message);
+            }
+
+            return $this->reindexBranch($project, $dir);
         }
 
         // Existing clone: fetch and move onto the requested branch without
         // clobbering local uncommitted workspace changes.
         $this->run($project, ['git', 'fetch', 'origin'], $dir, true);
-        $this->run($project, ['git', 'checkout', $branch], $dir, true);
+
+        $branch = $requested ?: 'main';
+        if (! $this->branchExists($dir, $branch)) {
+            $default = $this->defaultRemoteBranch($dir);
+            if ($default !== null && $default !== '') {
+                $branch = $default;
+                $project->update(['repo_branch' => $branch]);
+            }
+        }
+        if ($this->branchExists($dir, $branch)) {
+            $this->run($project, ['git', 'checkout', $branch], $dir, true);
+        }
 
         return $dir;
+    }
+
+    protected function reindexBranch(AiProject $project, string $dir): string
+    {
+        $actual = $this->currentBranch($dir);
+        if ($actual !== null && $actual !== $project->repo_branch) {
+            $project->update(['repo_branch' => $actual]);
+        }
+
+        return $dir;
+    }
+
+    protected function currentBranch(string $cwd): ?string
+    {
+        $output = [];
+        $code = 0;
+        exec('git -C ' . escapeshellarg($cwd) . ' rev-parse --abbrev-ref HEAD 2>/dev/null', $output, $code);
+
+        return ($code === 0 && isset($output[0]) && $output[0] !== 'HEAD') ? trim($output[0]) : null;
+    }
+
+    protected function branchExists(string $cwd, string $branch): bool
+    {
+        $output = [];
+        $code = 0;
+        exec(
+            'git -C ' . escapeshellarg($cwd) . ' rev-parse --verify ' . escapeshellarg('origin/' . $branch) . ' 2>/dev/null',
+            $output,
+            $code
+        );
+
+        return $code === 0;
+    }
+
+    protected function defaultRemoteBranch(string $cwd): ?string
+    {
+        $output = [];
+        $code = 0;
+        exec(
+            'git -C ' . escapeshellarg($cwd) . ' symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null',
+            $output,
+            $code
+        );
+
+        if ($code === 0 && isset($output[0])) {
+            return str_replace('origin/', '', trim($output[0]));
+        }
+
+        return null;
     }
 
     public function pull(AiProject $project): string
@@ -183,9 +270,9 @@ class GitRepoService
         }
 
         foreach ($folders as $f) {
-            $folderId = $this->upsertRow($project, $user, $parentId, $existing, $f['entry'], $f['storage'], true);
-            if ($folderId !== null) {
-                $this->importDirectory($project, $user, $f['full'], $folderId, $f['rel'], $existing);
+            $folder = $this->upsertRow($project, $user, $parentId, $existing, $f['entry'], $f['storage'], true);
+            if ($folder !== null) {
+                $this->importDirectory($project, $user, $f['full'], (int) $folder->id, $f['rel'], $existing);
             }
         }
 
@@ -222,10 +309,10 @@ class GitRepoService
         string $name,
         string $storage,
         bool $isFolder
-    ): ?int {
+    ): ?AiProjectFile {
         $row = $existing->get($storage);
         if ($row) {
-            return (int) $row->id;
+            return $row;
         }
 
         return AiProjectFile::create([
@@ -235,7 +322,7 @@ class GitRepoService
             'name' => $name,
             'is_folder' => $isFolder,
             'storage_path' => $storage,
-        ])->id;
+        ]);
     }
 
     protected function storagePathFor(AiProject $project, string $relative): string
