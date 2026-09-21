@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AiAssistantController;
+use App\Http\Controllers\AiTestController;
 use App\Http\Controllers\AiTrainingNoteController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\DashboardController;
@@ -25,6 +26,9 @@ Route::get('/', function () {
 })->name('landing');
 
 Route::get('/invoice/{invoice_number}', [SaleController::class, 'publicInvoice'])->name('public.invoice');
+
+Route::get('/ai-test', [AiTestController::class, 'index'])->name('ai-test.index');
+Route::post('/ai-test/chat', [AiTestController::class, 'send'])->name('ai-test.chat');
 
 Route::prefix('application/dp')->group(function () {
     Route::middleware(['auth', 'verified'])->group(function () {
