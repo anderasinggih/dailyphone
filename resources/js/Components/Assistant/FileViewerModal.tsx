@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
     X,
+    Search,
+    ChevronUp,
+    ChevronDown,
     Download,
     Trash2,
     Loader2,
@@ -49,12 +53,98 @@ export const formatBytes = (bytes?: number): string => {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 };
 
+const DELIMITERS = [',', '\t', ';', '|'] as const;
+
+/**
+ * Pick the separator a delimited-data blob most likely uses by counting how
+ * many times each candidate shows up (ignoring quoted regions) on its first
+ * non-empty line. Falls back to comma.
+ */
+function detectDelimiter(text: string): string {
+    const line = (text.split(/\r?\n/).find(l => l.trim() !== '') ?? '').trim();
+    let best = ',';
+    let bestCount = 0;
+    for (const d of DELIMITERS) {
+        let count = 0;
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') {
+                inQuotes = !inQuotes;
+                if (line[i + 1] === '"') { i++; continue; }
+            } else if (ch === d && !inQuotes) {
+                count++;
+            }
+        }
+        if (count > bestCount) {
+            bestCount = count;
+            best = d;
+        }
+    }
+    return best;
+}
+
+/**
+ * Minimal RFC-4180-ish parser: honors quoted fields (embedded delimiters,
+ * newlines and doubled `""` escapes) so the grid round-trips real CSVs.
+ */
+function parseDelimited(text: string): string[][] {
+    const delimiter = detectDelimiter(text);
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQuotes) {
+            if (ch === '"') {
+                if (text[i + 1] === '"') {
+                    cell += '"';
+                    i++;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                cell += ch;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inQuotes = true;
+        } else if (ch === delimiter) {
+            row.push(cell);
+            cell = '';
+        } else if (ch === '\n' || ch === '\r') {
+            if (ch === '\r' && text[i + 1] === '\n') i++;
+            row.push(cell);
+            cell = '';
+            rows.push(row);
+            row = [];
+        } else {
+            cell += ch;
+        }
+    }
+    if (cell !== '' || row.length > 0) {
+        row.push(cell);
+        rows.push(row);
+    }
+    return rows;
+}
+
 export default function FileViewerModal({ projectId, file, onClose, onDelete }: FileViewerModalProps) {
     const [content, setContent] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [search, setSearch] = useState('');
+    const [matchIdx, setMatchIdx] = useState(0);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
+
     const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const isDelimited = extension === 'csv' || extension === 'tsv';
     const language = (LANG_LABELS[extension] ?? extension.toUpperCase()) || 'Text';
     const previewUrl = route('assistant.project.files.preview', [projectId, file.id]);
     const downloadUrl = route('assistant.project.files.download', [projectId, file.id]);
@@ -95,6 +185,228 @@ export default function FileViewerModal({ projectId, file, onClose, onDelete }: 
         : FileCode2;
 
     const codeLines = content !== null ? content.split('\n') : [];
+    const gridRows = useMemo(() => (isDelimited && content ? parseDelimited(content) : []), [isDelimited, content]);
+
+    const query = search.trim().toLowerCase();
+    const matches = useMemo(() => {
+        if (!query || gridRows.length === 0) return [];
+        const out: number[] = [];
+        gridRows.forEach((row, r) => {
+            if (row.some(c => c.toLowerCase().includes(query))) out.push(r);
+        });
+        return out;
+    }, [query, gridRows]);
+    const activeRow = matches.length > 0 ? matches[Math.min(matchIdx, matches.length - 1)] : null;
+    const totalMatches = matches.length;
+
+    useEffect(() => {
+        setMatchIdx(0);
+    }, [search]);
+
+    useEffect(() => {
+        if (activeRow === null) return;
+        rowRefs.current.get(activeRow)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, [activeRow]);
+
+    const toggleSearch = () => {
+        setSearchOpen(o => {
+            const next = !o;
+            if (next) setTimeout(() => searchInputRef.current?.focus(), 10);
+            return next;
+        });
+    };
+
+    const goToMatch = (dir: 1 | -1) => {
+        if (matches.length === 0) return;
+        setMatchIdx(prev => (prev + dir + matches.length) % matches.length);
+    };
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+                e.preventDefault();
+                toggleSearch();
+                return;
+            }
+            if (e.key === 'Escape') {
+                setSearchOpen(false);
+                return;
+            }
+            if (searchOpen && e.key === 'Enter') {
+                e.preventDefault();
+                goToMatch(e.shiftKey ? -1 : 1);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [searchOpen, matches.length]);
+
+    const highlightCellText = (text: string, rowIndex: number): ReactNode => {
+        if (!query || !text.toLowerCase().includes(query)) return text;
+        const lower = text.toLowerCase();
+        const parts: ReactNode[] = [];
+        let i = 0;
+        while (i < text.length) {
+            const idx = lower.indexOf(query, i);
+            if (idx === -1) {
+                parts.push(text.slice(i));
+                break;
+            }
+            if (idx > i) parts.push(text.slice(i, idx));
+            const isActive = activeRow === rowIndex;
+            parts.push(
+                <mark
+                    key={parts.length}
+                    className={`rounded-[3px] px-px text-white ${
+                        isActive ? 'bg-primary' : 'bg-primary/40'
+                    }`}
+                >
+                    {text.slice(idx, idx + query.length)}
+                </mark>,
+            );
+            i = idx + query.length;
+        }
+        return parts;
+    };
+
+    const renderGrid = () => {
+        if (gridRows.length === 0) return null;
+        const cols = Math.max(...gridRows.map(r => r.length));
+        const header = gridRows[0];
+
+        return (
+            <div className="flex-1 min-h-0 flex flex-col bg-[#0b0b0d]">
+                {/* Toolbar */}
+                <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-white/5 bg-[#0f1012]/95 backdrop-blur-xl shrink-0">
+                    <button
+                        type="button"
+                        onClick={toggleSearch}
+                        title="Search (⌘F / Ctrl+F)"
+                        className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-[10.5px] font-semibold transition ${
+                            searchOpen
+                                ? 'bg-primary/15 text-primary'
+                                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                        }`}
+                    >
+                        <Search className="h-3.5 w-3.5" />
+                        Search
+                    </button>
+
+                    {searchOpen && (
+                        <div className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/80 px-1.5 py-1 focus-within:border-primary/60">
+                            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <input
+                                ref={searchInputRef}
+                                type="text"
+                                value={search}
+                                onChange={e => setSearch(e.target.value)}
+                                placeholder="Find in table…"
+                                className="w-40 bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
+                            />
+                            {search !== '' ? (
+                                <>
+                                    <span className="text-[9.5px] font-mono text-muted-foreground tabular-nums whitespace-nowrap shrink-0">
+                                        {matches.length === 0
+                                            ? 'No matches'
+                                            : `${matchIdx + 1}/${totalMatches}`}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => goToMatch(-1)}
+                                        disabled={matches.length === 0}
+                                        title="Previous match (Shift+Enter)"
+                                        className="p-0.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 transition"
+                                    >
+                                        <ChevronUp className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => goToMatch(1)}
+                                        disabled={matches.length === 0}
+                                        title="Next match (Enter)"
+                                        className="p-0.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 transition"
+                                    >
+                                        <ChevronDown className="h-3.5 w-3.5" />
+                                    </button>
+                                </>
+                            ) : null}
+                        </div>
+                    )}
+
+                    <span className="ml-auto text-[9.5px] font-mono text-muted-foreground/70 select-none whitespace-nowrap">
+                        {extension.toUpperCase()} · {gridRows.length} row{gridRows.length !== 1 ? 's' : ''} × {cols} col{cols !== 1 ? 's' : ''}
+                    </span>
+                </div>
+
+                {/* Grid */}
+                <div className="flex-1 min-h-0 overflow-auto scrollbar-thin pb-3">
+                    <table className="w-full text-left text-[11.5px] font-mono border-collapse">
+                        <thead>
+                            <tr>
+                                <th className="sticky top-0 z-20 px-2 py-1.5 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground/70 bg-[#141518] border-b border-white/10 text-right select-none">
+                                    #
+                                </th>
+                                {header.map((cell, c) => (
+                                    <th
+                                        key={c}
+                                        title={cell}
+                                        className="sticky top-0 z-20 px-2.5 py-1.5 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground bg-[#141518] border-b border-white/10 whitespace-nowrap min-w-[120px] max-w-[320px] truncate"
+                                    >
+                                        {cell === '' ? <span className="opacity-50">(empty)</span> : highlightCellText(cell, 0)}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {gridRows.slice(1).map((row, i) => {
+                                const r = i + 1;
+                                const rowHasMatch = matches.includes(r);
+                                const isActive = activeRow === r;
+                                return (
+                                    <tr
+                                        key={r}
+                                        data-row-key={r}
+                                        ref={el => {
+                                            if (el) rowRefs.current.set(r, el);
+                                            else rowRefs.current.delete(r);
+                                        }}
+                                        className={`transition-colors border-b border-white/5 ${
+                                            isActive ? 'bg-primary/10' : rowHasMatch ? 'bg-primary/[0.04] hover:bg-primary/[0.07]' : 'hover:bg-white/[0.03]'
+                                        }`}
+                                    >
+                                        <td className="px-2 py-1 text-right text-[9.5px] text-neutral-600 select-none border-r border-white/5">
+                                            {r}
+                                        </td>
+                                        {Array.from({ length: cols }, (_, c) => {
+                                            const cell = row[c] ?? '';
+                                            return (
+                                                <td
+                                                    key={c}
+                                                    title={cell === '' ? '' : cell}
+                                                    className="px-2.5 py-1 whitespace-nowrap min-w-[100px] max-w-[320px] truncate text-neutral-200 border-r border-white/5 last:border-r-0"
+                                                >
+                                                    {cell === '' ? (
+                                                        <span className="text-neutral-700">-</span>
+                                                    ) : (
+                                                        highlightCellText(cell, r)
+                                                    )}
+                                                </td>
+                                            );
+                                        })}
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+    };
+
+    const bodyClass = isDelimited
+        ? 'flex-1 min-h-0 flex flex-col bg-[#0b0b0d]'
+        : 'flex-1 min-h-0 overflow-y-auto bg-[#0b0b0d]';
 
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-6 bg-black/55 backdrop-blur-sm animate-in fade-in-50 duration-150">
@@ -107,7 +419,7 @@ export default function FileViewerModal({ projectId, file, onClose, onDelete }: 
                     <div className="min-w-0 flex-1">
                         <h3 className="text-sm font-semibold text-foreground truncate">{file.name}</h3>
                         <p className="text-[10.5px] text-muted-foreground truncate">
-                            {file.kind}{file.kind === 'text' ? ` · ${language}` : ''}
+                            {file.kind}{file.kind === 'text' || isDelimited ? ` · ${language}` : ''}
                             {file.size_bytes ? ` · ${formatBytes(file.size_bytes)}` : ''}
                         </p>
                     </div>
@@ -138,7 +450,7 @@ export default function FileViewerModal({ projectId, file, onClose, onDelete }: 
                 </div>
 
                 {/* Body */}
-                <div className="flex-1 min-h-0 overflow-y-auto bg-[#0b0b0d]">
+                <div className={bodyClass}>
                     {file.kind === 'image' ? (
                         <div className="min-h-[300px] h-full flex items-center justify-center p-4 bg-[repeating-conic-gradient(#1c1c1e_0%_25%,#141416_0%_50%)] bg-[size:24px_24px]">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -177,6 +489,8 @@ export default function FileViewerModal({ projectId, file, onClose, onDelete }: 
                                 Download to open
                             </a>
                         </div>
+                    ) : isDelimited ? (
+                        renderGrid()
                     ) : (
                         <div className="relative">
                             <div className="sticky top-0 left-0 right-0 z-10 px-4 py-1.5 border-b border-white/5 bg-[#0f1012]/95 backdrop-blur-xl text-[9.5px] font-mono text-muted-foreground/70 select-none">

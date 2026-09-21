@@ -1,1 +1,0 @@
-import{j as n}from"./app-_AKaoIpO.js";function e({className:t="",...o}){const i=!t.includes("text-white");return n.jsx("img",{src:"/favicon.ico",alt:"Logo",className:`${t} ${i?"dark:invert-0 invert":""}`,...o})}export{e as A};

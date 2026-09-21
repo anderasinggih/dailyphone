@@ -118,6 +118,9 @@ Route::prefix('application/dp')->group(function () {
         Route::get('/assistant', [AiAssistantController::class, 'index'])->name('assistant.index');
         // Focused chat-only view: same auth + verified rules, no app navigation shell.
         Route::get('/chat', [AiAssistantController::class, 'chatOnly'])->name('assistant.chat-only');
+        // Focused visualization mode: a big markdown/HTML viewer with a floating
+        // composer, so the AI can reply with full documents (graphs, dashboards).
+        Route::get('/viz', [AiAssistantController::class, 'visualization'])->name('assistant.visualization');
         Route::post('/assistant/session', [AiAssistantController::class, 'createSession'])->name('assistant.session.create');
         Route::patch('/assistant/session/{id}', [AiAssistantController::class, 'updateSession'])->name('assistant.session.update');
         Route::delete('/assistant/session/{id}', [AiAssistantController::class, 'deleteSession'])->name('assistant.session.destroy');

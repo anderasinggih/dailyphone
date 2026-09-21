@@ -90,6 +90,7 @@ interface Message {
     replyToRole?: 'user' | 'assistant' | null;
     timestamp: string;
     attachments?: { name: string; kind: string }[];
+    referenced_files?: { name: string; kind: string }[];
 }
 
 interface UploadedAttachment {
@@ -162,6 +163,7 @@ interface AssistantProps {
     };
     userRole: string;
     chatOnly?: boolean;
+    visualizationMode?: boolean;
     projects?: AiProject[];
     sessions: Session[];
     activeSessionId: number | null;
@@ -202,6 +204,7 @@ export default function Assistant({
     aiConfig,
     userRole,
     chatOnly = false,
+    visualizationMode = false,
     projects = [],
     sessions = [],
     activeSessionId = null,
@@ -781,6 +784,7 @@ function playCompletionChime(soundEnabled: boolean): void {
             replyToRole: replyingTo?.role ?? null,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             attachments: uploaded.map(a => ({ name: a.original_name, kind: a.kind })),
+            referenced_files: projectFileRefs.map(f => ({ name: f.name, kind: f.kind })),
         };
 
         setMessages(prev => [...prev, userMsg]);
@@ -2281,6 +2285,23 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                                                 >
                                                                     <Ic className="h-3 w-3 shrink-0" />
                                                                     <span className="max-w-[120px] truncate">{att.name}</span>
+                                                                </span>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                                {m.referenced_files && m.referenced_files.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                                                        {m.referenced_files.map((att, ai) => {
+                                                            const Ic = fileIconFor(att.kind);
+                                                            return (
+                                                                <span
+                                                                    key={ai}
+                                                                    className="inline-flex items-center gap-1 rounded-full bg-primary-foreground/20 px-2 py-0.5 text-[10.5px] font-medium"
+                                                                    title={att.name}
+                                                                >
+                                                                    <Ic className="h-3 w-3 shrink-0" />
+                                                                    <span className="max-w-[120px] truncate">@{att.name}</span>
                                                                 </span>
                                                             );
                                                         })}

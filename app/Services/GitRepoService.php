@@ -386,7 +386,7 @@ class GitRepoService
             if (! $storage) {
                 continue;
             }
-            $relative = $this->repoRelativeOf($project, $row);
+            $relative = $this->repoRelativeOf($prefix, $row);
             if ($relative === null) {
                 continue;
             }
@@ -421,9 +421,8 @@ class GitRepoService
         }
     }
 
-    protected function repoRelativeOf(AiProject $project, AiProjectFile $row): ?string
+    protected function repoRelativeOf(string $prefix, AiProjectFile $row): ?string
     {
-        $prefix = $this->repoDir($project);
         $storage = $row->storage_path;
         if (! $storage) {
             return null;
@@ -544,7 +543,7 @@ class GitRepoService
                     continue;
                 }
                 if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
-                    $newRel = $this->repoRelativeOf($f);
+                    $newRel = $this->repoRelativeOf($prefix, $f);
                     $f->update(['storage_path' => $prefix . '/' . $newRel]);
                 }
             }
@@ -570,7 +569,7 @@ class GitRepoService
      */
     protected function movePhysicalRow(string $dir, string $prefix, AiProjectFile $row, ?string $oldRel): void
     {
-        $newRel = $this->repoRelativeOf($row);
+        $newRel = $this->repoRelativeOf($prefix, $row);
         $row->update(['storage_path' => $prefix . '/' . $newRel]);
 
         if ($oldRel === null || $oldRel === $newRel) {

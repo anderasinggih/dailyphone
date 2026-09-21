@@ -39,7 +39,7 @@ class AiAssistantController extends Controller
      */
     public function index(Request $request): Response
     {
-        return $this->renderAssistant($request, false);
+        return $this->renderAssistant($request, 'chat');
     }
 
     /**
@@ -49,14 +49,25 @@ class AiAssistantController extends Controller
      */
     public function chatOnly(Request $request): Response
     {
-        return $this->renderAssistant($request, true);
+        return $this->renderAssistant($request, 'chat-only');
     }
 
     /**
-     * Shared renderer for the Assistant page. When $chatOnly is true the client
-     * renders the bare chat room (no app nav bars and no links leaving the chat).
+     * Render a focused "visualization" page: a big full-document viewer (rich
+     * markdown with graphs, or interactive HTML) with a floating composer. Same
+     * auth + verified rules, no application navigation shell.
      */
-    protected function renderAssistant(Request $request, bool $chatOnly): Response
+    public function visualization(Request $request): Response
+    {
+        return $this->renderAssistant($request, 'visualization');
+    }
+
+    /**
+     * Shared renderer for the Assistant page. When $mode is 'chat-only' the
+     * client renders the bare chat room (no app nav bars); when it is
+     * 'visualization' the client renders the full-document viewer mode.
+     */
+    protected function renderAssistant(Request $request, string $mode = 'chat'): Response
     {
         $settings = GeneralSetting::first();
         $isConfigured = $this->geminiService->isConfigured();
@@ -132,7 +143,8 @@ class AiAssistantController extends Controller
                 'model' => $model,
             ],
             'userRole' => $user->role,
-            'chatOnly' => $chatOnly,
+            'chatOnly' => $mode === 'chat-only',
+            'visualizationMode' => $mode === 'visualization',
             'projects' => $projects,
             'sessions' => $sessions,
             'activeSessionId' => $activeSession ? $activeSession->id : null,
@@ -834,11 +846,23 @@ class AiAssistantController extends Controller
             abort(422, 'Folders have no content.');
         }
 
+        // CSV/TSV files are shown as a searchable grid in the viewer, so the
+        // raw delimiter-separated bytes are served (not the pipe-joined
+        // extracted_text) so the client can render real table cells.
+        $ext = strtolower(pathinfo($record->name, PATHINFO_EXTENSION));
+
         $content = $record->extracted_text;
-        if ($content === null && $record->storage_path) {
+        if ($record->storage_path) {
             $fullPath = storage_path('app/private/' . $record->storage_path);
             if (is_file($fullPath)) {
-                $content = @file_get_contents($fullPath) ?: null;
+                if (in_array($ext, ['csv', 'tsv'], true)) {
+                    $raw = @file_get_contents($fullPath);
+                    $content = ($raw === false)
+                        ? $content
+                        : mb_substr($raw, 0, \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX);
+                } elseif ($content === null) {
+                    $content = @file_get_contents($fullPath) ?: null;
+                }
             }
         }
 
@@ -1142,6 +1166,7 @@ class AiAssistantController extends Controller
             'project_file_ids' => 'nullable|array',
             'project_file_ids.*' => 'integer',
             'model' => 'nullable|string|max:100',
+            'viz_mode' => 'nullable|boolean',
         ]);
 
         if (!$this->geminiService->isEnabled()) {
@@ -1273,8 +1298,9 @@ class AiAssistantController extends Controller
 
         // Resolve the per-session model override once, before streaming starts.
         $requestedModel = $request->input('model') ?: null;
+        $vizMode = (bool) $request->input('viz_mode');
 
-        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $projectFiles, $requestedModel, $sessionSummary) {
+        $stream = function () use ($userText, $user, $session, $sessionId, $messagesForModel, $attachments, $projectFiles, $requestedModel, $sessionSummary, $vizMode) {
             $startTime = microtime(true);
             $run = [
                 'user_id' => $user->id,
@@ -1468,11 +1494,23 @@ class AiAssistantController extends Controller
 
                 $contextFiles = $attachments->concat($projectFiles);
                 $projectContextBlock = $projectContext !== '' ? "\n" . $projectContext : '';
+
+                // Visualization mode: instruct the model to reply with a full,
+                // self-contained document (rich markdown incl. mermaid graphs,
+                // or a complete interactive HTML page) so the viewer panel has
+                // something real to render instead of a short chat bubble.
+                $vizBlock = $vizMode
+                    ? "\nVISUALIZATION MODE (ACTIVE — Wajib Diikuti):\n"
+                        . "- Balas dengan SATU dokumen utuh, bukan pecahan obrolan pendek.\n"
+                        . "- Gunakan markdown lengkap: heading, list, tabel, dan blok ```mermaid untuk bagan alir / grafik / diagram.\n"
+                        . "- Bila diminta dashboard/laporan/visual yang interaktif, kirim HTML utuh (boleh wrap dalam blok ```html atau langsung tanpa fenced block).\n"
+                        . "- Jangan menutup balasan dengan pertanyaan singkat; tutup dengan ringkasan visual yang berdiri sendiri.\n"
+                    : '';
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $contextFiles,
                     function (string $delta) use ($emit) {
                         $emit(['type' => 'chunk', 'text' => $delta]);
                     },
-                    $ingestNotice . $projectContextBlock,
+                    $vizBlock . $ingestNotice . $projectContextBlock,
                 $requestedModel,
                 $sessionSummary,
                     // Live per-stage timing: context/payload/turnN fire the moment
