@@ -39,6 +39,7 @@ import {
     Folder,
     FolderOpen,
     FolderPlus,
+    FolderKanban,
     Paperclip,
     Download,
     Upload
@@ -48,6 +49,7 @@ import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData, GeneratedFile } from '@/Components/AiActionProposalCard';
 import NeuronFiringMap from '@/Components/NeuronFiringMap';
 import FileViewerModal from '@/Components/Assistant/FileViewerModal';
+import ProjectWorkspace from '@/Components/Workspace/ProjectWorkspace';
 import { consumeNdjson } from '@/lib/ndjson';
 
 type AccessedNeuron = import('@/lib/ndjson').StreamNeuron;
@@ -244,6 +246,10 @@ export default function Assistant({
     const [mentionFilter, setMentionFilter] = useState('');
     // Built-in file viewer (code / image / pdf preview).
     const [viewerFile, setViewerFile] = useState<{ projectId: number; file: ProjectFileNode } | null>(null);
+    // Full-screen opencode-style workspace (file tree + editor + diff) for a project.
+    const [workspaceProjectId, setWorkspaceProjectId] = useState<number | null>(null);
+    // Bumped whenever a project file mutates so the open workspace reloads its tree.
+    const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
     // Drag & drop file attach state for the chat panel.
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
@@ -1008,7 +1014,8 @@ function playCompletionChime(soundEnabled: boolean): void {
                 }
                 const data = await res.json();
                 if (data.success && data.file) {
-                    updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as ProjectFileNode));
+updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as ProjectFileNode));
+                    setWorkspaceRefresh(v => v + 1);
                 }
             }
         } catch (err: any) {
@@ -1049,6 +1056,7 @@ function playCompletionChime(soundEnabled: boolean): void {
             if (data.success && data.file) {
                 updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as ProjectFileNode));
                 if (parentId) setOpenFileFolders(prev => new Set(prev).add(parentId));
+                setWorkspaceRefresh(v => v + 1);
             }
         } catch (err: any) {
             alert('Gagal membuat folder: ' + (err?.message || 'unknown error'));
@@ -1065,6 +1073,7 @@ function playCompletionChime(soundEnabled: boolean): void {
             updateFileTree(projectId, nodes => removeFileNode(nodes, entry.id));
             setProjectFileRefs(prev => prev.filter(f => f.id !== entry.id));
             setViewerFile(prev => (prev && prev.file.id === entry.id ? null : prev));
+            setWorkspaceRefresh(v => v + 1);
         } catch (err: any) {
             alert('Gagal menghapus: ' + (err?.message || 'unknown error'));
         }
@@ -1454,6 +1463,19 @@ function playCompletionChime(soundEnabled: boolean): void {
                             </button>
                             <button
                                 type="button"
+                                title="Open workspace (file tree + diff)"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setIsSidebarOpen(false);
+                                    setWorkspaceProjectId(proj.id);
+                                    setWorkspaceRefresh(v => v + 1);
+                                }}
+                                className="p-1 rounded-lg hover:bg-muted hover:text-primary text-muted-foreground transition"
+                            >
+                                <FolderKanban className="h-3 w-3" />
+                            </button>
+                            <button
+                                type="button"
                                 title="Open file explorer for this project"
                                 onClick={(e) => {
                                     e.stopPropagation();
@@ -1524,6 +1546,20 @@ function playCompletionChime(soundEnabled: boolean): void {
             >
 
                 {/* Main Container with Sidebar + Chat Area */}
+                {/* Full-screen opencode-style workspace for a project */}
+                {workspaceProjectId !== null ? (() => {
+                    const wsProj = projectList.find(p => p.id === workspaceProjectId) ?? null;
+                    return (
+                        <div className="flex-1 min-h-0 flex overflow-hidden rounded-2xl bg-background md:border md:border-border/50 md:bg-card">
+                            <ProjectWorkspace
+                                projectId={workspaceProjectId}
+                                projectTitle={wsProj?.title || 'Project Workspace'}
+                                onClose={() => setWorkspaceProjectId(null)}
+                                refreshSignal={workspaceRefresh}
+                            />
+                        </div>
+                    );
+                })() : (
                 <div className="flex-1 flex overflow-hidden bg-card relative md:border md:border-border/50 md:rounded-2xl md:shadow-sm">
 
                     {/* Left Sidebar: Chat Sessions History */}
@@ -1881,6 +1917,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                                                                     tree
                                                                 )
                                                             );
+                                                            setWorkspaceRefresh(v => v + 1);
                                                             setExpandedProjects(prev => new Set(prev).add(projectId));
                                                             showCornerToast(
                                                                 `Saved ${savedNodes.length} file${savedNodes.length > 1 ? 's' : ''} to project`,
@@ -2239,6 +2276,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                     </div>
 
                 </div>
+                )}
 
                 {/* Drag & drop file attach overlay */}
                 {isDragOver && (
