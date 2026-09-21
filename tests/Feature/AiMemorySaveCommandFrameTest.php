@@ -109,4 +109,31 @@ class AiMemorySaveCommandFrameTest extends TestCase
         $this->assertSame('eka rahayu adalah ibu saya', AiTrainingNote::first()->content);
         $this->assertSame('identity', AiTrainingNote::first()->kind);
     }
+
+    public function test_question_never_becomes_a_node(): void
+    {
+        // "nama nodenya apa" / "berapa total node" are chat questions, not
+        // memories — no path may persist them.
+        $this->persist('nama nodenya apa');
+        $this->persist('berapa total node kah');
+
+        $this->assertSame(0, AiTrainingNote::count());
+    }
+
+    public function test_model_memo_with_question_content_is_rejected(): void
+    {
+        // Choke point guard: even a model-authored ```ai_memo block carrying a
+        // question ("apakah sudah tersimpan?") must not create a node.
+        $method = new \ReflectionMethod(AiAssistantController::class, 'persistMemo');
+        $method->setAccessible(true);
+
+        $saved = $method->invoke($this->controller(), [
+            'kind' => 'note',
+            'title' => 'Pertanyaan user',
+            'content' => 'apakah preferensi warna iphone sudah tersimpan?',
+        ], User::factory()->create());
+
+        $this->assertFalse($saved);
+        $this->assertSame(0, AiTrainingNote::count());
+    }
 }

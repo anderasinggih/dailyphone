@@ -1699,6 +1699,13 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         // never store the model's own acknowledgment as the memory content.
         $content = $this->reconstructClaimContent($claim, $userText, $priorUserText);
         if ($content === null || $content === '') {
+            // The claim may still be honest: a node about this exact subject
+            // could already live in the graph from an earlier turn (asked to
+            // RETRIEVE, the model describes the stored memory as "tersimpan"). 
+            // Only correct into a failure when nothing backs the claim at all.
+            if ($this->claimBackedByExistingNode($claim, $userText, $priorUserText)) {
+                return;
+            }
             // Nothing factual to honour the claim with → stop the false claim.
             $result['reply'] = $this->correctFalseClaim($visible);
             return;
@@ -1713,6 +1720,14 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         $payload = array_filter($payload, fn($v) => $v !== null && $v !== '' && $v !== []);
 
         if ($payload['content'] ?? '') {
+            // The memory already exists (exact or rephrased duplicate) — the
+            // node lives from an earlier turn, so the claim is honest. Never
+            // report a "failed save" for a fact demonstrably in the graph.
+            $graph = app(\App\Services\AiMemoryGraphService::class);
+            if ($graph->isDuplicateContent($payload['content'])) {
+                return;
+            }
+
             if ($this->persistMemo($payload, $user)) {
                 // Saved for real; give the raw text the block it was missing so
                 // the normal persistence path stays single-source-of-truth
@@ -1778,6 +1793,26 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
             $isOpen = (bool) preg_match('/^\s*(?:apakah|berapa|kenapa|mengapa|bisakah|kapan|di\s+mana|where|why|when|how|tolong|mohon|silakan|silahkan)\b/iu', $s)
                 || (bool) preg_match('/\b(?:jika|kalau|seandainya|sebaiknya|seharusnya)\b/iu', $s);
             if ($isPast || $isOpen) {
+                continue;
+            }
+
+            // A bare state description — "preferensi kamu ... tersimpan dengan
+            // aman di dalam jaringan neuron memori saya" — states that a memory
+            // EXISTS, it does not claim a NEW save this turn. With no this-turn
+            // completion ("berhasil menyimpan") and no 📝 marker, flagging it as
+            // a fresh claim turned honest verifications into fabricated
+            // "gagal belum tersimpan" failures. (Invented node counts are still
+            // caught below — the skip never applies to a count claim.)
+            if (preg_match('/\b(?:tersimp[ae]n|disimp[ae]n|tercatat|terekam)\b/iu', $s)
+                && ! $this->isPositiveCompletionClaim($s)
+                && ! str_contains($s, '📝')
+                && $this->countCandidates($s) === []
+                && preg_match(
+                    '/\bdi\s+dalam\s+(?:jaringan|neuron|memori\w*|memory|graf)\b'
+                    . '|\b(?:jaringan|neuron|memori\w*|memory)\s+(?:saya|ku)\b'
+                    . '|\b(?:aman|masih\s+ada|sekarang|saat\s+ini)\b/iu',
+                    $s
+                )) {
                 continue;
             }
 
@@ -2107,6 +2142,84 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     }
 
     /**
+     * True when an existing, active node plausibly backs the storage claim —
+     * the model described a memory that already lives in the graph without
+     * claiming a NEW save this turn. Compared by meaningful-token overlap
+     * (≥2 shared words) between the claim subject / user messages and real
+     * node titles/content, so a retrieval or verification answer
+     * ("...tersimpan...") is never slapped with a fake "gagal" correction.
+     */
+    protected function claimBackedByExistingNode(array $claim, string $userText, string $priorUserText = ''): bool
+    {
+        $wanted = [];
+        foreach ([
+            (string) ($claim['sentence'] ?? ''),
+            (string) ($claim['title'] ?? ''),
+            $userText,
+            $priorUserText,
+        ] as $src) {
+            foreach ($this->meaningTokens($src) as $token) {
+                $wanted[$token] = true;
+            }
+        }
+
+        // Fewer than two real words — nothing specific enough to be backed.
+        if (count($wanted) < 2) {
+            return false;
+        }
+
+        $nodes = \App\Models\AiTrainingNote::whereIn('kind', ['note', 'preference', 'identity', 'memory'])
+            ->where('is_active', true)
+            ->where('is_stale', false)
+            ->limit(400)
+            ->get(['title', 'content']);
+
+        foreach ($nodes as $note) {
+            $shared = 0;
+            foreach ($this->meaningTokens((string) ($note->content ?? '')) as $token) {
+                if (isset($wanted[$token])) {
+                    $shared++;
+                }
+            }
+            if ($shared >= 2) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Lowercased, meaningful tokens of a piece of text: words of at least four
+     * characters minus the closed set of Indonesian connectives and
+     * storage-claim filler. "iPhone 15 berwarna hitam" → [iphone, berwarna,
+     * hitam].
+     *
+     * @return array<int, string>
+     */
+    protected function meaningTokens(string $text): array
+    {
+        static $stop = null;
+        if ($stop === null) {
+            $stop = array_fill_keys(preg_split('/\s+/', strtolower(
+                'yang dan atau untuk dengan dari pada ini itu ke di tidak ya sudah akan bisa lalu maka agar '
+                . 'karena jika saya kamu kita node nodes memori memory baru tersimpan simpan catat ingat rekam '
+                . 'berhasil silakan tolong mohon jangan lupa telah belum gagal dapat sedang dalam'
+            )) ?: [], true);
+        }
+
+        $tokens = [];
+        foreach ((preg_split('/[^\p{L}\p{N}]+/u', strtolower($text)) ?: []) as $w) {
+            if ($w === '' || mb_strlen($w) < 4 || isset($stop[$w])) {
+                continue;
+            }
+            $tokens[] = $w;
+        }
+
+        return array_values(array_unique($tokens));
+    }
+
+    /**
      * Second runtime guard, placed right beside the reconciliation helpers:
      * when the model stays silent (no ```ai_memo block AND no visible storage
      * claim), there was previously no signal to save anything. The system now
@@ -2301,6 +2414,27 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     }
 
     /**
+     * True when the text is a QUESTION, not a declarative fact. Covers real
+     * "?" marks, leading interrogatives ("apakah", "berapa", "apa") and the
+     * bare trailing "apa / kah / kan / sih" forms ("nama nodenya apa") that a
+     * voice-typed question ends with. A question must never become a node.
+     */
+    protected function isInterrogativeText(string $text): bool
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return false;
+        }
+
+        return (bool) preg_match('/\?+/u', $text)
+            || (bool) preg_match('/^(?:apakah|kenapa|mengapa|knapa|bagaimana|gimana|kapan|berapa|siapa|dimana|di\s+mana|yang\s+mana|yangmana|kok|apaan|apa)\b/iu', $text)
+            // Ending question-particle forms: "nama nodenya apa", "berapa
+            // total node kah". ("sih"/"kan" also soften statements, so they are
+            // deliberately NOT treated as question-only.)
+            || (bool) preg_match('/\b(?:apaa?|kah)\s*$/iu', $text);
+    }
+
+    /**
      * Pick the first clean, single declarative sentence from a save request —
      * verbatim user wording, so the fallback cannot hallucinate. Returns null
      * for questions, commands, negations, URLs, filler and multi-sentence text.
@@ -2344,9 +2478,9 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
         }
 
         // Not a fact: questions, commands, negations, URLs or multi-sentence.
-        if (str_contains($sentence, '?')
+        if ($this->isInterrogativeText($sentence)
             || preg_match('/https?:\/\//iu', $sentence)
-            || preg_match('/\b(?:apakah|kenapa|mengapa|bagaimana|kapan|di\s+mana|yang\s+mana|tolong|mohon|bis[ae]kah|bolehkah|jangan)\b/iu', $sentence)
+            || preg_match('/\b(?:tolong|mohon|bis[ae]kah|bolehkah|jangan)\b/iu', $sentence)
             || preg_match('/\b(?:belum|tidak|nggak|enggak|bukan|kurang)\b/iu', $sentence)
             || preg_match('/[.!]\s+\S/iu', $sentence)) {
             return null;
@@ -2412,8 +2546,7 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
             $s = $fact;
 
             // Not a fact: questions, commands or negated / hypothetical phrasing.
-            if (str_contains($s, '?')
-                || preg_match('/\b(?:apakah|kenapa|mengapa|bagaimana|kapan|di\s+mana|yang\s+mana)\b/iu', $s)
+            if ($this->isInterrogativeText($s)
                 || preg_match('/\b(?:tolong|mohon|bis[ae]kah|bolehkah|jangan)\b/iu', $s)
                 || preg_match('/\b(?:belum|tidak|nggak|enggak|kurang|bukan)\b/iu', $s)) {
                 continue;
@@ -2570,6 +2703,12 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     {
         $content = trim((string)($decoded['content'] ?? ''));
         if (!is_array($decoded) || $content === '') {
+            return false;
+        }
+
+        // A question ("nama nodenya apa", "berapa total node?") is a chat
+        // utterance, never a memory — no path may turn it into a node.
+        if ($this->isInterrogativeText($content)) {
             return false;
         }
 

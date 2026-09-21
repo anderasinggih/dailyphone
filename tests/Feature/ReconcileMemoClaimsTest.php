@@ -251,4 +251,79 @@ class ReconcileMemoClaimsTest extends TestCase
         $this->assertSame($reply, $result['reply']);
         $this->assertSame(0, AiTrainingNote::count());
     }
+
+    public function test_state_description_claim_is_not_rewritten_into_a_failure(): void
+    {
+        // Asked to RETRIEVE, the model describes a stored memory as
+        // "tersimpan dengan aman di dalam jaringan neuron". That is a state of
+        // the world, not a fresh save claim — it must keep its honest wording.
+        $reply = 'Saya telah memverifikasi bahwa preferensi kamu mengenai makanan tersimpan dengan aman di dalam jaringan neuron memori saya.';
+
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => $reply,
+            'raw_reply' => $reply,
+        ], 'tesssss retrieval', '', null, 'nama nodenya apa');
+
+        $this->assertSame($reply, $result['reply']);
+        $this->assertStringNotContainsString('gagal', $result['reply']);
+        $this->assertSame(0, AiTrainingNote::count());
+    }
+
+    public function test_completion_claim_backed_by_an_existing_node_is_left_alone(): void
+    {
+        // The node already lives in the graph from an earlier turn.
+        AiTrainingNote::create([
+            'user_id' => null,
+            'author_name' => 'Test',
+            'author_role' => 'system',
+            'content' => 'dewi suka warna iphone hitam',
+            'title' => 'Preferensi Warna iPhone Singgih',
+            'content_hash' => md5('dewi suka warna iphone hitam'),
+            'kind' => 'preference',
+            'is_active' => true,
+        ]);
+
+        $reply = 'Saya berhasil kucatat preferensi warna iPhone Singgih.';
+
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => $reply,
+            'raw_reply' => $reply,
+        ], 'tesssss retrieval', '', null, 'nama nodenya apa');
+
+        // No reconstruction succeeded, but the fact is genuinely stored → the
+        // honest claim is not rewritten into a fabricated "gagal".
+        $this->assertSame($reply, $result['reply']);
+        $this->assertStringNotContainsString('gagal', $result['reply']);
+        $this->assertSame(1, AiTrainingNote::count());
+    }
+
+    public function test_duplicate_reconstruct_claim_does_not_report_failure(): void
+    {
+        AiTrainingNote::create([
+            'user_id' => null,
+            'author_name' => 'Test',
+            'author_role' => 'system',
+            'content' => 'dewi suka warna iphone hitam',
+            'title' => 'Preferensi Warna iPhone Singgih',
+            'content_hash' => md5('dewi suka warna iphone hitam'),
+            'kind' => 'preference',
+            'is_active' => true,
+        ]);
+
+        $reply = 'Saya berhasil kucatat preferensi dewi suka warna iphone hitam.';
+
+        $result = $this->reconcile([
+            'success' => true,
+            'reply' => $reply,
+            'raw_reply' => $reply,
+        ], 'dewi suka warna iphone hitam', '', null, 'dewi suka warna iphone hitam');
+
+        // The reconstructed fact is already stored → honest claim, no junk node
+        // and no false "gagal belum tersimpan".
+        $this->assertSame($reply, $result['reply']);
+        $this->assertStringNotContainsString('gagal', $result['reply']);
+        $this->assertSame(1, AiTrainingNote::count());
+    }
 }
