@@ -165,19 +165,28 @@ class AiEmbeddingService
 
         $model = $this->sanitizeModel($this->model);
         $requests = [];
+        $base = 0;
         foreach ($indexed as $key => $text) {
             $requests[] = [
                 'model' => 'models/'.$model,
                 'content' => ['parts' => [['text' => mb_substr((string) $text, 0, 8000)]]],
             ];
             // Cap batch size per call (some models limit it), chunk the rest.
+            // postBatch() keys each chunk's vectors from 0, so offset every
+            // chunk by its position to keep the returned map sequential and
+            // avoid later chunks silently overwriting earlier ones.
             if (count($requests) >= 96) {
-                $out += $this->postBatch($requests);
+                foreach ($this->postBatch($requests) as $i => $vector) {
+                    $out[$base + $i] = $vector;
+                }
+                $base += count($requests);
                 $requests = [];
             }
         }
         if ($requests !== []) {
-            $out += $this->postBatch($requests);
+            foreach ($this->postBatch($requests) as $i => $vector) {
+                $out[$base + $i] = $vector;
+            }
         }
 
         return $out;

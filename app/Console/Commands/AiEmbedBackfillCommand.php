@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\AiTrainingNote;
 use App\Services\AiEmbeddingService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Backfill semantic embeddings for memory notes missing a vector (item 1).
@@ -30,6 +31,10 @@ class AiEmbedBackfillCommand extends Command
 
         $this->info('Embedding model: ' . $embedder->model());
 
+        // Drop any circuit-breaker latch left by a previous failed attempt so
+        // this run genuinely retries the API instead of short-circuiting to 0.
+        Cache::forget('ai.embed.api_offline');
+
         if ($this->option('force')) {
             $notes = AiTrainingNote::orderBy('id', 'asc')->get();
         } else {
@@ -49,6 +54,10 @@ class AiEmbedBackfillCommand extends Command
         if (!$this->option('force')) {
             $embedded = $embedder->embedMissing($notes);
             $this->info("Done: embedded {$embedded} note(s).");
+
+            if ($embedded === 0 && $total > 0) {
+                $this->warn('0 notes embedded — nothing was stored. Check storage/logs for "Batch embedding" entries, the Gemini API key/quota in Settings, or the server\'s outbound network to generativelanguage.googleapis.com.');
+            }
         } else {
             $embedded = 0;
             foreach ($notes->chunk(96) as $chunk) {
