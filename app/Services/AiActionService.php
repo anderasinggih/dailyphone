@@ -1386,11 +1386,17 @@ class AiActionService
 
     /**
      * Copy a generated run artifact into the owning project's file tree (root
-     * level), mirroring how uploads are stored and indexed so the file can be
-     * previewed and @-referenced like any uploaded project file.
+     * level) and flag it as an AI change so the workspace can show it.
+     *
+     * - If a root-level file with the same name already exists, the new
+     *   artifact REPLACES its content and the row is marked AI-MODIFIED; the
+     *   previous content is kept on the row so the workspace renders a diff.
+     *   Repeated runs keep the very first previous_content, so the diff always
+     *   compares the original file to the latest AI edit.
+     * - Otherwise a fresh row is created and marked AI-CREATED.
      *
      * The original artifact in ai_generated is left untouched — it stays
-     * downloadable from the run itself. Returns the new record or null when a
+     * downloadable from the run itself. Returns the record or null when a
      * single file fails (other files still get saved).
      */
     protected function persistGeneratedProjectFile(
@@ -1402,6 +1408,58 @@ class AiActionService
         \App\Services\AiFileIngestService $ingest
     ): ?\App\Models\AiProjectFile {
         try {
+            $mime = $mime ?: 'application/octet-stream';
+            $kind = $ingest->classify($fileName, $mime);
+            $newHash = md5_file($sourcePath) ?: null;
+            $newSize = filesize($sourcePath);
+
+            $existing = \App\Models\AiProjectFile::where('project_id', $project->id)
+                ->whereNull('parent_id')
+                ->where('name', $fileName)
+                ->first();
+
+            if ($existing) {
+                // Re-outputting the exact same bytes is a no-op: keep the row
+                // untouched (and the previous saved content intact).
+                if ($this->isRedundantCopy($existing, $sourcePath)) {
+                    return $existing;
+                }
+
+                $oldFull = storage_path('app/private/' . $existing->storage_path);
+                $previous = $existing->extracted_text;
+                if ($previous === null && $existing->storage_path && is_file($oldFull)) {
+                    $previous = @file_get_contents($oldFull) ?: null;
+                }
+
+                if (! is_dir(dirname($oldFull))) {
+                    mkdir(dirname($oldFull), 0755, true);
+                }
+                if (! @copy($sourcePath, $oldFull)) {
+                    return null;
+                }
+
+                $text = $ingest->extractText(
+                    $oldFull,
+                    $mime,
+                    $fileName,
+                    \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX
+                );
+
+                $existing->update([
+                    'previous_content' => $existing->previous_content ?: ($previous === '' ? null : $previous),
+                    'previous_content_hash' => $existing->previous_content_hash ?: $existing->content_hash,
+                    'content_hash' => md5_file($oldFull) ?: null,
+                    'extracted_text' => $text === '' ? null : $text,
+                    'size_bytes' => filesize($oldFull),
+                    'change_type' => 'modified',
+                    'changed_at' => now(),
+                ]);
+
+                $project->touch();
+
+                return $existing->refresh();
+            }
+
             $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
             $storageName = 'ai-projects/' . md5($sourcePath . microtime()) . ($ext !== '' ? '.' . $ext : '');
             $targetFull = storage_path('app/private/' . $storageName);
@@ -1413,9 +1471,6 @@ class AiActionService
                 return null;
             }
 
-            $mime = $mime ?: 'application/octet-stream';
-            $name = $this->uniqueGeneratedName($project, $fileName);
-            $kind = $ingest->classify($fileName, $mime);
             $text = $ingest->extractText(
                 $targetFull,
                 $mime,
@@ -1427,14 +1482,16 @@ class AiActionService
                 'user_id' => $user->id,
                 'project_id' => $project->id,
                 'parent_id' => null,
-                'name' => $name,
+                'name' => $fileName,
                 'is_folder' => false,
                 'mime_type' => $mime,
-                'size_bytes' => filesize($targetFull),
+                'size_bytes' => $newSize,
                 'kind' => $kind,
                 'storage_path' => $storageName,
                 'extracted_text' => $text === '' ? null : $text,
-                'content_hash' => md5_file($targetFull) ?: null,
+                'content_hash' => $newHash,
+                'change_type' => 'created',
+                'changed_at' => now(),
             ]);
 
             $project->touch();
@@ -1448,6 +1505,28 @@ class AiActionService
 
             return null;
         }
+    }
+
+    /**
+     * Detect whether a generated artifact is byte-identical to the currently
+     * stored blob, so re-outputting the same file never rewrites the row or
+     * wipes the saved previous-content diff.
+     */
+    protected function isRedundantCopy(
+        \App\Models\AiProjectFile $existing,
+        string $sourcePath
+    ): bool {
+        if (! $existing->storage_path || ! is_file($sourcePath)) {
+            return false;
+        }
+
+        $current = storage_path('app/private/' . $existing->storage_path);
+
+        if (! is_file($current)) {
+            return false;
+        }
+
+        return md5_file($current) === md5_file($sourcePath);
     }
 
     /**

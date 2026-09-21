@@ -428,10 +428,11 @@ function playCompletionChime(soundEnabled: boolean): void {
         });
     };
 
-    // Handle creating a new chat session (optionally inside a project)
+    // Handle creating a new chat session. Standalone by default (no project);
+    // pass a project id explicitly to start the chat inside that project.
     const createNewChat = async (projectId?: number | null) => {
         setIsSidebarOpen(false);
-        const targetProject = projectId === undefined ? currentProjectId : projectId;
+        const targetProject = projectId === undefined ? null : projectId;
         try {
             const res = await fetch(route('assistant.session.create'), {
                 method: 'POST',
@@ -1441,6 +1442,18 @@ function playCompletionChime(soundEnabled: boolean): void {
                         <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 transition">
                             <button
                                 type="button"
+                                title="New chat in this project"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setFilePanelProjectId(null);
+                                    createNewChat(proj.id);
+                                }}
+                                className="p-1 rounded-lg hover:bg-muted hover:text-primary text-muted-foreground transition"
+                            >
+                                <Plus className="h-3 w-3" />
+                            </button>
+                            <button
+                                type="button"
                                 title="Open file explorer for this project"
                                 onClick={(e) => {
                                     e.stopPropagation();
@@ -2046,27 +2059,41 @@ function playCompletionChime(soundEnabled: boolean): void {
 
                                 {/* Referenced project files — @ mention chips */}
                                 {projectFileRefs.length > 0 && (
-                                    <div className="flex flex-wrap items-center gap-1.5 px-4">
-                                        {projectFileRefs.map(f => {
-                                            const Ic = fileIconFor(f.kind);
-                                            return (
-                                                <span
-                                                    key={f.id}
-                                                    className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-primary shadow-sm"
-                                                >
-                                                    <Ic className="h-3 w-3 shrink-0" />
-                                                    <span className="max-w-[140px] sm:max-w-[220px] truncate">@{f.name}</span>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => toggleProjectFileRef(f)}
-                                                        className="p-0.5 rounded-full text-primary/70 hover:text-destructive hover:bg-destructive/10 transition"
-                                                        title="Remove reference"
+                                    <div className="flex flex-col gap-1.5 px-4">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                            <Folder className="h-3 w-3 text-primary shrink-0" />
+                                            <span className="text-[10.5px] font-semibold text-muted-foreground shrink-0">
+                                                From project
+                                            </span>
+                                            <span className="text-[10.5px] font-semibold text-primary truncate min-w-0">
+                                                {currentProject?.title || '…'}
+                                            </span>
+                                            <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                                                · {projectFileRefs.length} file{projectFileRefs.length !== 1 ? 's' : ''}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                            {projectFileRefs.map(f => {
+                                                const Ic = fileIconFor(f.kind);
+                                                return (
+                                                    <span
+                                                        key={f.id}
+                                                        className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-primary shadow-sm"
                                                     >
-                                                        <X className="h-3 w-3" />
-                                                    </button>
-                                                </span>
-                                            );
-                                        })}
+                                                        <Ic className="h-3 w-3 shrink-0" />
+                                                        <span className="max-w-[140px] sm:max-w-[220px] truncate">@{f.name}</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleProjectFileRef(f)}
+                                                            className="p-0.5 rounded-full text-primary/70 hover:text-destructive hover:bg-destructive/10 transition"
+                                                            title="Remove reference"
+                                                        >
+                                                            <X className="h-3 w-3" />
+                                                        </button>
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 )}
 

@@ -30,7 +30,7 @@ interface FileViewerModalProps {
     onDelete: (file: ProjectFileNode) => void;
 }
 
-const LANG_LABELS: Record<string, string> = {
+export const LANG_LABELS: Record<string, string> = {
     ts: 'TypeScript', tsx: 'TSX', js: 'JavaScript', jsx: 'JSX', mjs: 'JavaScript', cjs: 'JavaScript',
     py: 'Python', php: 'PHP', go: 'Go', rb: 'Ruby', rs: 'Rust', java: 'Java', kt: 'Kotlin',
     cs: 'C#', c: 'C', h: 'C Header', cpp: 'C++', hpp: 'C++ Header', cc: 'C++', swift: 'Swift',
@@ -42,7 +42,7 @@ const LANG_LABELS: Record<string, string> = {
     vue: 'Vue', svelte: 'Svelte', graphql: 'GraphQL', proto: 'Protobuf', makefile: 'Makefile', ipynb: 'Notebook',
 };
 
-const formatBytes = (bytes?: number): string => {
+export const formatBytes = (bytes?: number): string => {
     if (!bytes || bytes <= 0) return '';
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';

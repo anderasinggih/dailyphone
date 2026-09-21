@@ -161,6 +161,8 @@ class AiAssistantController extends Controller
                     'size_bytes' => (int) $f->size_bytes,
                     'created_at' => $f->created_at,
                     'updated_at' => $f->updated_at,
+                    'change_type' => $f->change_type,
+                    'changed_at' => $f->changed_at,
                     'children' => $f->is_folder ? $build((int) $f->id) : [],
                 ];
             })->values()->all();
@@ -184,6 +186,8 @@ class AiAssistantController extends Controller
             'size_bytes' => (int) $f->size_bytes,
             'created_at' => $f->created_at,
             'updated_at' => $f->updated_at,
+            'change_type' => $f->change_type,
+            'changed_at' => $f->changed_at,
             'children' => $f->is_folder ? [] : [],
         ];
     }
@@ -537,6 +541,9 @@ class AiAssistantController extends Controller
             'success' => true,
             'file' => $this->projectFilePayload($record),
             'content' => $content,
+            // Old content kept when the AI replaced this file, so the workspace
+            // can render an old→new diff for AI-modified files.
+            'previous_content' => $record->change_type === 'modified' ? $record->previous_content : null,
         ]);
     }
 

@@ -19,6 +19,10 @@ class AiProjectFile extends Model
         'storage_path',
         'extracted_text',
         'content_hash',
+        'change_type',
+        'previous_content',
+        'previous_content_hash',
+        'changed_at',
     ];
 
     protected function casts(): array
@@ -26,6 +30,7 @@ class AiProjectFile extends Model
         return [
             'is_folder' => 'boolean',
             'size_bytes' => 'integer',
+            'changed_at' => 'datetime',
         ];
     }
 
