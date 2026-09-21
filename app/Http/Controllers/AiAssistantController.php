@@ -1500,11 +1500,11 @@ class AiAssistantController extends Controller
                 // or a complete interactive HTML page) so the viewer panel has
                 // something real to render instead of a short chat bubble.
                 $vizBlock = $vizMode
-                    ? "\nVISUALIZATION MODE (ACTIVE — Wajib Diikuti):\n"
-                        . "- Balas dengan SATU dokumen utuh, bukan pecahan obrolan pendek.\n"
-                        . "- Gunakan markdown lengkap: heading, list, tabel, dan blok ```mermaid untuk bagan alir / grafik / diagram.\n"
-                        . "- Bila diminta dashboard/laporan/visual yang interaktif, kirim HTML utuh (boleh wrap dalam blok ```html atau langsung tanpa fenced block).\n"
-                        . "- Jangan menutup balasan dengan pertanyaan singkat; tutup dengan ringkasan visual yang berdiri sendiri.\n"
+                    ? "\nVISUALIZATION MODE (ACTIVE — MUST FOLLOW):\n"
+                        . "- Reply with ONE complete, self-contained document, never short chat fragments.\n"
+                        . "- Use rich markdown: headings, lists, tables, and ```mermaid fenced blocks for flowcharts, graphs and diagrams.\n"
+                        . "- When asked for an interactive dashboard/report/visual, send a full standalone HTML page (you may wrap it in a ```html fenced block).\n"
+                        . "- Do not end the reply with a short question; end with a self-contained visual summary.\n"
                     : '';
                 $result = $this->geminiService->chat($messagesForModel, $user, $session->custom_rules, $userText, $contextFiles,
                     function (string $delta) use ($emit) {

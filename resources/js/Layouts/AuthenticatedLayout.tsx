@@ -22,6 +22,7 @@ import {
     User,
     Banknote,
     ChevronRight,
+    Sparkles,
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 
@@ -122,6 +123,7 @@ export default function Authenticated({
     const getMoreMenuItems = () => {
         const items: { name: string; href: string; icon: any; current: boolean }[] = [];
         items.push({ name: 'Assistant', href: route('assistant.index'), icon: GeminiStar, current: route().current('assistant.index') });
+        items.push({ name: 'Visualize', href: route('assistant.visualization'), icon: Sparkles, current: route().current('assistant.visualization') });
         items.push({ name: 'History', href: route('sales-history.index'), icon: History, current: route().current('sales-history.index') });
         items.push({ name: 'Customers', href: route('customers.index'), icon: Users, current: route().current('customers.index') });
         items.push({ name: 'Shifts', href: route('shifts.index'), icon: Clock, current: route().current('shifts.index') });

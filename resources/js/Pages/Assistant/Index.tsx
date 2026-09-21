@@ -53,6 +53,7 @@ import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData, GeneratedFile } from '@/Components/AiActionProposalCard';
 import NeuronFiringMap from '@/Components/NeuronFiringMap';
 import FileViewerModal from '@/Components/Assistant/FileViewerModal';
+import VisualizationViewer from '@/Components/Assistant/VisualizationViewer';
 import ProjectWorkspace from '@/Components/Workspace/ProjectWorkspace';
 import { consumeNdjson } from '@/lib/ndjson';
 
@@ -561,6 +562,15 @@ function playCompletionChime(soundEnabled: boolean): void {
         scrollToBottom();
     }, [messages, isLoading, accessedNetwork.nodes]);
 
+    // Visualization mode: keep the big document viewer pinned to the newest
+    // rendered sheet while the AI streams tokens into it. 'auto' behavior so
+    // per-token updates stay snappy instead of queueing smooth animations.
+    useEffect(() => {
+        if (!visualizationMode) return;
+        const el = messagesEndRef.current;
+        if (el) el.scrollIntoView({ block: 'end', behavior: 'auto' });
+    }, [draftStream, visualizationMode]);
+
     // Elapsed timer while the assistant is thinking.
     useEffect(() => {
         if (!isLoading) {
@@ -853,6 +863,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                     attachments: uploaded.map(a => a.id),
                     project_file_ids: referencedProjectFiles.length > 0 ? referencedProjectFiles : undefined,
                     model: currentModel || aiConfig.model || undefined,
+                    viz_mode: visualizationMode || undefined,
                 })
             });
 
@@ -1915,6 +1926,353 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
     const filteredMentionFiles = mentionFiles.filter(f =>
         f.name.toLowerCase().includes(mentionFilter.toLowerCase())
     );
+
+    // ===================== Visualization mode =====================
+    // A dedicated route (/viz) where the AI replies with full documents —
+    // rich markdown with graphs, or complete interactive HTML pages — that
+    // render as large sheets in a big viewer panel with a floating composer.
+    if (visualizationMode) {
+        const activeSessionTitle = sessionList.find(s => s.id === currentSessionId)?.title || 'Visualization';
+        const hasDocs = messages.some(m => m.role === 'assistant');
+
+        return (
+            <AuthenticatedLayout hideMobileNav={true} hideNavbar={true}>
+                <Head title="Visualization - Daily Phone Intelligence" />
+                <div className="w-full h-[100dvh] flex flex-col relative bg-background">
+
+                    {/* Floating top header — liquid glass capsule */}
+                    <div className="absolute top-3 left-3 right-3 z-20 pointer-events-none flex justify-center">
+                        <div className="pointer-events-auto w-full max-w-4xl flex items-center justify-between px-3.5 py-2 rounded-2xl bg-background/80 dark:bg-card/75 backdrop-blur-2xl border border-border/50 shadow-lg shadow-black/5 dark:shadow-black/20">
+                            <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
+                                <Link
+                                    href={route('dashboard')}
+                                    title="Back to Dashboard"
+                                    className="p-1.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/70 active:scale-95 transition shrink-0"
+                                >
+                                    <ChevronLeft className="h-4 w-4" />
+                                </Link>
+                                <span className="p-1.5 rounded-xl text-primary shrink-0" title="Daily Phone Intelligence">
+                                    <GeminiStar className="h-4 w-4" />
+                                </span>
+                                <h1
+                                    className="text-xs sm:text-sm font-semibold tracking-tight text-foreground truncate min-w-0 max-w-full pl-1"
+                                    title={activeSessionTitle}
+                                >
+                                    {activeSessionTitle}
+                                </h1>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                                <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-[10px] font-bold tracking-[0.06em] text-primary">
+                                    <Network className="h-3 w-3" />
+                                    DOC VIEWER
+                                </span>
+                                <button
+                                    onClick={() => createNewChat()}
+                                    title="New document"
+                                    className="flex items-center gap-1 rounded-xl border border-border/50 bg-background/70 hover:bg-muted/80 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition shadow-2xs active:scale-95"
+                                >
+                                    <Plus className="h-3.5 w-3.5 text-primary" />
+                                    <span className="hidden sm:inline">New</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Big scrollable document viewer */}
+                    <div className="flex-1 min-h-0 overflow-y-auto pt-20 pb-48">
+                        <div className="max-w-4xl mx-auto px-4 sm:px-6 space-y-8">
+                            {!hasDocs && !isLoading && (
+                                <div className="pt-10 sm:pt-16 flex flex-col items-center text-center">
+                                    <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary mb-4">
+                                        <Network className="h-6 w-6" />
+                                    </div>
+                                    <h2 className="text-lg font-bold tracking-tight text-foreground">
+                                        Visualization viewer
+                                    </h2>
+                                    <p className="text-[12.5px] text-muted-foreground mt-1.5 max-w-md leading-relaxed">
+                                        Ask for a full document — reports, dashboards, charts or interactive
+                                        HTML. Replies render as large markdown pages with graphs, or live
+                                        inside a sandboxed HTML panel.
+                                    </p>
+                                </div>
+                            )}
+
+                            {messages.map((m) => {
+                                if (m.role === 'user') {
+                                    return (
+                                        <div key={m.id} data-message-id={m.id} className="flex justify-end">
+                                            <div className="max-w-[70%] sm:max-w-[55%] rounded-2xl rounded-br-md bg-primary text-primary-foreground px-3.5 py-2 text-[12px] leading-relaxed shadow-2xs">
+                                                <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                                                {m.referenced_files && m.referenced_files.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1 mt-1.5">
+                                                        {m.referenced_files.map((att, ai) => {
+                                                            const Ic = fileIconFor(att.kind);
+                                                            return (
+                                                                <span
+                                                                    key={ai}
+                                                                    className="inline-flex items-center gap-1 rounded-full bg-primary-foreground/20 px-1.5 py-0.5 text-[10px] font-medium"
+                                                                    title={att.name}
+                                                                >
+                                                                    <Ic className="h-2.5 w-2.5 shrink-0" />
+                                                                    <span className="max-w-[100px] truncate">@{att.name}</span>
+                                                                </span>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                                <div className="text-[9.5px] text-primary-foreground/70 mt-1 font-mono select-none">
+                                                    {m.timestamp}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                }
+
+                                // Assistant reply → a big readable document sheet.
+                                return (
+                                    <div key={m.id} data-message-id={m.id}>
+                                        <div className="rounded-2xl border border-border/40 bg-card/70 dark:bg-card/50 backdrop-blur-sm shadow-sm overflow-hidden">
+                                            <div className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-muted/30">
+                                                <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.08em] text-muted-foreground/70">
+                                                    <GeminiStar className="h-3 w-3 text-primary" />
+                                                    DOCUMENT
+                                                </span>
+                                                <span className="text-[9.5px] text-muted-foreground/60 font-mono select-none">
+                                                    {m.timestamp}
+                                                </span>
+                                            </div>
+                                            <div className="p-4 sm:p-6">
+                                                <VisualizationViewer content={m.content} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+
+                            {/* In-flight document while the AI streams */}
+                            {isLoading && (
+                                <div className="rounded-2xl border border-primary/30 bg-card/70 dark:bg-card/50 backdrop-blur-sm shadow-sm overflow-hidden">
+                                    <div className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-muted/30">
+                                        <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.08em] text-primary">
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                            GENERATING DOCUMENT…
+                                        </span>
+                                        <span className="text-[9.5px] text-muted-foreground/60 font-mono select-none">
+                                            {thinkingSeconds}s
+                                        </span>
+                                    </div>
+                                    <div className="p-4 sm:p-6">
+                                        <VisualizationViewer content={draftStream} streaming={isLoading} />
+                                    </div>
+                                </div>
+                            )}
+
+                            <div ref={messagesEndRef} />
+                        </div>
+                    </div>
+
+                    {/* Floating composer — liquid glass capsule */}
+                    <div className="absolute bottom-3 left-3 right-3 z-20 pointer-events-none flex justify-center">
+                        <div className="pointer-events-auto w-full max-w-4xl">
+                            <form
+                                onSubmit={(e: FormEvent) => {
+                                    e.preventDefault();
+                                    handleSendMessage();
+                                }}
+                                className="flex items-center gap-1.5 p-1.5 pl-3 pr-1.5 rounded-3xl bg-background/85 dark:bg-card/80 backdrop-blur-2xl border border-border/60 shadow-xl shadow-black/5 dark:shadow-black/25 transition-all focus-within:border-primary/70 focus-within:ring-2 focus-within:ring-primary/15"
+                            >
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    multiple
+                                    onChange={handlePickFiles}
+                                    className="hidden"
+                                    aria-label="Upload files"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    disabled={isLoading || isUploading || !aiConfig.is_configured}
+                                    className="h-8 w-8 rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-40 transition flex items-center justify-center shrink-0"
+                                    title="Attach files (image, Excel, CSV, ZIP, ...)"
+                                >
+                                    {isUploading ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Plus className="h-4 w-4" />
+                                    )}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (mentionMenuOpen) setMentionMenuOpen(false);
+                                        else { setMentionFilter(''); setMentionMenuOpen(true); }
+                                    }}
+                                    disabled={isLoading || !aiConfig.is_configured || !currentProject || mentionFiles.length === 0}
+                                    className="h-8 w-8 rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-40 transition flex items-center justify-center shrink-0"
+                                    title={currentProject && mentionFiles.length > 0
+                                        ? 'Reference a project file (@)'
+                                        : 'Upload files to a project first to reference them'}
+                                >
+                                    <Paperclip className="h-4 w-4" />
+                                </button>
+                                <div className="flex-1 flex items-center min-w-0">
+                                    <textarea
+                                        ref={inputRef}
+                                        rows={1}
+                                        value={inputQuery}
+                                        onChange={e => setInputQuery(e.target.value)}
+                                        onKeyDown={handleKeyDown}
+                                        placeholder={isLoading
+                                            ? 'Generating document…'
+                                            : 'Ask for a report, chart, dashboard or full HTML page…'}
+                                        disabled={isLoading || !aiConfig.is_configured}
+                                        className="w-full bg-transparent text-[13px] text-foreground placeholder:text-muted-foreground border-none outline-none focus:outline-none focus:ring-0 p-0 resize-none max-h-28 min-h-[24px] leading-5"
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    disabled={isLoading || isUploading || (!inputQuery.trim() && attachments.length === 0 && projectFileRefs.length === 0) || !aiConfig.is_configured}
+                                    className="h-9 w-9 rounded-full bg-primary text-primary-foreground hover:opacity-90 active:scale-90 transition flex items-center justify-center disabled:opacity-30 shrink-0 shadow-xs"
+                                    title="Send"
+                                >
+                                    {isLoading ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Send className="h-4 w-4" />
+                                    )}
+                                </button>
+                            </form>
+
+                            {/* Uploaded file chips */}
+                            {(attachments.length > 0 || isUploading) && (
+                                <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2">
+                                    {attachments.map((att) => {
+                                        const Ic = att.kind === 'image' ? ImageIcon
+                                            : att.kind === 'archive' ? FileArchive
+                                            : att.kind === 'spreadsheet' ? FileSpreadsheet
+                                            : FileText;
+                                        return (
+                                            <span
+                                                key={att.id}
+                                                className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 dark:bg-card/90 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm"
+                                            >
+                                                <Ic className="h-3 w-3 text-primary shrink-0" />
+                                                <span className="max-w-[140px] sm:max-w-[220px] truncate">{att.original_name}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeAttachment(att.id)}
+                                                    className="p-0.5 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition"
+                                                    title="Remove file"
+                                                >
+                                                    <X className="h-3 w-3" />
+                                                </button>
+                                            </span>
+                                        );
+                                    })}
+                                    {isUploading && (
+                                        <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
+                                            <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                                            Uploading…
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* @-referenced project file chips */}
+                            {projectFileRefs.length > 0 && (
+                                <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2">
+                                    {projectFileRefs.map(f => {
+                                        const Ic = fileIconFor(f.kind);
+                                        return (
+                                            <span
+                                                key={f.id}
+                                                className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-primary shadow-sm"
+                                                title={f.name}
+                                            >
+                                                <Ic className="h-3 w-3 shrink-0" />
+                                                <span className="max-w-[140px] sm:max-w-[220px] truncate">@{f.name}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => toggleProjectFileRef(f)}
+                                                    className="p-0.5 rounded-full text-primary/70 hover:text-destructive hover:bg-destructive/10 transition"
+                                                    title="Remove reference"
+                                                >
+                                                    <X className="h-3 w-3" />
+                                                </button>
+                                            </span>
+                                        );
+                                    })}
+                                </div>
+                            )}
+
+                            {/* @-mention picker */}
+                            {mentionMenuOpen && currentProject && mentionFiles.length > 0 && (
+                                <div className="rounded-2xl border border-border/60 bg-background/95 dark:bg-card/95 backdrop-blur-2xl shadow-xl shadow-black/5 dark:shadow-black/25 p-1.5 space-y-1 mt-2">
+                                    <div className="flex items-center gap-1.5 px-2 py-1">
+                                        <span className="text-primary font-bold text-xs">@</span>
+                                        <input
+                                            autoFocus
+                                            value={mentionFilter}
+                                            onChange={(e) => setMentionFilter(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Escape') setMentionMenuOpen(false);
+                                                if (e.key === 'Enter') e.preventDefault();
+                                            }}
+                                            placeholder="Filter project files…"
+                                            className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none border-none focus:ring-0 p-0"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setMentionMenuOpen(false)}
+                                            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                                            title="Close"
+                                        >
+                                            <X className="h-3 w-3" />
+                                        </button>
+                                    </div>
+                                    <div className="max-h-52 overflow-y-auto space-y-0.5">
+                                        {filteredMentionFiles.map(f => {
+                                            const selected = projectFileRefs.some(r => r.id === f.id);
+                                            const Ic = fileIconFor(f.kind);
+                                            return (
+                                                <button
+                                                    key={f.id}
+                                                    type="button"
+                                                    onClick={() => toggleProjectFileRef(f)}
+                                                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium transition ${
+                                                        selected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted/70'
+                                                    }`}
+                                                >
+                                                    <Ic className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                    <span className="truncate flex-1 min-w-0 text-left">{f.name}</span>
+                                                    <span className="text-[9.5px] text-muted-foreground/60 shrink-0">
+                                                        {f.size_bytes ? formatBytes(f.size_bytes) : ''}
+                                                    </span>
+                                                    {selected && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}
+                                                </button>
+                                            );
+                                        })}
+                                        {filteredMentionFiles.length === 0 && (
+                                            <p className="text-[11px] text-muted-foreground text-center py-3">
+                                                No matching files in this project.
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {!aiConfig.is_configured && (
+                                <p className="mt-2 mx-auto max-w-md text-center text-[11px] text-muted-foreground bg-destructive/8 border border-destructive/20 rounded-full px-3 py-1.5 backdrop-blur-xl">
+                                    AI Assistant has not been configured yet. Set the API key in Settings first.
+                                </p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </AuthenticatedLayout>
+        );
+    }
 
     return (
         <AuthenticatedLayout hideMobileNav={true} hideNavbar={chatOnly || workspaceProjectId !== null}>
