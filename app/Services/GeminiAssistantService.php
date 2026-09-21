@@ -1100,6 +1100,7 @@ PROMPT;
             if (! empty($turnResult['grounding'])) {
                 $grounding = $this->compactGrounding($turnResult['grounding']);
             }
+            $lastMeta = $turnResult['meta'] ?? ($lastMeta ?? []);
 
             $textChunk = (string) ($turnResult['text'] ?? '');
             $replyText .= $textChunk;
@@ -1195,9 +1196,50 @@ PROMPT;
         if ($visible === '') {
             if (trim((string) $rawText) !== '') {
                 $visible = $this->memoOnlyAcknowledgment($queryText);
+            } elseif ($toolCallsLog === [] && $onChunk !== null) {
+                // Pure empty stream (no text, no calls): the SSE parser or the
+                // model choked midway. A single blocking retry uses a different
+                // code path (parseBlockingResponse) with no risk of re-running
+                // tools, so it is the safest way to unstick an empty reply.
+                $lastErrorMsg = '';
+                $blocking = $this->runTurn($payload, $useModel, null, $isImageModel);
+                if ($blocking['success'] && trim((string) ($blocking['text'] ?? '')) !== '') {
+                    $this->accumulateUsage($blocking['usage'] ?? null);
+                    $visible = trim($this->stripMemoBlocks((string) $blocking['text']));
+                    $rawText = (string) $blocking['text'];
+                    if ($visible === '') {
+                        $visible = $this->memoOnlyAcknowledgment($queryText);
+                    }
+                    if ($onChunk !== null && $visible !== '') {
+                        $onChunk($visible);
+                    }
+                } else {
+                    $lastErrorMsg = $blocking['error'] ?? 'blocking retry also returned no text';
+                }
+                if ($visible === '') {
+                    Log::warning('Gemini chat produced no text content', [
+                        'query' => mb_substr($queryText, 0, 200),
+                        'tools_called' => $toolCallsLog,
+                        'usage' => $this->usageTotals,
+                        'meta' => $lastMeta,
+                        'retry' => $lastErrorMsg,
+                    ]);
+                    $visible = $this->assistantErrorMessage(
+                        $lastErrorMsg !== '' ? $lastErrorMsg : 'Gemini returned an empty response for this message.',
+                        $isImageModel
+                    );
+                }
             } else {
-                Log::warning('Gemini chat produced no text content for query: '.mb_substr($queryText, 0, 200));
-                $visible = $this->assistantErrorMessage('Gemini returned an empty response for this message.', $isImageModel);
+                Log::warning('Gemini chat produced no text content', [
+                    'query' => mb_substr($queryText, 0, 200),
+                    'tools_called' => $toolCallsLog,
+                    'usage' => $this->usageTotals,
+                    'meta' => $lastMeta,
+                ]);
+                $visible = $this->assistantErrorMessage(
+                    $toolCallsLog === [] ? 'Gemini returned an empty response for this message.' : 'Gemini answered with only tool calls and no final text.',
+                    $isImageModel
+                );
             }
         }
 
@@ -1832,12 +1874,35 @@ SYSTEM;
         $errorBody = '';
         $eventBuf = '';
 
+        // One raw SSE event (a record terminated by a blank line) → JSON.
+        // Normalizes CRLF and bare CR so recordings from proxies/VPS relays
+        // that translate line endings never end up in the buffer, silently
+        // dropped, as a "successful but empty" reply.
+        $digestEvent = function (string $event) use ($emitJson): void {
+            foreach (preg_split('/\r?\n/', $event) as $line) {
+                if (! str_starts_with($line, 'data:')) {
+                    continue;
+                }
+                $eventData = trim(substr($line, 5));
+                if ($eventData === '' || $eventData === '[DONE]' || $eventData === '[]') {
+                    continue;
+                }
+                $json = json_decode($eventData, true);
+                if (is_array($json) && $json !== []) {
+                    $emitJson($json);
+                }
+            }
+        };
+
         $curl = curl_init($url);
         curl_setopt_array($curl, [
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            // Ask cURL to negotiate + transparently decode gzip/deflate so a
+            // compression proxy can never feed raw binary into the SSE parser.
+            CURLOPT_ENCODING => '',
             CURLOPT_CONNECTTIMEOUT => 20,
             CURLOPT_TIMEOUT => 300,
             CURLOPT_HEADERFUNCTION => function ($ch, string $headerLine) use (&$httpStatus): int {
@@ -1847,29 +1912,18 @@ SYSTEM;
 
                 return strlen($headerLine);
             },
-            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use (&$httpStatus, &$errorBody, &$eventBuf, $emitJson): int {
+            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use (&$httpStatus, &$errorBody, &$eventBuf, $digestEvent): int {
                 if ($httpStatus >= 400) {
                     $errorBody .= $data;
 
                     return strlen($data);
                 }
 
-                $eventBuf .= $data;
+                $eventBuf .= str_replace(["\r\n", "\r"], "\n", $data);
                 while (($nl = strpos($eventBuf, "\n\n")) !== false) {
                     $event = substr($eventBuf, 0, $nl);
                     $eventBuf = substr($eventBuf, $nl + 2);
-                    foreach (preg_split('/\r?\n/', $event) as $line) {
-                        if (str_starts_with($line, 'data:')) {
-                            $eventData = trim(substr($line, 5));
-                            if ($eventData === '' || $eventData === '[DONE]' || $eventData === '[]') {
-                                continue;
-                            }
-                            $json = json_decode($eventData, true);
-                            if (is_array($json) && $json !== []) {
-                                $emitJson($json);
-                            }
-                        }
-                    }
+                    $digestEvent($event);
                 }
 
                 return strlen($data);
@@ -1900,6 +1954,14 @@ SYSTEM;
             }
 
             return ['success' => false, 'error' => 'HTTP '.$httpStatus];
+        }
+
+        // Upstream may close the SSE stream straight after the last event
+        // (no trailing blank line). Any leftover parcel is that final event —
+        // digest it so the last generation chunk is never lost.
+        if ($eventBuf !== '') {
+            $digestEvent($eventBuf);
+            $eventBuf = '';
         }
 
         $this->streamVisible($pending, $inMemo, function (string $s) use (&$out, $onChunk): void {
