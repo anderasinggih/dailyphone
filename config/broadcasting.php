@@ -45,6 +45,14 @@ return [
                 // Reverb publish happens host-to-host; when it serves a
                 // self-signed certificate, skip peer verification.
                 'verify' => false,
+                // A half-dead Reverb (a stale process serving the wrong
+                // scheme, or a blackholed port) must never stall the chat:
+                // AiAssistantRunProgress broadcasts synchronously inside the
+                // retrieval path (up to 3 stages per turn), so each attempt
+                // is hard-capped — a broken mirror costs seconds at most,
+                // never 30s+ of serial timeouts.
+                'timeout' => 2,
+                'connect_timeout' => 1,
             ],
         ],
 
