@@ -14,8 +14,10 @@ import {
     GitCompareArrows,
     Image as ImageIcon,
     Loader2,
+    MessageSquare,
     PanelLeft,
     PanelRight,
+    Pencil,
     RefreshCw,
     RotateCw,
     X,
@@ -57,6 +59,10 @@ interface Props {
     projectTitle: string;
     onClose: () => void;
     refreshSignal?: number;
+    // IDE split mode: the parent pages the chat column beside the workspace,
+    // so the top bar can toggle its visibility.
+    chatPaneOpen?: boolean;
+    onToggleChatPane?: () => void;
 }
 
 const PREVIEW_KINDS = new Set(['image', 'pdf']);
@@ -64,7 +70,7 @@ const PREVIEW_KINDS = new Set(['image', 'pdf']);
 const csrfToken = (): string =>
     (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '';
 
-export default function ProjectWorkspace({ projectId, projectTitle, onClose, refreshSignal = 0 }: Props) {
+export default function ProjectWorkspace({ projectId, projectTitle, onClose, refreshSignal = 0, chatPaneOpen = true, onToggleChatPane }: Props) {
     const [files, setFiles] = useState<WorkspaceProjectFile[]>([]);
     const [loadingTree, setLoadingTree] = useState(true);
     const [treeError, setTreeError] = useState<string | null>(null);
@@ -77,6 +83,12 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
     const [showTree, setShowTree] = useState(true);
     const [showChanges, setShowChanges] = useState(true);
     const [isFetching, setIsFetching] = useState(false);
+    // User edit mode: per-file dirty buffers plus which tab is being edited.
+    const [editingContent, setEditingContent] = useState<Record<number, string>>({});
+    const [editingFileId, setEditingFileId] = useState<number | null>(null);
+    const [isSavingEdit, setIsSavingEdit] = useState(false);
+    const editAreaRef = useRef<HTMLTextAreaElement>(null);
+    const editGutterRef = useRef<HTMLDivElement>(null);
 
     const reloadTree = useCallback(async () => {
         setLoadingTree(true);
@@ -167,7 +179,9 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
             id: node.id,
             node,
             path: pathOf.get(node.id) ?? node.name,
-            view: 'source',
+            // AI-modified / AI-created files open straight into the diff view so
+            // the red/green change is visible in the code immediately.
+            view: node.change_type ? 'diff' : 'source',
             loading: !PREVIEW_KINDS.has(node.kind),
             data: null,
         };
@@ -204,6 +218,126 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
             if (next.has(id)) next.delete(id); else next.add(id);
             return next;
         });
+    };
+
+    const cancelEdit = () => {
+        if (editingFileId === null) return;
+        setEditingContent(prev => {
+            const next = { ...prev };
+            delete next[editingFileId];
+            return next;
+        });
+        setEditingFileId(null);
+    };
+
+    // Keep the editor's line-number gutter in sync with the textarea scroll.
+    const syncEditGutter = () => {
+        const ta = editAreaRef.current;
+        const gutter = editGutterRef.current;
+        if (ta && gutter) gutter.scrollTop = ta.scrollTop;
+    };
+
+    const startEdit = (tab: OpenTab) => {
+        const content = tab.data?.content;
+        if (typeof content !== 'string') return;
+        setEditingContent(prev => ({ ...prev, [tab.id]: content }));
+        setEditingFileId(tab.id);
+    };
+
+    // Focus the editor (and align numbers) the moment a tab enters edit mode.
+    useEffect(() => {
+        if (editingFileId === null) return;
+        const raf = requestAnimationFrame(() => {
+            editAreaRef.current?.focus();
+            syncEditGutter();
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [editingFileId]);
+
+    // IDE-style save shortcut while editing: ⌘S / Ctrl+S.
+    useEffect(() => {
+        if (editingFileId === null) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+                e.preventDefault();
+                saveEdit();
+            }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editingFileId, editingContent, isSavingEdit]);
+
+    // IDE-style save: persist the edited buffer, then re-derive the diff and
+    // refresh the tree / changes panel so the file shows up as AI-modified.
+    const saveEdit = async () => {
+        if (editingFileId === null || isSavingEdit) return;
+        const node = flatFiles.find(f => f.id === editingFileId);
+        if (!node) return;
+        const content = editingContent[editingFileId] ?? '';
+
+        setIsSavingEdit(true);
+        try {
+            const res = await fetch(route('assistant.project.files.update', [projectId, node.id]), {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken(),
+                },
+                body: JSON.stringify({ content }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                throw new Error(err?.message || `Failed to save (${res.status})`);
+            }
+            const data = await res.json();
+            const entry: FileData = {
+                content: data.content ?? null,
+                previous: data.previous_content ?? null,
+                error: null,
+            };
+            setFileData(prev => ({ ...prev, [node.id]: entry }));
+            if (data.file?.change_type) {
+                setStats(prev => ({ ...prev, [node.id]: diffStatsOf(diffLines(entry.previous, entry.content)) }));
+            }
+            // Keep the explorer tree + the active tab in sync with the server.
+            setFiles(prev => {
+                const updateNode = (nodes: WorkspaceProjectFile[]): WorkspaceProjectFile[] => nodes.map(n => {
+                    if (n.id === node.id) {
+                        return {
+                            ...n,
+                            change_type: data.file?.change_type ?? n.change_type,
+                            changed_at: data.file?.changed_at ?? n.changed_at,
+                            size_bytes: data.file?.size_bytes ?? n.size_bytes,
+                        };
+                    }
+                    return { ...n, children: updateNode(n.children || []) };
+                });
+                return updateNode(prev);
+            });
+            setTabs(prev => prev.map(t => (t.id === node.id ? {
+                ...t,
+                node: {
+                    ...t.node,
+                    change_type: data.file?.change_type ?? t.node.change_type,
+                    changed_at: data.file?.changed_at ?? t.node.changed_at,
+                },
+                view: 'diff',
+                data: entry,
+            } : t)));
+            setSelectedChangeId(node.id);
+            setEditingContent(prev => {
+                const next = { ...prev };
+                delete next[node.id];
+                return next;
+            });
+            setEditingFileId(null);
+        } catch (err: any) {
+            alert('Failed to save: ' + (err?.message || 'unknown error'));
+        } finally {
+            setIsSavingEdit(false);
+        }
     };
 
     const deleteFile = async (node: WorkspaceProjectFile) => {
@@ -283,18 +417,37 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
         });
     };
 
-    const renderCode = (value: string) => {
+    const renderCode = (value: string, addedLines?: Set<number>) => {
         const lines = value.split('\n');
         return (
             <pre className="text-[12px] leading-[1.55] font-mono text-neutral-200">
-                {lines.map((line, i) => (
-                    <div key={i} className="flex px-2 hover:bg-white/[0.03]">
-                        <span className="w-10 pr-4 text-right shrink-0 select-none text-neutral-600">{i + 1}</span>
-                        <code className="whitespace-pre flex-1 pr-4">{line || ' '}</code>
-                    </div>
-                ))}
+                {lines.map((line, i) => {
+                    const num = i + 1;
+                    const added = addedLines?.has(num) ?? false;
+                    return (
+                        <div key={i} className={`flex px-2 ${added ? 'bg-emerald-500/[0.07]' : 'hover:bg-white/[0.03]'}`}>
+                            <span className={`w-8 pr-2 text-right shrink-0 select-none ${added ? 'text-emerald-500' : 'text-neutral-600'}`}>
+                                {added ? '+' : ' '}
+                            </span>
+                            <span className="w-10 pr-4 text-right shrink-0 select-none text-neutral-600">{num}</span>
+                            <code className="whitespace-pre flex-1 pr-4">{line || ' '}</code>
+                        </div>
+                    );
+                })}
             </pre>
         );
+    };
+
+    // Map of new-file line numbers that were ADDED vs the previous content, so
+    // the plain source view can keep the diff "in the code" (soft green gutter).
+    const buildSourceMark = (diffs: DiffLine[]): Set<number> => {
+        const added = new Set<number>();
+        let newLine = 1;
+        for (const d of diffs) {
+            if (d.type === 'add') added.add(d.newLine ?? newLine);
+            if (d.type !== 'del') newLine = (d.newLine ?? newLine) + 1;
+        }
+        return added;
     };
 
     const renderDiff = (diffs: DiffLine[], compact = false) => (
@@ -370,15 +523,78 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
 
         const hasChange = tab.node.change_type === 'modified' || tab.node.change_type === 'created';
         const stat = stats[tab.node.id];
+        const isEditing = editingFileId === tab.id;
         const diffs = tab.view === 'diff' && hasChange
             ? diffLines(tab.data?.previous ?? null, content)
             : null;
 
+        // Quitting edit mode (discarding the buffer) via Escape.
+        const onEditKeyDown = (e: React.KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelEdit();
+            }
+        };
+
+        if (isEditing) {
+            const lineCount = (editingContent[tab.id] ?? content).split('\n').length;
+            return (
+                <div className="flex-1 min-h-0 flex flex-col">
+                    <TabMetaBar tab={tab} pathOf={pathOf} onToggleDiff={hasChange ? () => toggleView(tab.id) : undefined} stat={stat} isEditing />
+                    <div className="flex-1 min-h-0 flex overflow-hidden bg-[#0b0b0d]">
+                        <div ref={editGutterRef} className="w-11 shrink-0 overflow-hidden pl-2 pr-2 py-2 select-none bg-[#0b0b0d]">
+                            <pre className="text-[12px] leading-[1.55] font-mono text-neutral-600 text-right">
+                                {Array.from({ length: lineCount }, (_, i) => (
+                                    <div key={i}>{i + 1}</div>
+                                ))}
+                            </pre>
+                        </div>
+                        <textarea
+                            ref={editAreaRef}
+                            value={editingContent[tab.id] ?? content}
+                            onChange={(e) => {
+                                setEditingContent(prev => ({ ...prev, [tab.id]: e.target.value }));
+                                requestAnimationFrame(syncEditGutter);
+                            }}
+                            onScroll={syncEditGutter}
+                            onKeyDown={onEditKeyDown}
+                            spellCheck={false}
+                            className="flex-1 min-w-0 resize-none bg-transparent text-[12px] leading-[1.55] font-mono text-neutral-200 outline-none py-2 pl-2 pr-4 whitespace-pre"
+                        />
+                    </div>
+                    <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-t border-border/40 bg-card">
+                        <button
+                            type="button"
+                            onClick={saveEdit}
+                            disabled={isSavingEdit}
+                            className="flex items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-[11px] font-semibold text-primary-foreground hover:opacity-90 active:scale-95 transition disabled:opacity-50"
+                        >
+                            {isSavingEdit ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                            Save
+                        </button>
+                        <button
+                            type="button"
+                            onClick={cancelEdit}
+                            disabled={isSavingEdit}
+                            className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition disabled:opacity-50"
+                        >
+                            <X className="h-3 w-3" /> Cancel
+                        </button>
+                        <span className="flex-1" />
+                        <span className="text-[10px] font-mono text-muted-foreground/70">⌘S to save · Esc to cancel</span>
+                        <span className="text-[10px] font-mono text-muted-foreground/60">{lineCount} lines</span>
+                    </div>
+                </div>
+            );
+        }
+
         return (
             <div className="flex-1 min-h-0 flex flex-col">
-                <TabMetaBar tab={tab} pathOf={pathOf} onToggleDiff={hasChange ? () => toggleView(tab.id) : undefined} />
+                <TabMetaBar tab={tab} pathOf={pathOf} onToggleDiff={hasChange ? () => toggleView(tab.id) : undefined} stat={stat} onEdit={() => startEdit(tab)} />
                 <div className="flex-1 min-h-0 overflow-auto bg-[#0b0b0d]">
-                    {diffs ? renderDiff(diffs) : renderCode(content)}
+                    {tab.view === 'source' && hasChange
+                        ? renderCode(content, buildSourceMark(diffLines(tab.data?.previous ?? null, content)))
+                        : diffs ? renderDiff(diffs) : renderCode(content)}
                 </div>
             </div>
         );
@@ -387,6 +603,20 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
     const editorInfo = activeTab
         ? stats[activeTab.id]
         : null;
+
+    // Aggregate +N/-M across every changed file, shown in the top bar.
+    const totalStats = useMemo(() => {
+        let additions = 0;
+        let deletions = 0;
+        for (const f of changedFiles) {
+            const s = stats[f.id];
+            if (s) {
+                additions += s.additions;
+                deletions += s.deletions;
+            }
+        }
+        return { additions, deletions };
+    }, [changedFiles, stats]);
 
     return (
         <div className="flex flex-col h-full w-full overflow-hidden bg-background md:bg-card relative">
@@ -401,6 +631,19 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                     <ArrowLeft className="h-3.5 w-3.5" />
                     <span className="hidden sm:inline">Chat</span>
                 </button>
+                {onToggleChatPane && (
+                    <button
+                        type="button"
+                        onClick={onToggleChatPane}
+                        title={chatPaneOpen ? 'Hide chat panel' : 'Show chat panel'}
+                        className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
+                            chatPaneOpen ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                        }`}
+                    >
+                        <MessageSquare className="h-3.5 w-3.5" />
+                        <span className="hidden lg:inline">Chat</span>
+                    </button>
+                )}
                 <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 min-w-0">
                         <FileCode2 className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -435,6 +678,12 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                         </span>
                     )}
                 </button>
+                {totalStats.additions + totalStats.deletions > 0 && (
+                    <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-muted/80 border border-border/40 px-1.5 py-px font-mono text-[9.5px] shrink-0">
+                        <span className="text-emerald-600 dark:text-emerald-400">+{totalStats.additions}</span>
+                        <span className="text-rose-600 dark:text-rose-400">-{totalStats.deletions}</span>
+                    </span>
+                )}
                 <button
                     type="button"
                     onClick={() => reloadTree()}
@@ -667,10 +916,16 @@ function TabMetaBar({
     tab,
     pathOf,
     onToggleDiff,
+    stat,
+    onEdit,
+    isEditing,
 }: {
     tab: OpenTab;
     pathOf: Map<number, string>;
     onToggleDiff?: () => void;
+    stat?: DiffStats;
+    onEdit?: () => void;
+    isEditing?: boolean;
 }) {
     const extension = tab.node.name.split('.').pop()?.toLowerCase() ?? '';
     const language = LANG_LABELS[extension] ?? (extension.toUpperCase() || 'Text');
@@ -684,6 +939,12 @@ function TabMetaBar({
             )}
             {tab.node.change_type === 'created' && (
                 <span className="text-emerald-500/90 font-semibold">· AI-CREATED</span>
+            )}
+            {stat && (
+                <span className="font-mono">
+                    <span className="text-emerald-500/90">+{stat.additions}</span>{' '}
+                    <span className="text-rose-500/90">-{stat.deletions}</span>
+                </span>
             )}
             <span className="flex-1" />
             {onToggleDiff && (
@@ -700,12 +961,22 @@ function TabMetaBar({
                     {tab.view === 'diff' ? 'Source' : 'Diff'}
                 </button>
             )}
-            <a
-                href={route('assistant.project.files.download', [tab.node.id ? 0 : 0, tab.id])}
-                onClick={(e) => e.preventDefault()}
-                className="opacity-0 pointer-events-none h-0 w-0"
-                aria-hidden="true"
-            />
+            {onEdit && (
+                <button
+                    type="button"
+                    onClick={onEdit}
+                    disabled={isEditing}
+                    title="Edit file"
+                    className={`flex items-center gap-1 rounded-md px-1.5 py-1 font-bold transition ${
+                        isEditing
+                            ? 'bg-emerald-500/15 text-emerald-500'
+                            : 'text-muted-foreground hover:text-primary hover:bg-primary/10'
+                    }`}
+                >
+                    <Pencil className="h-3 w-3" />
+                    <span className="hidden sm:inline">{isEditing ? 'Editing' : 'Edit'}</span>
+                </button>
+            )}
         </div>
     );
 }

@@ -649,7 +649,7 @@ CONTEXT;
      * @param  string|null  $model  Per-session model override (falls back to the
      *                              superadmin-configured model when empty).
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null, ?string $summary = null, ?callable $onTiming = null): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null, ?string $summary = null, ?callable $onTiming = null, ?array $preResolvedNetwork = null): array
     {
         if (! $this->isConfigured()) {
             return [
@@ -681,7 +681,12 @@ CONTEXT;
         $this->setConversationContext($messages);
 
         $retrievalOn = $this->retrievalEnabled($settings);
-        $neurons = $retrievalOn ? $this->resolveNeurons($queryText) : [];
+        // The chat controller already resolved the neuron network once this turn
+        // (it streams the live brain map from that same pass), so reuse its nodes
+        // instead of running retrieval a second time.
+        $neurons = $preResolvedNetwork !== null
+            ? ($preResolvedNetwork['nodes'] ?? [])
+            : ($retrievalOn ? $this->resolveNeurons($queryText) : []);
         $trainingNotesStr = $retrievalOn ? $this->generateTrainingNotesContext($queryText) : '';
         if (! $retrievalOn) {
             $this->retrievalState = [

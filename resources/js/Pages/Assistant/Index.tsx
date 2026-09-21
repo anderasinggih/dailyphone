@@ -250,6 +250,8 @@ export default function Assistant({
     const [workspaceProjectId, setWorkspaceProjectId] = useState<number | null>(null);
     // Bumped whenever a project file mutates so the open workspace reloads its tree.
     const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
+    // IDE split: whether the chat column stays visible beside an open workspace.
+    const [workspaceChatOpen, setWorkspaceChatOpen] = useState(true);
     // Drag & drop file attach state for the chat panel.
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
@@ -1545,24 +1547,25 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                 onDrop={handleDrop}
             >
 
-                {/* Main Container with Sidebar + Chat Area */}
-                {/* Full-screen opencode-style workspace for a project */}
-                {workspaceProjectId !== null ? (() => {
-                    const wsProj = projectList.find(p => p.id === workspaceProjectId) ?? null;
-                    return (
-                        <div className="flex-1 min-h-0 flex overflow-hidden rounded-2xl bg-background md:border md:border-border/50 md:bg-card">
+                {/* Main IDE container: sessions sidebar (closed) or project workspace (open), with chat on the right */}
+                <div className="flex-1 min-h-0 flex overflow-hidden bg-background relative md:border md:border-border/50 md:rounded-2xl md:bg-card">
+
+                    {/* IDE split: the project workspace fills the main column, the chat stays in the right pane */}
+                    {workspaceProjectId !== null && (
+                        <div className="flex-1 min-w-0 min-h-0">
                             <ProjectWorkspace
                                 projectId={workspaceProjectId}
-                                projectTitle={wsProj?.title || 'Project Workspace'}
+                                projectTitle={projectList.find(p => p.id === workspaceProjectId)?.title || 'Project Workspace'}
                                 onClose={() => setWorkspaceProjectId(null)}
                                 refreshSignal={workspaceRefresh}
+                                chatPaneOpen={workspaceChatOpen}
+                                onToggleChatPane={() => setWorkspaceChatOpen(v => !v)}
                             />
                         </div>
-                    );
-                })() : (
-                <div className="flex-1 flex overflow-hidden bg-card relative md:border md:border-border/50 md:rounded-2xl md:shadow-sm">
+                    )}
 
-                    {/* Left Sidebar: Chat Sessions History */}
+                    {/* Left Sidebar: Chat Sessions History (tucked away while the workspace is open) */}
+                    {workspaceProjectId === null && (
                     <div
                         className={`absolute inset-y-0 left-0 z-30 bg-card/95 backdrop-blur-xl border-border/50 flex flex-col transition-all duration-200 ease-in-out md:static ${
                             isSidebarOpen
@@ -1651,19 +1654,25 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                             )}
                         </div>
                     </div>
+                    )}
 
                     {/* Backdrop on mobile when sidebar is open */}
-                    {isSidebarOpen && (
+                    {workspaceProjectId === null && isSidebarOpen && (
                         <div
                             onClick={() => setIsSidebarOpen(false)}
                             className="absolute inset-0 bg-black/40 z-[25] md:hidden backdrop-blur-xs"
                         />
                     )}
 
-                    {/* Right Area: Active Chat */}
-                    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background md:bg-card relative">
+                    {/* Right Area: Active Chat / compact IDE chat pane */}
+                    <div className={
+                        workspaceProjectId !== null
+                            ? 'hidden md:flex flex-col h-full min-w-0 overflow-hidden relative bg-background border-l border-border/40 w-[340px] xl:w-[400px] shrink-0'
+                            : 'flex-1 flex flex-col h-full overflow-hidden bg-background md:bg-card relative'
+                    }>
 
                         {/* Floating Top Header - Liquid Glass Capsule (like mobile ChatGPT app) */}
+                        {!workspaceProjectId && (
                         <div className="absolute top-3 left-3 right-3 z-[15] pointer-events-none flex justify-center">
                             <div className="pointer-events-auto w-full max-w-3xl flex items-center justify-between px-3.5 py-2 rounded-2xl bg-background/80 dark:bg-card/75 backdrop-blur-2xl border border-border/50 shadow-lg shadow-black/5 dark:shadow-black/20">
                                 <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
@@ -1731,9 +1740,27 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                 </div>
                             </div>
                         </div>
+                        )}
+
+                        {/* Compact header for the IDE chat pane */}
+                        {workspaceProjectId !== null && (
+                            <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-card/85 backdrop-blur-xl">
+                                <MessageSquare className="h-3.5 w-3.5 text-primary shrink-0" />
+                                <span className="text-[11px] font-semibold text-foreground truncate min-w-0 flex-1">
+                                    {sessionList.find(s => s.id === currentSessionId)?.title || 'Assistant'}
+                                </span>
+                                <span className="text-[9.5px] text-muted-foreground shrink-0">
+                                    {projectList.find(p => p.id === sessionList.find(s => s.id === currentSessionId)?.project_id)?.title || 'Workspace'}
+                                </span>
+                            </div>
+                        )}
 
                         {/* Messages List Area (Scrollable body) - Top padded for floating header */}
-                        <div className="flex-1 overflow-y-auto px-4 sm:px-8 md:px-12 lg:px-20 pt-16 pb-24 space-y-6">
+                        <div className={`flex-1 overflow-y-auto ${
+                            workspaceProjectId !== null
+                                ? 'px-3 sm:px-4 pt-4 pb-24 space-y-5'
+                                : 'px-4 sm:px-8 md:px-12 lg:px-20 pt-16 pb-24 space-y-6'
+                        }`}>
                             {messages.map((m) => {
                                 const isUser = m.role === 'user';
 
@@ -2007,7 +2034,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                         </div>
 
                         {/* Quick Prompts (Only if fresh chat) */}
-                        {messages.length <= 1 && (
+                        {!workspaceProjectId && messages.length <= 1 && (
                             <div className="absolute bottom-20 left-4 right-4 z-10 pointer-events-none flex justify-center">
                                 <div className="pointer-events-auto w-full max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-2 rounded-2xl bg-background/80 dark:bg-card/75 backdrop-blur-xl border border-border/40 shadow-md">
                                     {QUICK_PROMPTS.map((qp, idx) => {
@@ -2274,9 +2301,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                         </div>
 
                     </div>
-
                 </div>
-                )}
 
                 {/* Drag & drop file attach overlay */}
                 {isDragOver && (

@@ -548,6 +548,91 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Persist user-edited text back to a project file (IDE-style save). Writes
+     * the new content as the current blob and keeps the previous content as
+     * previous_content, so the workspace can render an old→new diff exactly
+     * like an AI-modified file.
+     */
+    public function updateProjectFileContent(Request $request, $project, $file): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        $record = $this->resolveProjectFile($project->id, $file);
+
+        if ($record->is_folder) {
+            abort(422, 'Folders have no content.');
+        }
+
+        $request->validate([
+            'content' => 'required|string|max:2000000',
+        ]);
+
+        $newContent = $request->input('content');
+
+        $current = $record->extracted_text;
+        if ($current === null && $record->storage_path) {
+            $fullPath = storage_path('app/private/' . $record->storage_path);
+            if (is_file($fullPath)) {
+                $current = @file_get_contents($fullPath) ?: null;
+            }
+        }
+        $current = $current === null ? '' : $current;
+
+        $payload = [
+            'file' => $this->projectFilePayload($record),
+            'content' => $newContent,
+            'previous_content' => $record->change_type === 'modified' ? $record->previous_content : null,
+        ];
+
+        // Saving identical bytes is a no-op: keep the row (and diff history)
+        // untouched so the workspace never reports a phantom change.
+        if ($current === $newContent) {
+            $payload['unchanged'] = true;
+            $payload['content'] = $current;
+
+            return response()->json(['success' => true] + $payload);
+        }
+
+        // Write the edited text as a fresh blob so preview/download keep working.
+        $ext = strtolower(pathinfo($record->name, PATHINFO_EXTENSION));
+        $storageName = 'ai-projects/user-edit-' . $record->id . '-' . time() . ($ext !== '' ? '.' . $ext : '');
+        $targetFull = storage_path('app/private/' . $storageName);
+
+        if (! is_dir(dirname($targetFull))) {
+            mkdir(dirname($targetFull), 0755, true);
+        }
+        if (@file_put_contents($targetFull, $newContent) === false) {
+            return response()->json(['success' => false, 'message' => 'Could not save the file content.'], 500);
+        }
+
+        $oldBlob = $record->storage_path;
+        if ($oldBlob && $oldBlob !== $storageName) {
+            \Illuminate\Support\Facades\Storage::disk('local')->delete($oldBlob);
+        }
+
+        // Cap the retained previous content so an enormous old blob cannot blow
+        // the column width; the diff only needs enough context to view.
+        $previous = mb_substr($current, 0, 1000000);
+
+        $record->update([
+            'previous_content' => $record->previous_content ?: ($previous === '' ? null : $previous),
+            'previous_content_hash' => $record->previous_content_hash ?: $record->content_hash,
+            'content_hash' => md5($newContent) ?: null,
+            'extracted_text' => $newContent === '' ? null : $newContent,
+            'size_bytes' => strlen($newContent),
+            'storage_path' => $storageName,
+            'change_type' => 'modified',
+            'changed_at' => now(),
+        ]);
+
+        $project->touch();
+
+        $payload['file'] = $this->projectFilePayload($record);
+        $payload['previous_content'] = (string) $record->previous_content;
+
+        return response()->json(['success' => true] + $payload);
+    }
+
+    /**
      * Stream a project file so <img> / <iframe> previews render inline.
      */
     public function previewProjectFile(Request $request, $project, $file): BinaryFileResponse
@@ -958,7 +1043,11 @@ class AiAssistantController extends Controller
                     function (string $phase, array $timingMs) use ($emit, $broadcast) {
                         $emit(['type' => 'timing', 'phase' => $phase, 'timing_ms' => $timingMs]);
                         $broadcast(['kind' => 'timing', 'phase' => $phase, 'timing_ms' => $timingMs]);
-                    }
+                    },
+                    // The neuron network was already resolved right above for the
+                    // live brain map — hand it over so retrieval is not re-run
+                    // a second time inside GeminiAssistantService::chat().
+                    $network
                 );
 
                 // 4. Save AI reply to database in this session

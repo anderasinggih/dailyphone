@@ -131,6 +131,7 @@ Route::prefix('application/dp')->group(function () {
         Route::post('/assistant/projects/{project}/files', [AiAssistantController::class, 'uploadProjectFile'])->name('assistant.project.files.upload');
         Route::post('/assistant/projects/{project}/folders', [AiAssistantController::class, 'createProjectFolder'])->name('assistant.project.folders.store');
         Route::get('/assistant/projects/{project}/files/{file}', [AiAssistantController::class, 'getProjectFileContent'])->name('assistant.project.files.content');
+        Route::patch('/assistant/projects/{project}/files/{file}', [AiAssistantController::class, 'updateProjectFileContent'])->name('assistant.project.files.update');
         Route::get('/assistant/projects/{project}/files/{file}/preview', [AiAssistantController::class, 'previewProjectFile'])->name('assistant.project.files.preview');
         Route::get('/assistant/projects/{project}/files/{file}/download', [AiAssistantController::class, 'downloadProjectFile'])->name('assistant.project.files.download');
         Route::delete('/assistant/projects/{project}/files/{file}', [AiAssistantController::class, 'deleteProjectFile'])->name('assistant.project.files.destroy');
