@@ -18,3 +18,10 @@ Schedule::command('ai:consolidate-memory')
     ->weeklyOn(1, '03:30')
     ->withoutOverlapping()
     ->then(fn () => Artisan::call('ai:embed-backfill'));
+
+// Daily storage hygiene: sweep orphaned chat-attachment rows + blobs, stray
+// ai-uploads/ai-projects blobs and stale ai-repos temp trees left behind by
+// DB-level cascades or interrupted requests.
+Schedule::command('ai:cleanup-storage --delete')
+    ->dailyAt('04:00')
+    ->withoutOverlapping();

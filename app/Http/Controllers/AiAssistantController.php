@@ -335,18 +335,13 @@ class AiAssistantController extends Controller
     }
 
     /**
-     * Delete a project. Cascades to its sessions, chats and files.
+     * Delete a project. Cascades to its sessions, chats and files. The
+     * AiProject model observer removes the file blobs + chat attachment blobs
+     * before the DB rows (and their cascades) go away.
      */
     public function deleteProject(Request $request, $id): JsonResponse
     {
         $project = \App\Models\AiProject::where('user_id', $request->user()->id)->findOrFail($id);
-
-        // Remove stored blobs before the DB row (and its cascade) goes away.
-        foreach ($project->files()->where('is_folder', false)->get() as $file) {
-            if ($file->storage_path) {
-                \Illuminate\Support\Facades\Storage::disk('local')->delete($file->storage_path);
-            }
-        }
 
         $project->delete();
 
