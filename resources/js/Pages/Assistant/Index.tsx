@@ -55,16 +55,23 @@ type NeuronLink = import('@/lib/ndjson').StreamEdge;
 
 // Compact live timing strip for the thinking panel: which server stage ate the
 // wall clock, split between "our backend" (retrieval/context/payload) and the
-// Gemini round-trips (turn1, turn2, ...).
+// Gemini round-trips (turn1, turn2, ...). Server values are per-stage deltas in
+// ms; the trailing "total" is their sum here in the client, so the strip always
+// adds up honestly no matter which event snapshot arrives (the server marks
+// stages incrementally, and its final 'total' event carries only the service's
+// own labels and no 'retrieval').
 function timingStrip(timing: Record<string, number>): string {
     const order = ['retrieval', 'context', 'payload'];
     for (const n of Object.keys(timing).filter(k => /^turn\d+$/.test(k)).map(Number).sort((a, b) => a - b)) {
         order.push('turn' + n);
     }
-    order.push('total');
-    return order
-        .filter(k => timing[k] !== undefined)
-        .map(k => `${k}: ${(timing[k] / 1000).toFixed(1)}s`)
+    const shown = order.filter(k => timing[k] !== undefined);
+    if (shown.length === 0) return '';
+    const totalMs = shown.reduce((sum, k) => sum + (timing[k] || 0), 0);
+    return [...shown, 'total']
+        .map(k => k === 'total'
+            ? `${k}: ${(totalMs / 1000).toFixed(1)}s`
+            : `${k}: ${((timing[k] ?? 0) / 1000).toFixed(1)}s`)
         .join(' · ');
 }
 
@@ -679,7 +686,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                 const last = await consumeNdjson(response, {
                     onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
                     onToken: (text) => setDraftStream(prev => prev + text),
-                    onTiming: (phase, snap) => setLiveTiming(prev => phase === 'total' ? snap : { ...prev, ...snap }),
+                    onTiming: (phase, snap) => setLiveTiming(prev => ({ ...prev, ...snap })),
                     onLearned: (evt) => {
                         const count = Number(evt.notes_count ?? 1);
                         if (count > 0) {
