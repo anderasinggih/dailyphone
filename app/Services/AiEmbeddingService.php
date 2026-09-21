@@ -94,6 +94,16 @@ class AiEmbeddingService
     /**
      * Embed a single piece of text into a numeric vector.
      *
+     * This is the CHAT path, so it makes at most ONE fast attempt against the
+     * first key and latches the breaker on any failure: a slow, dead or
+     * quota-dry embedding API must never stall a reply behind a serialized loop
+     * of per-key timeouts (several keys × 8s each used to add up to a ~30-45s
+     * retrieval stall). On failure it returns null and the caller's token-pool
+     * fallback takes over instantly — the pre-embedding behaviour. Background
+     * single-note embedding (embedNote) uses the multi-key failover variant,
+     * where latency is irrelevant and a transient 429 should roll to the next
+     * key instead of failing.
+     *
      * @return float[]|null Vector, or null when the API is unavailable.
      */
     public function embedText(string $text): ?array
@@ -111,19 +121,64 @@ class AiEmbeddingService
             return null;
         }
 
+        $apiKeys = array_values($this->apiKeys);
+        $args = ['model' => 'models/'.$this->sanitizeModel($this->model),
+            'content' => ['parts' => [['text' => mb_substr($text, 0, 8000)]]], ];
+
+        // A single short attempt on the first key only. The embedding is an
+        // auxiliary lever on the chat request path, so a slow embedding API
+        // must fail fast (freeing the token pool) rather than freeze replies
+        // while each configured key times out in turn.
+        if (isset($apiKeys[0])) {
+            $key = $apiKeys[0];
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$this->sanitizeModel($this->model)}:embedContent?key={$key}";
+                $response = Http::timeout(5)->connectTimeout(2)->post($url, $args);
+
+                if ($response->successful()) {
+                    $values = $response->json('embedding.values');
+
+                    if (is_array($values)) {
+                        Cache::forget('ai.embed.api_offline');
+                        $this->lastError = null;
+
+                        return array_map('floatval', $values);
+                    }
+                }
+
+                $this->lastError = $response->json('error.message')
+                    ?? (trim((string) $response->body()) !== '' ? $response->body() : 'HTTP '.$response->status());
+            } catch (\Throwable $e) {
+                $this->lastError = $e->getMessage();
+            }
+        }
+
+        Cache::put('ai.embed.api_offline', true, 60);
+
+        return null;
+    }
+
+    /**
+     * Multi-key failover variant used ONLY off the chat path (background
+     * single-note embedding), where a slow response is tolerable but a
+     * transient quota/RPM limit should roll onto the next key instead of
+     * failing the note. Latches the breaker only after every key failed.
+     */
+    protected function embedTextFailover(string $text): ?array
+    {
+        $text = trim((string) $text);
+        if ($text === '') {
+            return null;
+        }
+
         $model = $this->sanitizeModel($this->model);
-        $payload = [
-            'model' => 'models/'.$model,
-            'content' => ['parts' => [['text' => mb_substr($text, 0, 8000)]]],
-        ];
+        $args = ['model' => 'models/'.$model,
+            'content' => ['parts' => [['text' => mb_substr($text, 0, 8000)]]], ];
 
         foreach (array_values($this->apiKeys) as $index => $key) {
             try {
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:embedContent?key={$key}";
-                // Tight timeouts: the embedding is an auxiliary lever on the chat
-                // request path, so a degraded embedding API must fail fast (and
-                // fall back to the token pool) rather than freeze replies.
-                $response = Http::timeout(8)->connectTimeout(3)->post($url, $payload);
+                $response = Http::timeout(8)->connectTimeout(3)->post($url, $args);
 
                 if ($response->successful()) {
                     $values = $response->json('embedding.values');
@@ -372,7 +427,7 @@ class AiEmbeddingService
      */
     public function embedNote(AiTrainingNote $note): bool
     {
-        $vector = $this->embedText($this->noteText($note));
+        $vector = $this->embedTextFailover($this->noteText($note));
         if ($vector === null) {
             return false;
         }
