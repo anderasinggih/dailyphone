@@ -967,8 +967,13 @@ class AiAssistantController extends Controller
                     \Illuminate\Support\Facades\Log::info('AI chat timing', [
                         'user_id' => $user->id,
                         'session_id' => $sessionId,
+                        'model' => $requestedModel,
                         'timing_ms' => $runTimings,
                         'tools_called' => $result['tools_called'] ?? [],
+                        'reply_chars' => mb_strlen((string) ($result['reply'] ?? '')),
+                        'image_count' => count($result['images'] ?? []),
+                        'usage' => $result['usage'] ?? null,
+                        'grounding' => (bool) ($result['grounding'] ?? null),
                     ]);
                 }
                 if (!empty($result['reply'])) {
