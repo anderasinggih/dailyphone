@@ -649,7 +649,7 @@ CONTEXT;
      * @param  string|null  $model  Per-session model override (falls back to the
      *                              superadmin-configured model when empty).
      */
-    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null, ?string $summary = null): array
+    public function chat(array $messages, $user, ?string $sessionRules = null, ?string $query = null, $attachments = null, ?callable $onChunk = null, string $ingestNotice = '', ?string $model = null, ?string $summary = null, ?callable $onTiming = null): array
     {
         if (! $this->isConfigured()) {
             return [
@@ -663,11 +663,16 @@ CONTEXT;
 
         // Per-stage timing so a slow chat can be diagnosed precisely instead of
         // guessing: retrieval / context / payload build / each model round-trip.
+        // When $onTiming is given, every stage fires the moment it completes so
+        // a live thinking panel (and the log) sees the real split in motion.
         $startMicro = microtime(true);
         $timings = [];
-        $timeMark = function (string $label) use (&$timings, &$startMicro): void {
+        $timeMark = function (string $label) use (&$timings, &$startMicro, &$onTiming): void {
             $timings[$label] = (int) round((microtime(true) - $startMicro) * 1000);
             $startMicro = microtime(true);
+            if ($onTiming !== null) {
+                $onTiming($label, $timings);
+            }
         };
 
         // Inter-turn momentum: hand the recent conversation to retrieval so the

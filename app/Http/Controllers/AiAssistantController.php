@@ -876,7 +876,10 @@ class AiAssistantController extends Controller
                 // Semantic-retrieval master switch (Settings > General ▸ AI):
                 // when off, skip memory search entirely and emit an empty brain
                 // map — replies then stream straight from the model, matching
-                // the pre-retrieval request path (and its speed).
+                // the pre-retrieval request path (and its speed). The retrieval
+                // wall time is surfaced live so the UI can split "our index"
+                // from "Gemini's thinking" while the reply is still streaming.
+                $retrievalStart = microtime(true);
                 $network = $this->geminiService->retrievalEnabled()
                     ? $this->geminiService->resolveNeuronNetwork(
                         $userText,
@@ -896,9 +899,23 @@ class AiAssistantController extends Controller
                         }
                     )
                     : ['nodes' => [], 'edges' => []];
+                $retrievalMs = (int) round((microtime(true) - $retrievalStart) * 1000);
                 $neurons = $network['nodes'];
+                $emit(['type' => 'timing', 'phase' => 'retrieval', 'timing_ms' => ['retrieval' => $retrievalMs]]);
+                $broadcast(['kind' => 'timing', 'phase' => 'retrieval', 'timing_ms' => ['retrieval' => $retrievalMs]]);
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
                 $broadcast(['kind' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
+
+                // Log entry the moment the knowledge step completes — it lands in
+                // the log WHILE Gemini is still thinking, so a slow reply can be
+                // attributed to the server or to us before it even finishes.
+                \Illuminate\Support\Facades\Log::info('AI chat thinking', [
+                    'user_id' => $user->id,
+                    'session_id' => $sessionId,
+                    'query' => mb_substr($userText, 0, 200),
+                    'retrieval_ms' => $retrievalMs,
+                    'neurons' => count($neurons),
+                ]);
 
                 // Feedback loop (item 3): when the superadmin rejected the last
                 // proposal and now writes a corrective instruction, fold the
@@ -932,7 +949,14 @@ class AiAssistantController extends Controller
                     },
                     $ingestNotice,
                     $requestedModel,
-                    $sessionSummary
+                    $sessionSummary,
+                    // Live per-stage timing: context/payload/turnN fire the moment
+                    // each finishes, keeping the thinking panel and the Reverb map
+                    // in sync with the actual wall-clock split.
+                    function (string $phase, array $timingMs) use ($emit, $broadcast) {
+                        $emit(['type' => 'timing', 'phase' => $phase, 'timing_ms' => $timingMs]);
+                        $broadcast(['kind' => 'timing', 'phase' => $phase, 'timing_ms' => $timingMs]);
+                    }
                 );
 
                 // 4. Save AI reply to database in this session

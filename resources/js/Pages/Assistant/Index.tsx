@@ -53,6 +53,21 @@ import { consumeNdjson } from '@/lib/ndjson';
 type AccessedNeuron = import('@/lib/ndjson').StreamNeuron;
 type NeuronLink = import('@/lib/ndjson').StreamEdge;
 
+// Compact live timing strip for the thinking panel: which server stage ate the
+// wall clock, split between "our backend" (retrieval/context/payload) and the
+// Gemini round-trips (turn1, turn2, ...).
+function timingStrip(timing: Record<string, number>): string {
+    const order = ['retrieval', 'context', 'payload'];
+    for (const n of Object.keys(timing).filter(k => /^turn\d+$/.test(k)).map(Number).sort((a, b) => a - b)) {
+        order.push('turn' + n);
+    }
+    order.push('total');
+    return order
+        .filter(k => timing[k] !== undefined)
+        .map(k => `${k}: ${(timing[k] / 1000).toFixed(1)}s`)
+        .join(' · ');
+}
+
 interface Message {
     id: string;
     role: 'user' | 'assistant';
@@ -185,6 +200,8 @@ export default function Assistant({
     const [isLoading, setIsLoading] = useState(false);
     const [accessedNetwork, setAccessedNetwork] = useState<{ nodes: AccessedNeuron[]; edges: NeuronLink[] }>({ nodes: [], edges: [] });
     const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
+    // Live per-stage wall-clock from the stream ('retrieval' | 'context' | 'payload' | 'turnN' | 'total').
+    const [liveTiming, setLiveTiming] = useState<Record<string, number>>({});
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // sidebar closed by default
     const [copiedId, setCopiedId] = useState<string | null>(null);
     const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
@@ -582,6 +599,7 @@ function playCompletionChime(soundEnabled: boolean): void {
         resetComposerRefs();
         setAccessedNetwork({ nodes: [], edges: [] });
         setDraftStream('');
+        setLiveTiming({});
         setStreamCollapsed(false);
 
         const applyReply = (data: any) => {
@@ -661,6 +679,7 @@ function playCompletionChime(soundEnabled: boolean): void {
                 const last = await consumeNdjson(response, {
                     onNeurons: (nodes, edges) => setAccessedNetwork({ nodes, edges }),
                     onToken: (text) => setDraftStream(prev => prev + text),
+                    onTiming: (phase, snap) => setLiveTiming(prev => phase === 'total' ? snap : { ...prev, ...snap }),
                     onLearned: (evt) => {
                         const count = Number(evt.notes_count ?? 1);
                         if (count > 0) {
@@ -1900,6 +1919,11 @@ function playCompletionChime(soundEnabled: boolean): void {
                                             <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10.5px] font-medium text-primary ml-1">
                                                 <Network className="h-3 w-3" />
                                                 {accessedNetwork.nodes.length} neurons
+                                            </span>
+                                        )}
+                                        {Object.keys(liveTiming).length > 0 && (
+                                            <span className="ml-1 hidden sm:inline-flex items-center gap-1 text-[10px] font-mono text-muted-foreground/70 truncate max-w-[380px]" title="Live per-stage timing (backend vs Gemini)">
+                                                {timingStrip(liveTiming)}
                                             </span>
                                         )}
                                     </button>

@@ -29,6 +29,7 @@ export interface NdjsonHandlers {
     onTrace?: (used: number[]) => void;
     onLearned?: (payload: NdjsonEvent) => void;
     onStage?: (stage: string, nodes: StreamNeuron[]) => void;
+    onTiming?: (phase: string, timingMs: Record<string, number>) => void;
 }
 
 export async function consumeNdjson(
@@ -69,6 +70,14 @@ export async function consumeNdjson(
         }
         if (evt.type === 'learned' && handlers.onLearned) {
             handlers.onLearned(evt);
+        }
+        if (evt.type === 'timing' && handlers.onTiming && typeof evt.phase === 'string' && evt.timing_ms && typeof evt.timing_ms === 'object') {
+            const snap: Record<string, number> = {};
+            for (const [k, v] of Object.entries(evt.timing_ms)) {
+                const n = Number(v);
+                if (Number.isFinite(n)) snap[k] = n;
+            }
+            handlers.onTiming(evt.phase, snap);
         }
         if (evt.type === 'done' || evt.type === 'error') {
             last = evt;
