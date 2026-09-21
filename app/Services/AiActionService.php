@@ -1131,12 +1131,15 @@ class AiActionService
             $files = [];
             foreach ((glob($outputDir . '/*') ?: []) as $f) {
                 if (is_file($f)) {
+                    $rawContent = @file_get_contents($f);
                     $files[] = [
                         'name' => basename($f),
                         'path' => $runId . '/' . basename($f),
                         'mime' => (function_exists('mime_content_type') ? mime_content_type($f) : false) ?: 'application/octet-stream',
                         'size' => filesize($f),
                         'url' => route('assistant.file', $runId . '/' . basename($f)),
+                        'content' => $rawContent === false ? null : mb_substr($rawContent, 0, \App\Services\AiFileIngestService::ATTACHMENT_TEXT_MAX),
+                        'previous_content' => null,
                     ];
                 }
             }
@@ -1180,7 +1183,15 @@ class AiActionService
                                     'size_bytes' => (int) $node->size_bytes,
                                     'created_at' => $node->created_at,
                                     'updated_at' => $node->updated_at,
+                                    'change_type' => $node->change_type,
                                 ];
+                                // Expose the readable new content plus the saved
+                                // previous content so the client renders an
+                                // old→new diff per generated file like an IDE.
+                                $files[$i]['content'] = $node->extracted_text;
+                                $files[$i]['previous_content'] = $node->change_type === 'modified'
+                                    ? $node->previous_content
+                                    : null;
                                 $saved++;
                             }
                         }

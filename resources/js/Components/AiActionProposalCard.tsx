@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
     CheckCircle2,
     XCircle,
@@ -28,6 +28,7 @@ import {
     FileText,
     FileImage,
 } from 'lucide-react';
+import { diffLines, diffStatsOf, DiffLine } from '@/lib/diff';
 
 export interface ActionProposalData {
     action: string;
@@ -51,6 +52,7 @@ export interface GeneratedProjectFileNode {
     size_bytes?: number;
     created_at?: string;
     updated_at?: string;
+    change_type?: 'created' | 'modified' | null;
 }
 
 export interface GeneratedFile {
@@ -59,6 +61,8 @@ export interface GeneratedFile {
     mime: string;
     size: number;
     url: string;
+    content?: string | null;
+    previous_content?: string | null;
     project_file?: GeneratedProjectFileNode;
 }
 
@@ -68,10 +72,22 @@ interface AiActionProposalCardProps {
     messageId?: string;
     initialStatus?: 'pending' | 'executing' | 'executed' | 'rejected' | null;
     isSuperadmin: boolean;
+    projectId?: number | null;
     onExecuted?: (resultMessage: string) => void;
     onStatusChange?: (newStatus: 'pending' | 'executing' | 'executed' | 'rejected') => void;
     onFeedbackComment?: (defaultText?: string) => void;
     onFilesSaved?: (files: GeneratedFile[]) => void;
+    onFileRejected?: (file: GeneratedFile, node: GeneratedProjectFileNode) => void;
+    onFileAccepted?: (file: GeneratedFile) => void;
+    autoExecute?: boolean;
+}
+
+interface FileReviewState {
+    [path: string]: 'pending' | 'accepted' | 'rejected';
+}
+
+interface FileDiffState {
+    [path: string]: DiffLine[];
 }
 
 export default function AiActionProposalCard({
