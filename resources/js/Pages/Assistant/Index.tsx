@@ -279,6 +279,12 @@ export default function Assistant({
     // Drag & drop file attach state for the chat panel.
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
+    // True while the in-flight drag carries a workspace file reference (the
+    // overlay switches from "upload" to "reference-in-chat").
+    const [isProjectFileDrag, setIsProjectFileDrag] = useState(false);
+    // True while the pointer sits over the chat column — the drop overlay only
+    // shows there, so tree reordering inside the workspace stays calm.
+    const [isOverChatZone, setIsOverChatZone] = useState(false);
     // Live token-by-token draft rendered while Gemini streams its answer.
     const [draftStream, setDraftStream] = useState<string>('');
     // Collapsible "AI is thinking" panel — arrow toggles, like opencode's thought.
@@ -822,15 +828,30 @@ function playCompletionChime(soundEnabled: boolean): void {
     };
 
     // --- Drag & drop file attach ---
+    // Workspace rows advertise themselves with this type (ProjectWorkspace sets
+    // it on drag start); the chat turns it into an @mention reference.
+    const DRAG_PROJECT_FILE = 'application/x-project-file';
+    const hasProjectFilePayload = (dt: DataTransfer) =>
+        Array.from(dt.types).includes(DRAG_PROJECT_FILE);
+    const overChatDropZone = (e: React.DragEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (!t || typeof t.closest !== 'function') return false;
+        return !!t.closest('[data-chat-drop-zone]');
+    };
+
     const handleDragEnter = (e: React.DragEvent) => {
         e.preventDefault();
         if (isLoading || isUploading) return;
+        if (hasProjectFilePayload(e.dataTransfer)) setIsProjectFileDrag(true);
+        setIsOverChatZone(overChatDropZone(e));
         dragCounterRef.current += 1;
         setIsDragOver(true);
     };
 
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
+        if (hasProjectFilePayload(e.dataTransfer)) setIsProjectFileDrag(true);
+        setIsOverChatZone(overChatDropZone(e));
         e.dataTransfer.dropEffect = 'copy';
     };
 
@@ -839,16 +860,49 @@ function playCompletionChime(soundEnabled: boolean): void {
         dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
         if (dragCounterRef.current === 0) {
             setIsDragOver(false);
+            setIsProjectFileDrag(false);
+            setIsOverChatZone(false);
         }
     };
 
     const handleDrop = (e: React.DragEvent) => {
+        const inChatZone = overChatDropZone(e);
         e.preventDefault();
         dragCounterRef.current = 0;
         setIsDragOver(false);
+        setIsProjectFileDrag(false);
+        setIsOverChatZone(false);
         if (isLoading || isUploading) return;
+
+        // Workspace file drag → drop it into the composer as an @mention chip.
+        // Internal tree reorders stop propagation inside the workspace, so a
+        // project payload landing outside the chat pane is simply ignored.
+        const refJson = e.dataTransfer.getData(DRAG_PROJECT_FILE);
+        if (refJson) {
+            if (!inChatZone && workspaceProjectId !== null) return;
+            try {
+                const parsed = JSON.parse(refJson) as Array<{ id: number; name: string; is_folder?: boolean }>;
+                if (currentProject && parsed.length > 0) {
+                    const available = flatProjectFiles(currentProject.files);
+                    const toAdd = parsed
+                        .map(p => available.find(f => f.id === p.id))
+                        .filter((n): n is ProjectFileNode => Boolean(n && !n.is_folder));
+                    if (toAdd.length > 0) {
+                        setProjectFileRefs(prev => {
+                            const ids = new Set(prev.map(f => f.id));
+                            const added = toAdd.filter(f => !ids.has(f.id));
+                            return [...prev, ...added];
+                        });
+                    }
+                }
+            } catch {
+                // Malformed payload — ignore.
+            }
+            return;
+        }
+
         const files = Array.from(e.dataTransfer.files || []);
-        if (files.length > 0) {
+        if (files.length > 0 && (workspaceProjectId === null || inChatZone)) {
             uploadFiles(files);
         }
     };
@@ -1856,10 +1910,16 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                         />
                     )}
 
-                    {/* Right Area: Active Chat / compact IDE chat pane */}
-                    <div className={
+                    {/* Right Area: Active Chat / compact IDE chat pane (toggled by workspaceChatOpen) */}
+                    <div
+                        data-chat-drop-zone
+                        className={
                         workspaceProjectId !== null
-                            ? 'hidden md:flex flex-col h-full min-w-0 overflow-hidden relative bg-background border-l border-border/40 w-[340px] xl:w-[400px] shrink-0'
+                            ? `h-full min-w-0 overflow-hidden relative bg-background border-l border-border/40 shrink-0 transition-all duration-200 ease-in-out ${
+                                workspaceChatOpen
+                                    ? 'hidden md:flex w-[340px] xl:w-[400px]'
+                                    : 'hidden w-0 border-l-0'
+                              }`
                             : 'flex-1 flex flex-col h-full overflow-hidden bg-background md:bg-card relative'
                     }>
 
@@ -2328,15 +2388,13 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                 {projectFileRefs.length > 0 && (
                                     <div className="flex flex-col gap-1.5 px-4">
                                         <div className="flex items-center gap-1.5 min-w-0">
-                                            <Folder className="h-3 w-3 text-primary shrink-0" />
-                                            <span className="text-[10.5px] font-semibold text-muted-foreground shrink-0">
-                                                From project
-                                            </span>
-                                            <span className="text-[10.5px] font-semibold text-primary truncate min-w-0">
-                                                {currentProject?.title || '…'}
-                                            </span>
-                                            <span className="text-[10px] text-muted-foreground/60 shrink-0">
-                                                · {projectFileRefs.length} file{projectFileRefs.length !== 1 ? 's' : ''}
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted/70 border border-border/50 text-[10.5px] font-medium text-muted-foreground">
+                                                <CornerUpLeft className="h-3 w-3 text-primary/70 shrink-0" />
+                                                <span className="shrink-0">Reply from</span>
+                                                <span className="text-primary font-semibold truncate min-w-0">{currentProject?.title || 'project'}</span>
+                                                <span className="text-muted-foreground/70 shrink-0">
+                                                    · {projectFileRefs.length} file{projectFileRefs.length !== 1 ? 's' : ''}
+                                                </span>
                                             </span>
                                         </div>
                                         <div className="flex flex-wrap items-center gap-1.5">
@@ -2346,6 +2404,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                                     <span
                                                         key={f.id}
                                                         className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-2.5 py-1 text-[11px] font-medium text-primary shadow-sm"
+                                                        title={f.name}
                                                     >
                                                         <Ic className="h-3 w-3 shrink-0" />
                                                         <span className="max-w-[140px] sm:max-w-[220px] truncate">@{f.name}</span>
@@ -2506,15 +2565,27 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                     </div>
                 </div>
 
-                {/* Drag & drop file attach overlay */}
-                {isDragOver && (
+                {/* Drag & drop overlay: upload vs. workspace-file reference */}
+                {isDragOver && (isOverChatZone || workspaceProjectId === null) && (
                     <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center p-6">
                         <div className="flex flex-col items-center gap-2.5 rounded-3xl border-2 border-dashed border-primary/60 bg-primary/10 dark:bg-primary/15 backdrop-blur-xl px-8 sm:px-12 py-8 text-primary shadow-2xl">
-                            <Upload className="h-7 w-7" />
-                            <span className="text-sm font-semibold text-foreground">Drop files to attach</span>
-                            <span className="text-[11px] text-muted-foreground">
-                                Images, Excel, CSV, ZIP, PDF, DOCX — up to 20 MB each
-                            </span>
+                            {isProjectFileDrag ? (
+                                <>
+                                    <FileCode2 className="h-7 w-7" />
+                                    <span className="text-sm font-semibold text-foreground">Drop to reference in chat</span>
+                                    <span className="text-[11px] text-muted-foreground">
+                                        The file will be added as an @mention to your next message
+                                    </span>
+                                </>
+                            ) : (
+                                <>
+                                    <Upload className="h-7 w-7" />
+                                    <span className="text-sm font-semibold text-foreground">Drop files to attach</span>
+                                    <span className="text-[11px] text-muted-foreground">
+                                        Images, Excel, CSV, ZIP, PDF, DOCX — up to 20 MB each
+                                    </span>
+                                </>
+                            )}
                         </div>
                     </div>
                 )}

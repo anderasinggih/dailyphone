@@ -385,3 +385,21 @@
     pointer-events: none !important;
   }
 }
+
+/* ── Workspace code syntax highlighting (VS Code "Dark+" palette) ── */
+/* Scoped under .ws-dark: the workspace editor canvas is always dark (#0b0b0d)
+   even in light app themes, so tokens use the exact Dark+ colors. */
+.ws-dark .tok-com { color: #6a9955; }       /* comments */
+.ws-dark .tok-str { color: #ce9178; }       /* strings */
+.ws-dark .tok-num { color: #b5cea8; }       /* numbers */
+.ws-dark .tok-kw  { color: #c586c0; }       /* keywords */
+.ws-dark .tok-lit { color: #569cd6; }       /* true/false/null literals */
+.ws-dark .tok-type { color: #4ec9b0; }      /* primitives & TitleCase types */
+.ws-dark .tok-fn  { color: #dcdcaa; }       /* function calls */
+.ws-dark .tok-prop { color: #9cdcfe; }      /* property names */
+.ws-dark .tok-tag { color: #569cd6; }       /* <tag / </tag> */
+.ws-dark .tok-attr { color: #9cdcfe; }      /* attribute names */
+.ws-dark .tok-selector { color: #d7ba7d; }  /* CSS class selectors */
+.ws-dark .tok-var { color: #9cdcfe; }       /* variables */
+.ws-dark .tok-punct { color: #d4d4d4; }     /* operators & punctuation */
+.ws-dark .tok-plain { color: #d4d4d4; }
