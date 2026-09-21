@@ -96,10 +96,14 @@ export default function AiActionProposalCard({
     messageId,
     initialStatus = 'pending',
     isSuperadmin,
+    projectId = null,
     onExecuted,
     onStatusChange,
     onFeedbackComment,
-    onFilesSaved
+    onFilesSaved,
+    onFileRejected,
+    onFileAccepted,
+    autoExecute = false,
 }: AiActionProposalCardProps) {
     const [status, setStatus] = useState<'pending' | 'executing' | 'executed' | 'rejected'>(
         initialStatus || 'pending'
@@ -116,6 +120,13 @@ export default function AiActionProposalCard({
         proposal.payload || {}
     );
     const [isUndoing, setIsUndoing] = useState<boolean>(false);
+    const [fileReview, setFileReview] = useState<FileReviewState>({});
+    const [fileDiffs, setFileDiffs] = useState<FileDiffState>({});
+    const [expandedFile, setExpandedFile] = useState<string | null>(null);
+    const [isRejectingFile, setIsRejectingFile] = useState<string | null>(null);
+    const autoExecutedRef = useRef(false);
+
+    const isFileScript = proposal.action === 'run_python_script';
 
     // Synchronize if initialStatus prop updates from parent
     useEffect(() => {
@@ -124,11 +135,85 @@ export default function AiActionProposalCard({
         }
     }, [initialStatus]);
 
+    // Auto-execute file-generating scripts every time a pending proposal becomes
+    // the active message, so the diff shows up as soon as the chat lands.
+    useEffect(() => {
+        const shouldAuto =
+            autoExecute &&
+            isFileScript &&
+            status === 'pending' &&
+            isSuperadmin &&
+            !autoExecutedRef.current;
+        if (shouldAuto) {
+            autoExecutedRef.current = true;
+            handleAccept();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoExecute, isFileScript, status, isSuperadmin]);
+
     // Update editable copy if proposal changes
     useEffect(() => {
         setEditableChanges(proposal.changes || []);
         setEditablePayload(proposal.payload || {});
     }, [proposal]);
+
+    // Compute an old→new diff for every generated file that has readable text,
+    // so the executed card can render "N files changed" like an IDE review.
+    useEffect(() => {
+        if (generatedFiles.length === 0) return;
+        setFileDiffs(prev => {
+            const next = { ...prev };
+            for (const f of generatedFiles) {
+                if (next[f.path]) continue;
+                next[f.path] = diffLines(f.previous_content ?? null, f.content ?? '');
+            }
+            return next;
+        });
+        setFileReview(prev => {
+            const next = { ...prev };
+            for (const f of generatedFiles) {
+                if (!next[f.path]) next[f.path] = 'pending';
+            }
+            return next;
+        });
+    }, [generatedFiles]);
+
+    const handleAcceptFile = async (file: GeneratedFile) => {
+        // The artifact is already persisted; accepting only keeps it in the
+        // project tree (no deletion).
+        setFileReview(prev => ({ ...prev, [file.path]: 'accepted' }));
+        onFileAccepted?.(file);
+    };
+
+    const handleRejectFile = async (file: GeneratedFile) => {
+        const node = file.project_file;
+        if (!node || !projectId) {
+            setFileReview(prev => ({ ...prev, [file.path]: 'rejected' }));
+            return;
+        }
+        setIsRejectingFile(file.path);
+        try {
+            const csrfToken = (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content || '';
+            const res = await fetch(route('assistant.project.files.destroy', [projectId, node.id]), {
+                method: 'DELETE',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                },
+            });
+            const data = await res.json();
+            if (data.success) {
+                setFileReview(prev => ({ ...prev, [file.path]: 'rejected' }));
+                onFileRejected?.(file, node);
+            } else {
+                alert(data.message || 'Gagal menolak file.');
+            }
+        } catch (err: any) {
+            alert('Kesalahan jaringan: ' + err.message);
+        } finally {
+            setIsRejectingFile(null);
+        }
+    };
 
     const syncStatusToServer = async (newStatus: 'pending' | 'rejected') => {
         if (!messageId || !isSuperadmin) return;
@@ -476,7 +561,7 @@ export default function AiActionProposalCard({
                 )}
 
                 {/* Streamlined Changes Table without nested container box */}
-                {editableChanges.length > 0 && (
+                {!isFileScript && editableChanges.length > 0 && (
                     <div className="pt-2 border-t border-border/40 space-y-2">
                         <div
                             onClick={() => setIsChangesExpanded(!isChangesExpanded)}
@@ -602,8 +687,132 @@ export default function AiActionProposalCard({
                     </div>
                 )}
 
+                {/* Generated files (downloadable artifacts from run_python_script). For file
+                scripts the executed card renders an IDE-style "Files changed"
+                review list with a per-file diff and Accept / Reject controls. */}
+                {generatedFiles.length > 0 && isFileScript && status === 'executed' && (
+                    <div className="space-y-2 pt-2 border-t border-border/40">
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 text-[10px] font-semibold text-foreground">
+                                <FileDiff className="h-3 w-3 text-primary" />
+                                <span>{generatedFiles.length} {generatedFiles.length > 1 ? 'files' : 'file'} changed</span>
+                            </div>
+                            <span className="inline-flex items-center gap-1 font-mono text-[10px]">
+                                <span className="text-emerald-500 font-semibold">+{generatedFiles.reduce((n, f) => n + diffStatsOf(fileDiffs[f.path] || []).additions, 0)}</span>
+                                <span className="text-rose-500 font-semibold">−{generatedFiles.reduce((n, f) => n + diffStatsOf(fileDiffs[f.path] || []).deletions, 0)}</span>
+                            </span>
+                        </div>
+
+                        {generatedFiles.map((f) => {
+                            const diff = fileDiffs[f.path] || [];
+                            const review = fileReview[f.path] || 'pending';
+                            return (
+                                <div key={f.path} className="rounded-xl border border-border/60 bg-muted/15 overflow-hidden">
+                                    {/* File row header */}
+                                    <div className="flex items-center gap-2 px-2.5 py-1.5 border-b border-border/40">
+                                        <button
+                                            type="button"
+                                            onClick={() => setExpandedFile(expandedFile === f.path ? null : f.path)}
+                                            className="flex items-center gap-1.5 min-w-0 flex-1 text-left group"
+                                            title={expandedFile === f.path ? 'Collapse diff' : 'Expand diff'}
+                                        >
+                                            {expandedFile === f.path ? (
+                                                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                            ) : (
+                                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                            )}
+                                            <span className="shrink-0">{fileIcon(f.name)}</span>
+                                            <span className="truncate font-medium text-[11px] text-foreground group-hover:text-primary transition-colors">
+                                                {f.name}
+                                            </span>
+                                            <span className="inline-flex items-center gap-1 font-mono text-[9.5px] shrink-0">
+                                                <span className="text-emerald-500">+{diffStatsOf(diff).additions}</span>
+                                                <span className="text-rose-500">−{diffStatsOf(diff).deletions}</span>
+                                            </span>
+                                        </button>
+
+                                        <a
+                                            href={f.url}
+                                            download
+                                            title={`Download ${f.name}`}
+                                            className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-muted transition"
+                                        >
+                                            <Download className="h-3 w-3" />
+                                        </a>
+
+                                        {/* Per-file review controls */}
+                                        {review === 'accepted' && (
+                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[9.5px] font-semibold shrink-0">
+                                                <Check className="h-2.5 w-2.5" /> Accepted
+                                            </span>
+                                        )}
+                                        {review === 'rejected' && (
+                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 text-[9.5px] font-semibold shrink-0">
+                                                <XCircle className="h-2.5 w-2.5" /> Rejected
+                                            </span>
+                                        )}
+                                        {review === 'pending' && isSuperadmin && (
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleRejectFile(f)}
+                                                    disabled={isRejectingFile === f.path}
+                                                    title="Reject this file (remove from project)"
+                                                    className="px-1.5 py-0.5 rounded-md border border-border/70 hover:bg-rose-500/10 hover:border-rose-500/30 hover:text-rose-600 text-foreground text-[9.5px] font-semibold transition"
+                                                >
+                                                    {isRejectingFile === f.path ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : 'Reject'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleAcceptFile(f)}
+                                                    title="Accept this file (keep in project)"
+                                                    className="px-1.5 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[9.5px] font-semibold active:scale-95 transition flex items-center gap-0.5"
+                                                >
+                                                    <Check className="h-2.5 w-2.5" /> Accept
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Diff preview */}
+                                    {expandedFile === f.path && (
+                                        <div className="overflow-x-auto scrollbar-thin bg-[#0b0b0d]/70 max-h-60">
+                                            {diff.length > 0 ? (
+                                                <pre className="font-mono text-[10px] leading-[1.5] text-foreground p-0">
+                                                    {diff.map((line, i) => (
+                                                        <div
+                                                            key={i}
+                                                            className={`flex px-2 ${
+                                                                line.type === 'add' ? 'bg-emerald-500/[0.08]' :
+                                                                line.type === 'del' ? 'bg-rose-500/[0.08]' :
+                                                                'hover:bg-muted/20'
+                                                            }`}
+                                                        >
+                                                            <span className={`w-7 pr-2 text-right shrink-0 select-none ${line.type === 'add' ? 'text-emerald-500' : line.type === 'del' ? 'text-rose-500' : 'text-muted-foreground/60'}`}>
+                                                                {line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' '}
+                                                            </span>
+                                                            <span className="w-9 pr-3 shrink-0 select-none text-right text-muted-foreground/50">
+                                                                {line.type === 'add' ? (line.newLine ?? '') : line.type === 'del' ? (line.oldLine ?? '') : line.oldLine ?? line.newLine ?? ''}
+                                                            </span>
+                                                            <code className="whitespace-pre flex-1 pr-3">{line.value || ' '}</code>
+                                                        </div>
+                                                    ))}
+                                                </pre>
+                                            ) : (
+                                                <div className="px-3 py-2 text-[10px] text-muted-foreground">
+                                                    No text diff available for this file type.
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+
                 {/* Generated files (downloadable artifacts from run_python_script) */}
-                {generatedFiles.length > 0 && (
+                {generatedFiles.length > 0 && (!isFileScript || status !== 'executed') && (
                     <div className="space-y-1.5 pt-2 border-t border-border/40">
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
                             <Download className="h-3 w-3" />
@@ -650,7 +859,7 @@ export default function AiActionProposalCard({
                     <div className="pt-2 border-t border-border/40 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-primary font-medium text-[11px]">
                             <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 text-primary" />
-                            <span>Mengeksekusi aksi ke database...</span>
+                            <span>{isFileScript ? 'Running script and generating files…' : 'Mengeksekusi aksi ke database...'}</span>
                         </div>
                         <span className="text-[10px] font-mono text-muted-foreground px-2 py-0.5 rounded-full bg-primary/10 border border-primary/20 animate-pulse">
                             Processing
@@ -659,7 +868,23 @@ export default function AiActionProposalCard({
                 )}
 
                 {/* Antigravity-Style Action Bar when Pending */}
-                {status === 'pending' && (
+                {status === 'pending' && isFileScript && (
+                    <div className="pt-2 border-t border-border/40 flex items-center justify-between gap-2">
+                        <div className="text-[11px] text-muted-foreground font-medium flex items-center gap-1.5">
+                            <Terminal className="h-3.5 w-3.5 text-primary" />
+                            <span>{autoExecute && isSuperadmin ? 'Script will run automatically…' : 'Awaiting execution…'}</span>
+                        </div>
+                        {!isSuperadmin && (
+                            <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] italic">
+                                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                                <span>Approval requires Superadmin privileges.</span>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Antigravity-Style Action Bar when Pending */}
+                {status === 'pending' && !isFileScript && (
                     <div className="pt-2 border-t border-border/40 flex items-center justify-between gap-2">
                         <div className="text-[11px] text-muted-foreground font-medium flex items-center gap-1.5">
                             <Layers className="h-3.5 w-3.5 text-primary" />
@@ -698,10 +923,10 @@ export default function AiActionProposalCard({
                     <div className="pt-2 border-t border-border/40 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
                             <CheckCircle2 className="h-3.5 w-3.5" />
-                            <span>Changes applied</span>
+                            <span>{isFileScript ? 'Files generated' : 'Changes applied'}</span>
                         </div>
                         <div className="flex items-center gap-2">
-                            {isSuperadmin && messageId && (
+                            {isSuperadmin && messageId && !isFileScript && (
                                 <button
                                     type="button"
                                     onClick={handleUndo}

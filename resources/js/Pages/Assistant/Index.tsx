@@ -355,6 +355,10 @@ function playCompletionChime(soundEnabled: boolean): void {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+    // Id of the newest assistant message created in this client session. Only
+    // these streamed-in proposals should auto-execute; a proposal re-fetched
+    // from the DB on reload must wait for manual review instead.
+    const freshMessageIdRef = useRef<string | null>(null);
 
     const handleReply = (msg: Message) => {
         setReplyingTo(msg);
@@ -653,6 +657,7 @@ function playCompletionChime(soundEnabled: boolean): void {
             };
 
             setMessages(prev => [...prev, assistantMsg]);
+            freshMessageIdRef.current = assistantMsg.id;
             playCompletionChime(soundEnabled);
 
             // Update session list with new session or updated title (and keep
@@ -2099,6 +2104,8 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                                         messageId={m.id}
                                                         initialStatus={m.action_status}
                                                         isSuperadmin={userRole === 'superadmin'}
+                                                        projectId={currentProjectId}
+                                                        autoExecute={proposalData.action === 'run_python_script' && m.id === freshMessageIdRef.current}
                                                         onStatusChange={(newStatus) => {
                                                             setMessages(prev =>
                                                                 prev.map(item =>
@@ -2113,6 +2120,15 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                                             setTimeout(() => {
                                                                 inputRef.current?.focus();
                                                             }, 50);
+                                                        }}
+                                                        onFileAccepted={() => {
+                                                            setWorkspaceRefresh(v => v + 1);
+                                                        }}
+                                                        onFileRejected={(file, node) => {
+                                                            const projectId = sessionList.find(s => s.id === currentSessionId)?.project_id;
+                                                            if (!projectId) return;
+                                                            updateFileTree(projectId, tree => removeFileNode(tree, node.id));
+                                                            setWorkspaceRefresh(v => v + 1);
                                                         }}
                                                         onFilesSaved={(files) => {
                                                             const savedNodes = files

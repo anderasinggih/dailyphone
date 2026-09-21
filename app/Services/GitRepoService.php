@@ -466,6 +466,232 @@ class GitRepoService
     }
 
     /**
+     * Rename and/or move a file/folder inside a project tree.
+     *
+     * For plain projects this is a simple DB update. For repo-backed projects
+     * the working clone is reconciled too: the physical files/directories are
+     * moved and every repo-backed row's storage_path is rewritten so the next
+     * commit (writeBackToClone + git add -A) still finds the files at their new
+     * relative locations. Blob rows (ai-projects/) and UI-created folders keep
+     * their own storage and re-derive their clone path from the new hierarchy.
+     */
+    public function moveEntry(AiProject $project, AiProjectFile $entry, ?string $newName, ?int $newParentId): void
+    {
+        $isRepo = $project->repo_url !== null;
+
+        if (! $isRepo) {
+            if ($newName !== null) {
+                $entry->name = $newName;
+            }
+            if ($newParentId !== null) {
+                $entry->parent_id = $newParentId;
+            }
+            $entry->save();
+            $project->touch();
+
+            return;
+        }
+
+        $prefix = $this->repoDir($project);
+
+        // Affected rows: the entry plus every descendant when it is a folder.
+        $entryId = (int) $entry->id;
+        $affected = \App\Models\AiProjectFile::where('project_id', $project->id)
+            ->get()
+            ->filter(function ($f) use ($entryId) {
+                if ((int) $f->id === $entryId) {
+                    return true;
+                }
+                $node = $f;
+                $depth = 0;
+                while ($node && $node->parent_id && $depth < 1000) {
+                    if ((int) $node->parent_id === $entryId) {
+                        return true;
+                    }
+                    $node = $node->parent()->first();
+                    $depth++;
+                }
+                return false;
+            })
+            ->values();
+
+        // Old repo-relative paths (from storage_path) captured before any change.
+        $oldRelPath = [];
+        foreach ($affected as $f) {
+            if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
+                $oldRelPath[(int) $f->id] = substr($f->storage_path, strlen($prefix) + 1);
+            }
+        }
+
+        if ($newName !== null) {
+            $entry->name = $newName;
+        }
+        if ($newParentId !== null) {
+            $entry->parent_id = $newParentId;
+        }
+        $entry->save();
+
+        $dir = $this->ensureClone($project);
+
+        $hasStorage = (bool) $entry->storage_path;
+        if ($entry->is_folder && $hasStorage) {
+            // Repo-backed folder: rename/move the directory in the clone once —
+            // everything inside travels with it. Descendants only get their
+            // storage_path rewritten.
+            $this->movePhysicalRow($dir, $prefix, $entry, $oldRelPath[(int) $entry->id] ?? null);
+            foreach ($affected as $f) {
+                if ((int) $f->id === $entryId) {
+                    continue;
+                }
+                if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
+                    $newRel = $this->repoRelativeOf($f);
+                    $f->update(['storage_path' => $prefix . '/' . $newRel]);
+                }
+            }
+        } elseif (! $entry->is_folder && $hasStorage) {
+            // Repo-backed file: move just the file.
+            $this->movePhysicalRow($dir, $prefix, $entry, $oldRelPath[(int) $entry->id] ?? null);
+        } elseif ($entry->is_folder) {
+            // UI-created folder (no own storage): move each repo-backed
+            // descendant individually.
+            foreach ($affected as $f) {
+                if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
+                    $this->movePhysicalRow($dir, $prefix, $f, $oldRelPath[(int) $f->id] ?? null);
+                }
+            }
+        }
+
+        $project->touch();
+    }
+
+    /**
+     * Move a single repo-backed row inside the clone and rewrite its
+     * storage_path to the new relative location.
+     */
+    protected function movePhysicalRow(string $dir, string $prefix, AiProjectFile $row, ?string $oldRel): void
+    {
+        $newRel = $this->repoRelativeOf($row);
+        $row->update(['storage_path' => $prefix . '/' . $newRel]);
+
+        if ($oldRel === null || $oldRel === $newRel) {
+            return;
+        }
+
+        $oldFull = $dir . '/' . $oldRel;
+        $newFull = $dir . '/' . $newRel;
+        if (! file_exists($oldFull) || $oldFull === $newFull) {
+            return;
+        }
+
+        if (! is_dir(dirname($newFull))) {
+            @mkdir(dirname($newFull), 0755, true);
+        }
+        @rename($oldFull, $newFull);
+    }
+
+    /**
+     * VS Code-style commit history for a repo-backed project.
+     *
+     * @return array<int, array{
+     *     hash: string, short: string, author: string, email: string,
+     *     date: string, subject: string
+     * }>
+     */
+    public function commitLog(AiProject $project, int $limit = 60): array
+    {
+        $dir = $this->ensureClone($project);
+        $raw = $this->run(
+            $project,
+            ['git', 'log', '--max-count=' . max(1, min(500, $limit)), '--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s'],
+            $dir,
+            true
+        );
+
+        $out = [];
+        foreach (explode("\n", trim($raw)) as $line) {
+            if ($line === '') {
+                continue;
+            }
+            $parts = explode("\x1f", $line);
+            if (count($parts) < 6) {
+                continue;
+            }
+            [$hash, $short, $author, $email, $date, $subject] = $parts;
+            $out[] = [
+                'hash' => $hash,
+                'short' => $short,
+                'author' => $author,
+                'email' => $email,
+                'date' => $date,
+                'subject' => $subject,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Detail for a single commit: metadata, changed files (A/M/D status) and a
+     * unified diff body for the workspace to render.
+     */
+    public function commitDetail(AiProject $project, string $hash): array
+    {
+        $hash = trim($hash);
+        if (! preg_match('/^[0-9a-f]{7,64}$/i', $hash)) {
+            throw new \RuntimeException('Invalid commit reference.');
+        }
+
+        $dir = $this->ensureClone($project);
+
+        $metaRaw = $this->run(
+            $project,
+            ['git', 'show', '--no-color', '--no-patch', '--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s', $hash],
+            $dir,
+            true
+        );
+        $metaParts = explode("\x1f", trim($metaRaw));
+        $meta = [
+            'hash' => $metaParts[0] ?? $hash,
+            'short' => $metaParts[1] ?? $hash,
+            'author' => $metaParts[2] ?? '',
+            'email' => $metaParts[3] ?? '',
+            'date' => $metaParts[4] ?? '',
+            'subject' => $metaParts[5] ?? '',
+        ];
+
+        // Changed files with add/modify/delete status.
+        $namesRaw = $this->run($project, ['git', 'diff-tree', '--no-commit-id', '--name-status', '-r', $hash], $dir, true);
+        $files = [];
+        foreach (array_filter(explode("\n", trim($namesRaw))) as $line) {
+            if (preg_match('/^([AMDRC]|A\s|M\s|D\s|R\d+)\s+(.*)$/', $line, $m)) {
+                $status = trim((string) $m[1]);
+                $path = trim((string) $m[2]);
+                if ($status === 'A') {
+                    $status = 'added';
+                } elseif ($status === 'M') {
+                    $status = 'modified';
+                } elseif ($status === 'D') {
+                    $status = 'deleted';
+                } elseif ($status === 'R100' || str_starts_with($status, 'R')) {
+                    $status = 'renamed';
+                } else {
+                    $status = 'modified';
+                }
+                $files[] = ['status' => $status, 'path' => $path];
+            }
+        }
+
+        // Unified diff body. Root commits have no parent to diff against, so
+        // `git show` degrades to the full file content — acceptable.
+        $diff = $this->run($project, ['git', 'show', '--no-color', '--format=', '--no-renames', '--unified=1', $hash], $dir, true);
+        if (strlen($diff) > 400000) {
+            $diff = mb_substr($diff, 0, 400000);
+        }
+
+        return $meta + ['files' => $files, 'diff' => $diff];
+    }
+
+    /**
      * Run a git command inside the clone and return stdout. Throws when the
      * command fails so the caller can surface a readable error.
      */

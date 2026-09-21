@@ -141,6 +141,8 @@ Route::prefix('application/dp')->group(function () {
         Route::post('/assistant/projects/{project}/repo', [AiAssistantController::class, 'connectRepo'])->name('assistant.project.repo.connect');
         Route::post('/assistant/projects/{project}/repo/pull', [AiAssistantController::class, 'pullRepo'])->name('assistant.project.repo.pull');
         Route::post('/assistant/projects/{project}/repo/commit', [AiAssistantController::class, 'commitRepo'])->name('assistant.project.repo.commit');
+        Route::get('/assistant/projects/{project}/repo/commits', [AiAssistantController::class, 'repoCommits'])->name('assistant.project.repo.commits');
+        Route::get('/assistant/projects/{project}/repo/commits/{hash}', [AiAssistantController::class, 'repoCommitDetail'])->name('assistant.project.repo.commit.detail');
         Route::delete('/assistant/projects/{project}/repo', [AiAssistantController::class, 'disconnectRepo'])->name('assistant.project.repo.disconnect');
 
         Route::post('/assistant/upload', [AiAssistantController::class, 'upload'])->name('assistant.upload');

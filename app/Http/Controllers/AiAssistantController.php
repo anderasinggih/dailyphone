@@ -114,6 +114,9 @@ class AiAssistantController extends Controller
                         'content' => $chat->content,
                         'action_status' => $chat->action_status,
                         'timestamp' => $chat->created_at->format('H:i'),
+                        'referenced_files' => $chat->role === 'user' && is_array($chat->execution_data['referenced_files'] ?? null)
+                            ? array_values(array_filter($chat->execution_data['referenced_files'], fn ($f) => is_array($f) && isset($f['name'])))
+                            : [],
                     ];
                 });
         }
@@ -787,15 +790,28 @@ class AiAssistantController extends Controller
     }
 
     /**
-     * Persist user-edited text back to a project file (IDE-style save). Writes
-     * the new content as the current blob and keeps the previous content as
-     * previous_content, so the workspace can render an old→new diff exactly
-     * like an AI-modified file.
+     * Persist user-edited text back to a project file (IDE-style save), or —
+     * when the request carries a `name` / `parent_id` — rename / move a file or
+     * folder inside the project tree. Writes the new content as the current
+     * blob and keeps the previous content as previous_content, so the
+     * workspace can render an old→new diff exactly like an AI-modified file.
      */
     public function updateProjectFileContent(Request $request, $project, $file): JsonResponse
     {
         $project = $this->resolveProject($project);
         $record = $this->resolveProjectFile($project->id, $file);
+
+        // --- Rename / move mode -------------------------------------------
+        if ($request->has('name') || $request->has('parent_id')) {
+            $this->renameOrMoveProjectFileEntry($request, $project, $record);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Entry updated successfully.',
+                'file' => $this->projectFilePayload($record->refresh()),
+                'files' => $this->buildProjectFileTree($project->id),
+            ]);
+        }
 
         if ($record->is_folder) {
             abort(422, 'Folders have no content.');
@@ -961,6 +977,93 @@ class AiAssistantController extends Controller
     }
 
     /**
+     * Rename and/or move a project file/folder (IDE rename + drag-to-move).
+     */
+    protected function renameOrMoveProjectFileEntry(Request $request, \App\Models\AiProject $project, \App\Models\AiProjectFile $entry): void
+    {
+        $request->validate([
+            'name' => 'nullable|string|max:255',
+            'parent_id' => 'nullable|exists:ai_project_files,id',
+        ]);
+
+        $newName = $request->input('name');
+        $newParentId = $request->has('parent_id') ? ($request->input('parent_id') !== null ? (int) $request->input('parent_id') : null) : null;
+        $moving = $request->has('parent_id');
+
+        if (is_string($newName)) {
+            $newName = trim($newName);
+            if ($newName === '') {
+                $newName = null;
+            } elseif ($newName !== $entry->name) {
+                if (str_contains($newName, '/') || str_contains($newName, '\\')) {
+                    abort(422, 'A file name cannot contain slashes.');
+                }
+                $existing = \App\Models\AiProjectFile::where('project_id', $project->id)
+                    ->where('parent_id', $entry->parent_id)
+                    ->where('name', $newName)
+                    ->where('id', '!=', $entry->id)
+                    ->exists();
+                if ($existing) {
+                    abort(422, 'A file or folder with the same name already exists in this folder.');
+                }
+            }
+        }
+
+        // Moving a folder into one of its own descendants would create a cycle.
+        if ($moving && $newParentId !== null && $entry->is_folder) {
+            $cursor = \App\Models\AiProjectFile::find($newParentId);
+            $depth = 0;
+            while ($cursor && $depth < 1000) {
+                if ((int) $cursor->id === (int) $entry->id) {
+                    abort(422, 'A folder cannot be moved into itself.');
+                }
+                $cursor = $cursor->parent_id ? $cursor->parent()->first() : null;
+                $depth++;
+            }
+        }
+
+        app(\App\Services\GitRepoService::class)->moveEntry($project, $entry, $newName, $moving ? $newParentId : null);
+    }
+
+    /**
+     * Git commit history for a repo-backed project (VS Code-style source control).
+     */
+    public function repoCommits(Request $request, $project): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        if (! $project->repo_url) {
+            return response()->json(['success' => false, 'message' => 'This project is not connected to a repository.'], 422);
+        }
+
+        try {
+            $commits = app(\App\Services\GitRepoService::class)->commitLog($project, (int) $request->query('limit', 60));
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to load history: ' . $e->getMessage()], 422);
+        }
+
+        return response()->json(['success' => true, 'commits' => $commits]);
+    }
+
+    /**
+     * Detail (files + full diff) for a single commit.
+     */
+    public function repoCommitDetail(Request $request, $project, $hash): JsonResponse
+    {
+        $project = $this->resolveProject($project);
+        if (! $project->repo_url) {
+            return response()->json(['success' => false, 'message' => 'This project is not connected to a repository.'], 422);
+        }
+
+        try {
+            $detail = app(\App\Services\GitRepoService::class)->commitDetail($project, $hash);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to load commit: ' . $e->getMessage()], 422);
+        }
+
+        return response()->json(['success' => true, 'commit' => $detail]);
+    }
+
+    /**
      * Process user chat message within a session and remember context.
      * Streams newline-delimited JSON progress events so the Assistant UI can
      * render "accessing neurons" live while the model is thinking.
@@ -1059,6 +1162,18 @@ class AiAssistantController extends Controller
                     'session_id' => $sessionId,
                     'ai_chat_id' => $userChat->id,
                 ]);
+        }
+
+        // Remember which project files this message @-referenced so the rebuilt
+        // conversation can re-render the "Files from <project>" tag above the
+        // bubble after a refresh (stored in the message's JSON execution_data).
+        if ($projectFiles->isNotEmpty()) {
+            $executionData = $userChat->execution_data ?? [];
+            $executionData['referenced_files'] = $projectFiles
+                ->map(fn ($f) => ['name' => $f->name, 'kind' => $f->kind])
+                ->values()
+                ->all();
+            $userChat->update(['execution_data' => $executionData]);
         }
 
         // 2. Fetch recent conversation memory for THIS SESSION ONLY (last 10 messages)
