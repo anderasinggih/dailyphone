@@ -204,7 +204,11 @@ class AiEmbeddingService
         foreach (array_values($this->apiKeys) as $key) {
             try {
                 $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:batchEmbedContents?key={$key}";
-                $response = Http::timeout(12)->connectTimeout(3)->post($url, ['requests' => $requests]);
+                // Backfill batches can carry dozens of notes (~1MB of text), so
+                // a full chunk needs generous room — especially under host load.
+                // The chat-request path never pays for this: single-query embeds
+                // use the tight 8s timeout in embedText().
+                $response = Http::timeout(45)->connectTimeout(3)->post($url, ['requests' => $requests]);
 
                 if ($response->successful()) {
                     $embeddings = $response->json('embeddings', []);

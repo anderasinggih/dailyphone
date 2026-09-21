@@ -6,6 +6,7 @@ use App\Models\AiTrainingNote;
 use App\Services\AiEmbeddingService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Backfill semantic embeddings for memory notes missing a vector (item 1).
@@ -14,12 +15,20 @@ use Illuminate\Support\Facades\Cache;
  * embedding API was unreachable) is embedded in one batched pass. Retrieval
  * degrades to token-overlap until this has run, so scheduling it weekly (and
  * right after consolidation) keeps the semantic index complete.
+ *
+ * Every batch prints its result straight to the console: writing to the Laravel
+ * log alone proved undiagnosable on shared hosts where the CLI log stream is
+ * lost, so a failed chunk must be visible in the terminal, not just swallowed.
  */
 class AiEmbedBackfillCommand extends Command
 {
     protected $signature = 'ai:embed-backfill {--force : Re-embed notes that already have a vector}';
 
     protected $description = 'Embed every training note that still lacks a vector';
+
+    /** Chunks smaller than the service cap so a single request stays well
+     *  inside the HTTP/API limits even with long note texts. */
+    private const CHUNK_SIZE = 50;
 
     public function handle(AiEmbeddingService $embedder): int
     {
@@ -50,39 +59,70 @@ class AiEmbedBackfillCommand extends Command
 
         $this->info("Embedding {$total} notes in batched rounds…");
 
-        // embedMissing works on *missing* only; force re-embedding happens per batch.
-        if (!$this->option('force')) {
-            $embedded = $embedder->embedMissing($notes);
-            $this->info("Done: embedded {$embedded} note(s).");
+        $embedded = 0;
+        $failed = 0;
+        $batchNo = 0;
 
-            if ($embedded === 0 && $total > 0) {
-                $this->warn('0 notes embedded — nothing was stored. Check storage/logs for "Batch embedding" entries, the Gemini API key/quota in Settings, or the server\'s outbound network to generativelanguage.googleapis.com.');
-            }
-        } else {
-            $embedded = 0;
-            foreach ($notes->chunk(96) as $chunk) {
-                $texts = [];
-                $keys = [];
-                foreach ($chunk as $note) {
-                    $texts[] = $embedder->noteText($note);
-                    $keys[] = $note->id;
+        foreach ($notes->chunk(self::CHUNK_SIZE) as $chunk) {
+            $batchNo++;
+            $keys = $chunk->map(fn ($n) => (int) $n->id)->values()->all();
+            $texts = $chunk->map(fn ($n) => $embedder->noteText($n))->values()->all();
+
+            $vectors = $embedder->embedBatch($texts);
+
+            if ($vectors === []) {
+                $offline = Cache::get('ai.embed.api_offline') ? 'offline latch set' : 'no vectors returned';
+                $failed += count($keys);
+                $this->warn("    batch {$batchNo}: FAILED — 0/".count($keys)." embedded ({$offline}). "
+                    .'Check the embedding API/network or your Gemini key/quota, then re-run.');
+
+                // The API tripped its circuit breaker: every later chunk would
+                // short-circuit silently to 0 too, so stop hammering and bail.
+                if ($offline === 'offline latch set') {
+                    $remaining = $total - (($batchNo - 1) * self::CHUNK_SIZE) - count($keys);
+                    $this->warn("    aborting — {$remaining} note(s) left unembedded will retry on the next run.");
+
+                    break;
                 }
+                continue;
+            }
 
-                $vectors = $embedder->embedBatch($texts);
-                foreach ($vectors as $i => $vector) {
-                    $id = $keys[$i] ?? null;
-                    if ($id === null) {
-                        continue;
-                    }
+            $saved = 0;
+            foreach ($vectors as $i => $vector) {
+                $id = $keys[$i] ?? null;
+                if ($id === null) {
+                    continue;
+                }
+                try {
                     AiTrainingNote::where('id', $id)->update([
                         'embedding' => json_encode($vector),
                         'embedding_model' => $embedder->model(),
                     ]);
-                    $embedded++;
+                    $saved++;
+                } catch (\Throwable $e) {
+                    Log::warning('Failed persisting embedding for note #'.$id.': '.$e->getMessage());
+                    $this->warn("        note #{$id} failed to persist: ".$e->getMessage());
                 }
-                $this->line('    batch done — running total: ' . $embedded);
             }
-            $this->info("Done: re-embedded {$embedded} note(s).");
+
+            $embedded += $saved;
+            $awaiting = count($keys) - $saved;
+            if ($awaiting > 0) {
+                $failed += $awaiting;
+            }
+            $this->line("    batch {$batchNo}: embedded {$saved}/".count($keys).' note(s).');
+        }
+
+        if ($embedded > 0) {
+            $this->info("Done: embedded {$embedded} note(s).");
+        } else {
+            $this->warn('Done: 0 notes embedded — nothing was stored. Check the batch lines above, the Gemini API key/quota in Settings, or the server\'s outbound network to generativelanguage.googleapis.com.');
+        }
+
+        if ($failed > 0) {
+            $this->warn("{$failed} note(s) remain unembedded and will be retried on the next run.");
+
+            return self::FAILURE;
         }
 
         return self::SUCCESS;
