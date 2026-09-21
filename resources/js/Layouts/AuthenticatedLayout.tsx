@@ -22,7 +22,6 @@ import {
     User,
     Banknote,
     ChevronRight,
-    Sparkles,
 } from 'lucide-react';
 import GeminiStar from '@/Components/GeminiStar';
 
@@ -123,7 +122,6 @@ export default function Authenticated({
     const getMoreMenuItems = () => {
         const items: { name: string; href: string; icon: any; current: boolean }[] = [];
         items.push({ name: 'Assistant', href: route('assistant.index'), icon: GeminiStar, current: route().current('assistant.index') });
-        items.push({ name: 'Visualize', href: route('assistant.visualization'), icon: Sparkles, current: route().current('assistant.visualization') });
         items.push({ name: 'History', href: route('sales-history.index'), icon: History, current: route().current('sales-history.index') });
         items.push({ name: 'Customers', href: route('customers.index'), icon: Users, current: route().current('customers.index') });
         items.push({ name: 'Shifts', href: route('shifts.index'), icon: Clock, current: route().current('shifts.index') });
@@ -193,10 +191,6 @@ export default function Authenticated({
                             </Link>
 
                             <div className="hidden xl:flex items-center gap-0.5">
-                                <Link href={route('assistant.visualization')} prefetch className={navLink(!!route().current('assistant.visualization'))}>
-                                    <Sparkles className="h-4 w-4 text-primary" />
-                                    <span>Visualize</span>
-                                </Link>
                                 <Link href={route('customers.index')} prefetch className={navLink(!!route().current('customers.index'))}>
                                     <Users className="h-4 w-4" />
                                     <span>Customers</span>
@@ -228,7 +222,6 @@ export default function Authenticated({
                                             type="button"
                                             className={navLink(
                                                 !!route().current('customers.index') ||
-                                                !!route().current('assistant.visualization') ||
                                                 !!route().current('shifts.index') ||
                                                 !!route().current('stores.index') ||
                                                 !!route().current('money-notes.index')
@@ -239,12 +232,6 @@ export default function Authenticated({
                                         </button>
                                     </Dropdown.Trigger>
                                     <Dropdown.Content align="right" width="48">
-                                        <Dropdown.Link href={route('assistant.visualization')}>
-                                            <span className="flex items-center gap-2">
-                                                <Sparkles className="h-4 w-4 text-muted-foreground" />
-                                                Visualize
-                                            </span>
-                                        </Dropdown.Link>
                                         <Dropdown.Link href={route('customers.index')}>
                                             <span className="flex items-center gap-2">
                                                 <Users className="h-4 w-4 text-muted-foreground" />

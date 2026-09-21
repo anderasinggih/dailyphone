@@ -251,11 +251,17 @@ export default function VisualizationViewer({ content, streaming = false, fill =
 
     // Interactive full-page HTML (charts, dashboards) rendered in a sandboxed
     // iframe so scripts run but stay isolated from the app itself. With `fill`
-    // it takes over nearly the whole viewport (visualization mode).
+    // it takes over the whole viewport (visualization mode).
     if (htmlDoc !== null) {
         return (
-            <div className="relative rounded-xl border border-border/50 overflow-hidden bg-white">
-                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/40 bg-muted/40">
+            <div className={`relative overflow-hidden bg-white ${
+                fill
+                    ? 'flex flex-col h-full rounded-none border-0'
+                    : 'rounded-xl border border-border/50'
+            }`}>
+                <div className={`flex items-center justify-between px-2 py-1.5 bg-muted/40 ${
+                    fill ? '' : 'border-b border-border/40'
+                }`}>
                     <div className="flex items-center gap-0.5 min-w-0">
                         <button
                             type="button"
@@ -303,7 +309,7 @@ export default function VisualizationViewer({ content, streaming = false, fill =
                     srcDoc={htmlDocWithBridge || ''}
                     className={`w-full bg-white ${
                         fill
-                            ? 'h-[calc(100dvh-150px)] min-h-[560px]'
+                            ? 'flex-1 min-h-0'
                             : 'h-[65dvh] min-h-[420px]'
                     }`}
                 />
@@ -315,18 +321,26 @@ export default function VisualizationViewer({ content, streaming = false, fill =
         return null;
     }
 
+    // In fill mode (visualization) the rendered document and the streaming wipe
+    // both own the full panel and scroll internally instead of growing the page.
+    const documentRootClasses = [
+        VIZ_MARKDOWN_STYLES,
+        fill ? 'h-full min-h-0 overflow-y-auto px-4 sm:px-6 py-5' : '',
+        'select-text',
+    ].filter(Boolean).join(' ');
+
     // While streaming, render the raw markdown as a wiper (fast, no graph work);
     // the full document (incl. mermaid SVGs) takes over once done.
     if (streaming) {
         return (
-            <div ref={rootRef} className={[VIZ_MARKDOWN_STYLES, 'whitespace-pre-wrap light-wipe'].filter(Boolean).join(' ')}>
+            <div ref={rootRef} className={[VIZ_MARKDOWN_STYLES, fill ? 'h-full min-h-0 overflow-y-auto px-4 sm:px-6 py-5' : '', 'whitespace-pre-wrap light-wipe'].filter(Boolean).join(' ')}>
                 {markdown}
             </div>
         );
     }
 
     return (
-        <div ref={rootRef} className={[VIZ_MARKDOWN_STYLES, 'select-text'].filter(Boolean).join(' ')}>
+        <div ref={rootRef} className={documentRootClasses}>
             <div dangerouslySetInnerHTML={{ __html: html }} />
         </div>
     );
