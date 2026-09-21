@@ -73,12 +73,18 @@ class AiEmbedBackfillCommand extends Command
             if ($vectors === []) {
                 $offline = Cache::get('ai.embed.api_offline') ? 'offline latch set' : 'no vectors returned';
                 $failed += count($keys);
-                $this->warn("    batch {$batchNo}: FAILED — 0/".count($keys)." embedded ({$offline}). "
-                    .'Check the embedding API/network or your Gemini key/quota, then re-run.');
+                $reason = trim((string) $embedder->lastError);
+                $transient = $embedder->isRetryableError();
+                $this->warn('    batch '.$batchNo.': FAILED — 0/'.count($keys).' embedded ('.$offline.($reason !== '' ? ': '.$reason : '').'). '
+                    .($transient
+                        ? 'Free-tier quota is refilling — continuing; later batches retry after backoff.'
+                        : 'Check the embedding API/network or your Gemini key/quota, then re-run.'));
 
-                // The API tripped its circuit breaker: every later chunk would
-                // short-circuit silently to 0 too, so stop hammering and bail.
-                if ($offline === 'offline latch set') {
+                // Only a PERMANENT, latched failure (bad key/model/payload)
+                // warrants aborting — every later retry would fail the same way.
+                // A transient quota/429 refills, so keep going: each later batch
+                // clears the latch and retries with backoff on its own.
+                if (! $transient && $offline === 'offline latch set') {
                     $remaining = $total - (($batchNo - 1) * self::CHUNK_SIZE) - count($keys);
                     $this->warn("    aborting — {$remaining} note(s) left unembedded will retry on the next run.");
 

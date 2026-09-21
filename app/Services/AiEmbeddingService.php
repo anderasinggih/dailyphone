@@ -33,6 +33,10 @@ class AiEmbeddingService
     /** Ordered Gemini API keys (failover over rate limits). */
     protected array $apiKeys = [];
 
+    /** Last API error message, surfaced on stdout when file logs are lost on
+     *  shared hosts (the console can print it even if Log::warning goes nowhere). */
+    public ?string $lastError = null;
+
     /**
      * Cache the last successful query embedding so a chat request that retrieves
      * neurons three times hits the embedding API at most once.
@@ -163,33 +167,154 @@ class AiEmbeddingService
             return $out;
         }
 
-        $model = $this->sanitizeModel($this->model);
-        $requests = [];
-        $base = 0;
+        // Bucket by BOTH item count and raw-text size: cramming dozens of long
+        // notes into one call can blow the API's per-call token/size budget and
+        // fail the whole chunk silently. Keeping each call modest mirrors the
+        // small batches proven to succeed; an oversize/failed call is then
+        // split in half and retried below, so the run converges instead of
+        // dying on one big request.
+        $bucket = [];
+        $bucketChars = 0;
         foreach ($indexed as $key => $text) {
-            $requests[] = [
-                'model' => 'models/'.$model,
-                'content' => ['parts' => [['text' => mb_substr((string) $text, 0, 8000)]]],
-            ];
-            // Cap batch size per call (some models limit it), chunk the rest.
-            // postBatch() keys each chunk's vectors from 0, so offset every
-            // chunk by its position to keep the returned map sequential and
-            // avoid later chunks silently overwriting earlier ones.
-            if (count($requests) >= 96) {
-                foreach ($this->postBatch($requests) as $i => $vector) {
-                    $out[$base + $i] = $vector;
-                }
-                $base += count($requests);
-                $requests = [];
+            $len = mb_strlen($text);
+            if ($bucket !== [] && ($bucketChars + $len > self::BUCKET_CHARS || count($bucket) >= self::BUCKET_ITEMS)) {
+                $this->postBucket($bucket, $out);
+                $bucket = [];
+                $bucketChars = 0;
             }
+            $bucket[$key] = $text;
+            $bucketChars += $len;
         }
-        if ($requests !== []) {
-            foreach ($this->postBatch($requests) as $i => $vector) {
-                $out[$base + $i] = $vector;
-            }
+        if ($bucket !== []) {
+            $this->postBucket($bucket, $out);
         }
 
         return $out;
+    }
+
+    /** Cap on raw text characters sent per embedding call (~120K chars, far
+     *  below the API's per-call token/size limits even for long notes). */
+    private const BUCKET_CHARS = 120000;
+
+    /** Cap on items per embedding call; some models reject larger batches.
+     *  Hard-split past this in postBucket() is only a recursion safety net —
+     *  the bucketing above already keeps every bucket within it. */
+    private const BUCKET_ITEMS = 96;
+
+    /**
+     * Send one modest bucket to the embedding API, keying the resulting vectors
+     * back by the original input keys. Failures are retried with backoff (free
+     * tier 429s refill within seconds); a PERMANENT failure on a multi-item
+     * bucket is split in half and each half retried, so a single oversize note
+     * can then never take the whole batch down. Transient failures are left
+     * alone — halving a dry quota window only multiplies API calls. Singles
+     * that still fail stay unembedded and are reported by the caller.
+     *
+     * @param  array<string|int, string>  $bucket
+     * @param  array<string|int, float[]>  $out
+     */
+    protected function postBucket(array $bucket, array &$out): void
+    {
+        if ($bucket === []) {
+            return;
+        }
+        $order = array_keys($bucket);
+
+        // Hard item cap per call (some models reject larger batches).
+        if (count($order) > self::BUCKET_ITEMS) {
+            $mid = intdiv(count($order), 2);
+            $this->postBucket(array_slice($bucket, 0, $mid, true), $out);
+            $this->postBucket(array_slice($bucket, $mid, null, true), $out);
+
+            return;
+        }
+
+        $requests = [];
+        foreach ($bucket as $text) {
+            $requests[] = [
+                'model' => 'models/'.$this->sanitizeModel($this->model),
+                'content' => ['parts' => [['text' => mb_substr($text, 0, 8000)]]],
+            ];
+        }
+
+        // Free-tier embedding keys share a small rolling request quota (429
+        // "limit: 100 … retry in Ns"). A backfill is allowed to be slow, so a
+        // quota/transient failure is NOT a terminal one: wait for the refill
+        // and retry a few times before ever splitting or giving up. Each retry
+        // clears the circuit-breaker latch first — postBatch() sets it on any
+        // failure, and a retry that started with the latch still sitting would
+        // short-circuit to [] without ever touching the API again.
+        $vectors = [];
+        for ($attempt = 1; $attempt <= self::MAX_BATCH_ATTEMPTS; $attempt++) {
+            Cache::forget('ai.embed.api_offline');
+            $vectors = $this->postBatch($requests);
+            if ($vectors !== []) {
+                break;
+            }
+            $delay = $this->batchRetryDelay($this->lastError);
+            if ($delay <= 0.0) {
+                break;
+            }
+            $this->backoffWait($delay);
+        }
+
+        if ($vectors === [] && ! $this->isRetryableError() && count($order) > 1) {
+            // Hard (permanent) failure — per-call size/token cap, unknown model,
+            // bad key: not recoverable by waiting, so halve and retry so one
+            // oversize note can never sink the whole chunk. A transient 429 is
+            // deliberately NOT split: halving can't help while the quota window
+            // is dry, and it would only multiply API calls.
+            $mid = intdiv(count($order), 2);
+            $this->postBucket(array_slice($bucket, 0, $mid, true), $out);
+            $this->postBucket(array_slice($bucket, $mid, null, true), $out);
+        }
+
+        foreach ($vectors as $i => $vector) {
+            $key = $order[$i] ?? null;
+            if ($key === null) {
+                continue;
+            }
+            $out[$key] = $vector;
+        }
+    }
+
+    /** How many attempts a bucket may make before it is split (or reported). */
+    private const MAX_BATCH_ATTEMPTS = 5;
+
+    /**
+     * Seconds to wait before retrying a failed batch call, or 0 when the error
+     * looks permanent (splitting then handles it). Free-tier quota 429s carry a
+     * "retry in Ns" hint; timeouts/connections are tried again on a fixed delay.
+     */
+    protected function batchRetryDelay(?string $error): float
+    {
+        $error = trim((string) $error);
+        if ($error === '') {
+            return 0.0;
+        }
+        if (preg_match('/retry\s+in\s+([0-9.]+)\s*s?/i', $error, $m)) {
+            return max(2.0, min((float) $m[1] + 1.0, 25.0));
+        }
+        if (preg_match('/quota|rate\s*limit|timed\s*out|could\s+not\s+resolve|connection.*(fail|refus)/i', $error)) {
+            return 5.0;
+        }
+
+        return 0.0;
+    }
+
+    /** Block between retries; an indirection so tests can replace the real
+     *  sleep with a no-op while still driving the backoff logic. */
+    protected function backoffWait(float $delay): void
+    {
+        sleep((int) round($delay));
+    }
+
+    /** Whether a failure looks transient (quota/rate-limit/timeout — worth
+     *  waiting for) as opposed to permanent (auth/model/payload — splitting or
+     *  aborting is right). */
+    public function isRetryableError(?string $error = null): bool
+    {
+        return $this->batchRetryDelay($error ?? $this->lastError) > 0.0;
     }
 
     protected function postBatch(array $requests): array
@@ -221,14 +346,18 @@ class AiEmbeddingService
 
                     if ($out !== []) {
                         Cache::forget('ai.embed.api_offline');
+                        $this->lastError = null;
 
                         return $out;
                     }
                 }
 
+                $this->lastError = $response->json('error.message')
+                    ?? (trim((string) $response->body()) !== '' ? $response->body() : 'HTTP '.$response->status());
                 Log::warning('Batch embedding HTTP '.$response->status().': '
                     .($response->json('error.message') ?? $response->body()));
             } catch (\Throwable $e) {
+                $this->lastError = $e->getMessage();
                 Log::warning('Batch embedding threw: '.$e->getMessage());
             }
         }
