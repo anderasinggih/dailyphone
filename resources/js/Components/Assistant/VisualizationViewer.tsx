@@ -1,7 +1,7 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, ArrowLeft, ArrowRight, RotateCw } from 'lucide-react';
 
 interface VisualizationViewerProps {
     content: string;
@@ -27,6 +27,10 @@ const COPY_ICON =
 
 const CHECK_ICON =
     '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+// Wrapped `<pre>` blocks get a small copy button (see enhanceCodeBlocks).
+const NAV_BRIDGE_SCRIPT =
+    '<script>window.addEventListener("message",function(e){if(e.source===window.parent&&e.data&&e.data.type==="viz-nav"){try{if(e.data.action==="back"){history.back()}else if(e.data.action==="forward"){history.forward()}else if(e.data.action==="reload"){location.reload()}}catch(err){}}},false);<\/script>';
 
 // Larger document typography for the visualization viewer (big panel, easy to
 // read at a distance) while keeping the Apple HIG color system untouched.
@@ -117,8 +121,24 @@ function enhanceCodeBlocks(html: string): string {
  */
 export default function VisualizationViewer({ content, streaming = false, fill = false }: VisualizationViewerProps) {
     const rootRef = useRef<HTMLDivElement>(null);
+    const iframeRef = useRef<HTMLIFrameElement>(null);
+
+    // Drive the sandboxed frame's own history from the parent toolbar via
+    // postMessage (the frame's opaque origin blocks direct contentWindow calls).
+    const iframeNav = (action: 'back' | 'forward' | 'reload') => {
+        iframeRef.current?.contentWindow?.postMessage({ type: 'viz-nav', action }, '*');
+    };
 
     const htmlDoc = useMemo(() => extractHtmlDocument(content), [content]);
+    const htmlDocWithBridge = useMemo(() => {
+        if (htmlDoc === null) return null;
+        const ofs = htmlDoc.search(/<!doctype html>/i);
+        if (ofs !== -1) {
+            const end = htmlDoc.indexOf('>', ofs) + 1;
+            return htmlDoc.slice(0, end) + NAV_BRIDGE_SCRIPT + htmlDoc.slice(end);
+        }
+        return NAV_BRIDGE_SCRIPT + htmlDoc;
+    }, [htmlDoc]);
     const markdown = htmlDoc === null ? stripInternalBlocks(content) : '';
 
     // Swap every ```mermaid fence for a holder div before marked touches it, so
@@ -235,23 +255,52 @@ export default function VisualizationViewer({ content, streaming = false, fill =
     if (htmlDoc !== null) {
         return (
             <div className="relative rounded-xl border border-border/50 overflow-hidden bg-white">
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/40 bg-muted/40">
-                    <span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground/70">
-                        INTERACTIVE HTML PREVIEW
-                    </span>
+                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/40 bg-muted/40">
+                    <div className="flex items-center gap-0.5 min-w-0">
+                        <button
+                            type="button"
+                            onClick={() => iframeNav('back')}
+                            title="Go back"
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-white/70 dark:hover:bg-black/20 transition shrink-0"
+                        >
+                            <ArrowLeft className="h-3 w-3" />
+                            <span className="hidden sm:inline">Back</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => iframeNav('forward')}
+                            title="Go forward"
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-white/70 dark:hover:bg-black/20 transition shrink-0"
+                        >
+                            <ArrowRight className="h-3 w-3" />
+                            <span className="hidden sm:inline">Forward</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => iframeNav('reload')}
+                            title="Reload"
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-white/70 dark:hover:bg-black/20 transition shrink-0"
+                        >
+                            <RotateCw className="h-3 w-3" />
+                        </button>
+                        <span className="ml-1.5 hidden md:inline text-[10px] font-semibold tracking-[0.08em] text-muted-foreground/70 truncate">
+                            INTERACTIVE HTML PREVIEW
+                        </span>
+                    </div>
                     {streaming ? (
-                        <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                        <span className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
                             <Loader2 className="h-3 w-3 animate-spin text-primary" />
                             streaming…
                         </span>
                     ) : (
-                        <span className="text-[10px] text-muted-foreground">sandboxed</span>
+                        <span className="text-[10px] text-muted-foreground shrink-0">sandboxed</span>
                     )}
                 </div>
                 <iframe
+                    ref={iframeRef}
                     title="Visualization HTML preview"
                     sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
-                    srcDoc={htmlDoc || ''}
+                    srcDoc={htmlDocWithBridge || ''}
                     className={`w-full bg-white ${
                         fill
                             ? 'h-[calc(100dvh-150px)] min-h-[560px]'
