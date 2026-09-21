@@ -648,6 +648,15 @@ CONTEXT;
         $settings = GeneralSetting::first();
         $queryText = $query !== null ? trim($query) : $this->lastUserText($messages);
 
+        // Per-stage timing so a slow chat can be diagnosed precisely instead of
+        // guessing: retrieval / context / payload build / each model round-trip.
+        $startMicro = microtime(true);
+        $timings = [];
+        $timeMark = function (string $label) use (&$timings, &$startMicro): void {
+            $timings[$label] = (int) round((microtime(true) - $startMicro) * 1000);
+            $startMicro = microtime(true);
+        };
+
         // Inter-turn momentum: hand the recent conversation to retrieval so the
         // seed set blends semantic query matches with whatever is still "alive"
         // in the talk (situational episode tags + just-used/talked-about nodes).
@@ -718,6 +727,7 @@ CONTEXT;
         $storeContext = $this->generateStoreContext($user, $liveToolsWanted);
         $customInst = $this->customInstruction ? "\nADDITIONAL STORE INSTRUCTIONS: {$this->customInstruction}" : '';
         $sessionRulesPrompt = ! empty($sessionRules) ? "\nCUSTOM SESSION RULES & TRAINING DIRECTIVES (STRICTLY ADHERE TO THESE IN THIS CHAT SESSION):\n".$sessionRules."\n" : '';
+        $timeMark('context');
 
         // Progressive summary of the conversation's older turns (item 7); folded
         // into the prompt below so long chats never exhaust the context window.
@@ -1066,6 +1076,7 @@ PROMPT;
         // `system_instruction`/`tools` returns HTTP 400 INVALID_ARGUMENT.
 
         $this->usageTotals = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
+        $timeMark('payload');
 
         // The function-calling loop (item 2 + item 5): each turn may end with
         // function calls. Read-only tools are executed and their results fed
@@ -1101,6 +1112,7 @@ PROMPT;
                 $grounding = $this->compactGrounding($turnResult['grounding']);
             }
             $lastMeta = $turnResult['meta'] ?? ($lastMeta ?? []);
+            $timeMark('turn'.($turn + 1));
 
             $textChunk = (string) ($turnResult['text'] ?? '');
             $replyText .= $textChunk;
@@ -1243,6 +1255,8 @@ PROMPT;
             }
         }
 
+        $timeMark('total');
+
         return [
             'success' => true,
             'reply' => $visible,
@@ -1254,6 +1268,7 @@ PROMPT;
             'grounding' => $grounding,
             'retrieval' => $retrieval,
             'low_confidence' => $lowConfidence,
+            'timing_ms' => $timings,
         ];
     }
 

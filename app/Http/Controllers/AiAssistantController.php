@@ -930,6 +930,17 @@ class AiAssistantController extends Controller
                 );
 
                 // 4. Save AI reply to database in this session
+                // Slow-chat wall clock: log the per-stage breakdown emitted by
+                // GeminiAssistantService so a 30s reply is diagnosable at a glance.
+                $runTimings = $result['timing_ms'] ?? [];
+                if (! empty($runTimings)) {
+                    \Illuminate\Support\Facades\Log::info('AI chat timing', [
+                        'user_id' => $user->id,
+                        'session_id' => $sessionId,
+                        'timing_ms' => $runTimings,
+                        'tools_called' => $result['tools_called'] ?? [],
+                    ]);
+                }
                 if (!empty($result['reply'])) {
                     // The model sometimes claims a node was saved without ever
                     // emitting a real ```ai_memo block (so nothing persisted and
