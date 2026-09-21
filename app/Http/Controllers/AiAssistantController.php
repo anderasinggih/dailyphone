@@ -873,23 +873,29 @@ class AiAssistantController extends Controller
                 // same blended seed set (semantic + conversation + episode).
                 $this->geminiService->setConversationContext($messagesForModel);
 
-                $network = $this->geminiService->resolveNeuronNetwork(
-                    $userText,
-                    // Stream each retrieval stage the moment it completes, so
-                    // the live brain map lights up in real time: rules → the
-                    // embedding index answering → situational seeds. The final
-                    // 'neurons' event below carries the whole set + synapses.
-                    function (string $stage, array $nodes) use ($emit, $broadcast, &$accumulatedStages, $userText) {
-                        $emit(['type' => 'stage', 'stage' => $stage, 'nodes' => $nodes]);
-                        $accumulatedStages[] = ['stage' => $stage, 'nodes' => $nodes];
-                        $broadcast([
-                            'kind' => 'stage',
-                            'query' => mb_substr($userText, 0, 200),
-                            'stage' => $stage,
-                            'nodes' => $nodes,
-                        ]);
-                    }
-                );
+                // Semantic-retrieval master switch (Settings > General ▸ AI):
+                // when off, skip memory search entirely and emit an empty brain
+                // map — replies then stream straight from the model, matching
+                // the pre-retrieval request path (and its speed).
+                $network = $this->geminiService->retrievalEnabled()
+                    ? $this->geminiService->resolveNeuronNetwork(
+                        $userText,
+                        // Stream each retrieval stage the moment it completes, so
+                        // the live brain map lights up in real time: rules → the
+                        // embedding index answering → situational seeds. The final
+                        // 'neurons' event below carries the whole set + synapses.
+                        function (string $stage, array $nodes) use ($emit, $broadcast, &$accumulatedStages, $userText) {
+                            $emit(['type' => 'stage', 'stage' => $stage, 'nodes' => $nodes]);
+                            $accumulatedStages[] = ['stage' => $stage, 'nodes' => $nodes];
+                            $broadcast([
+                                'kind' => 'stage',
+                                'query' => mb_substr($userText, 0, 200),
+                                'stage' => $stage,
+                                'nodes' => $nodes,
+                            ]);
+                        }
+                    )
+                    : ['nodes' => [], 'edges' => []];
                 $neurons = $network['nodes'];
                 $emit(['type' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);
                 $broadcast(['kind' => 'neurons', 'nodes' => $network['nodes'], 'edges' => $network['edges']]);

@@ -177,6 +177,19 @@ class GeminiAssistantService
     }
 
     /**
+     * Whether the semantic-retrieval pipeline is enabled. The master switch
+     * lives in Settings > General (AI section); when off, chat skips memory
+     * search, training-notes context and the brain map entirely so replies
+     * stream straight from the model (pre-retrieval behaviour).
+     */
+    public function retrievalEnabled(?GeneralSetting $settings = null): bool
+    {
+        $settings ??= GeneralSetting::first();
+
+        return (bool) ($settings?->ai_retrieval_enabled ?? true);
+    }
+
+    /**
      * Whether the model can output native images (Nano Banana family:
      * *-flash-image models).
      */
@@ -662,8 +675,19 @@ CONTEXT;
         // in the talk (situational episode tags + just-used/talked-about nodes).
         $this->setConversationContext($messages);
 
-        $neurons = $this->resolveNeurons($queryText);
-        $trainingNotesStr = $this->generateTrainingNotesContext($queryText);
+        $retrievalOn = $this->retrievalEnabled($settings);
+        $neurons = $retrievalOn ? $this->resolveNeurons($queryText) : [];
+        $trainingNotesStr = $retrievalOn ? $this->generateTrainingNotesContext($queryText) : '';
+        if (! $retrievalOn) {
+            $this->retrievalState = [
+                'query' => $queryText,
+                'best_score' => null,
+                'method' => 'off',
+                'top_k' => 0,
+                'notes_count' => 0,
+                'context_seeds' => 0,
+            ];
+        }
 
         // Live-data tools (item 2) and Google Search grounding (item 4) are
         // opt-in flags on the settings row, each degrading gracefully back to

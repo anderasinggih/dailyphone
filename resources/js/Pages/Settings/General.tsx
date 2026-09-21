@@ -38,6 +38,7 @@ interface GeneralSetting {
     ai_tools_enabled?: boolean;
     ai_grounding_enabled?: boolean;
     ai_tool_combo?: boolean;
+    ai_retrieval_enabled?: boolean;
     ai_retrieval_top_k?: number;
     ai_retrieval_min_score?: number;
     ai_context_token_budget?: number;
@@ -179,6 +180,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
         ai_tools_enabled: settings.ai_tools_enabled ?? true,
         ai_grounding_enabled: settings.ai_grounding_enabled ?? true,
         ai_tool_combo: settings.ai_tool_combo ?? true,
+        ai_retrieval_enabled: settings.ai_retrieval_enabled ?? true,
         ai_retrieval_top_k: settings.ai_retrieval_top_k ?? 12,
         ai_retrieval_min_score: settings.ai_retrieval_min_score ?? 0.3,
         ai_context_token_budget: settings.ai_context_token_budget ?? 10000,
@@ -943,6 +945,24 @@ export default function General({ settings, schedules, employees, stores }: Gene
 
                                 <div className="space-y-4">
                                     <h3 className="h3 text-foreground">Intelligence & Memory</h3>
+
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text1 font-semibold text-foreground block">Semantic Retrieval (Memory Search)</span>
+                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={aiForm.data.ai_retrieval_enabled}
+                                                    onChange={e => aiForm.setData('ai_retrieval_enabled', e.target.checked)}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                            </label>
+                                        </div>
+                                        <p className="text2 text-muted-foreground">
+                                            When ON, the AI searches memory nodes by meaning (embedding), pulls situational seeds, and pins training context into every reply. Turn OFF to skip the whole memory-search pipeline so each message streams straight from the model — usually faster, but the AI loses its learned memory recall.
+                                        </p>
+                                    </div>
 
                                     <div className="space-y-2">
                                         <label className="text1 text-foreground block font-medium">
