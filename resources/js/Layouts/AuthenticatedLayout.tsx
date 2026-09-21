@@ -224,6 +224,7 @@ export default function Authenticated({
                                             type="button"
                                             className={navLink(
                                                 !!route().current('customers.index') ||
+                                                !!route().current('assistant.visualization') ||
                                                 !!route().current('shifts.index') ||
                                                 !!route().current('stores.index') ||
                                                 !!route().current('money-notes.index')
@@ -234,6 +235,12 @@ export default function Authenticated({
                                         </button>
                                     </Dropdown.Trigger>
                                     <Dropdown.Content align="right" width="48">
+                                        <Dropdown.Link href={route('assistant.visualization')}>
+                                            <span className="flex items-center gap-2">
+                                                <Sparkles className="h-4 w-4 text-muted-foreground" />
+                                                Visualize
+                                            </span>
+                                        </Dropdown.Link>
                                         <Dropdown.Link href={route('customers.index')}>
                                             <span className="flex items-center gap-2">
                                                 <Users className="h-4 w-4 text-muted-foreground" />
