@@ -2219,6 +2219,11 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
             '/^\s*(?:tolong|mohon|silakan|silahkan|bisakah|bolehkah|ya|dong|donk|deh|lah|aja|saja|ini|itu|nanti|minta|saya|aku|gue|gua)\b[^:]*?[:\-]\s*/iu',
             '/^\s*(?:tolong|mohon|silakan|silahkan|bisakah|bolehkah|ya|dong|donk|deh|lah|aja|saja|ini|itu|nanti|minta|saya|aku|gue|gua)\b/iu',
             '/^\s*(?:tambahkan|tambah\s+ke\b|simpan|simpen|catat|catet|ingatkan|ingetin|ingat|rekam|hafal(?:kan)?|buatkan|buatin|bikin|buatin\b|buat\b|jadikan|pelajari|pahami|belajar)\w*\b/iu',
+            // Imperative that sits mid-sentence after a junk / dictation prefix
+            // ("cpba simpen ke node, ...", "oi ingetin ya tambah ke node: ..."):
+            // peel the whole "save-verb [ke/di] node/memory-frame" wherever it
+            // occurs, tolerating up to two filler tokens before the verb.
+            '/^(?:\S+\s+){0,2}?(?:tambah(?:kan)?|simpan|simpen|catat|catet|lampirkan|ingat(?:kan|in)?|rekam|hafal(?:kan)?|buat(?:kan)?|buatin|bikin|jadikan)\b\s*(?:ke|di|kedalam|sebagai|jadi)?\s*(?:nodenya|node|neuron|memori|memory|catatan|ingatan|jaringan)\b\s*(?:[,.:;\-—]\s*)?/iu',
             '/^\s*(?:ke|di|sebagai|jadi)\s+(?:node|memori|memory|catatan|ingatan|jaringan|neuron)\b/iu',
             '/^\s*[:\-|.,]\s*/u',
         ];
@@ -2245,6 +2250,57 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     }
 
     /**
+     * Peel save-command framing out of a user message so a node can never
+     * become the raw command verbatim ("cpba simpen ke node, laptopku 256gb"
+     * must store "laptopku 256gb", and "pelajari yaaa" must store nothing).
+     *
+     * Strips, in order: leading interjections / politeness (including the
+     * common "tlong" dictation typo), an embedded or leading
+     * "save-verb [ke/di] node/memory-frame" anywhere in the sentence, bare
+     * imperative openers ("pahami ini", "pelajari ya"), and stretched trailing
+     * prompt particles ("...yaaa", "...yay"). Returns null when only command
+     * framing was left — a pure ask with no fact underneath.
+     */
+    protected function stripCommandFrame(string $text): ?string
+    {
+        $t = trim($text);
+
+        // Leading interjections / politeness — exposing whatever imperative
+        // follows as the leading token.
+        $t = trim((string) preg_replace(
+            '/^(?:tolong|mohon|tlong|silahkan|silakan|bisakah|bolehkah|minta|ya\b|yuk|mari|dong|donk)[\s,.\-—:]*/iu',
+            '',
+            $t
+        ));
+
+        // Embedded / leading "save-verb [ke/di] node/memory-frame" wherever it
+        // sits, tolerating up to two junk-prefix tokens before the verb.
+        $t = trim((string) preg_replace(
+            '/^(?:\S+\s+){0,2}?(?:tambah(?:kan)?|simpan|simpen|catat|catet|lampirkan|ingat(?:kan|in)?|rekam|hafal(?:kan)?|buat(?:kan)?|buatin|bikin|jadikan)\b\s*(?:ke|di|kedalam|sebagai|jadi)?\s*(?:nodenya|node|neuron|memori|memory|catatan|ingatan|jaringan)\b\s*(?:[,.:;\-—]\s*)?/iu',
+            '',
+            $t
+        ));
+
+        // Bare imperative openers with no literal node word. Always-command
+        // verbs are peeled directly; softer verbs (pahami/pelajari/belajar/
+        // ingat/rekam) go through the same peel — a residual fact survives the
+        // caller's checks, a bare command dies.
+        $t = trim((string) preg_replace(
+            '/^(?:(?:tambah(?:kan)?|simpan|simpen|catat|catet|lampirkan|ingat(?:kan|in)?|rekam|hafal(?:kan)?|buat(?:kan)?|buatin|bikin|jadikan|pahami|pelajari|belajar)\b[ \t]*(?:bener-bener|banget|ya+|yay+|dong|donk|deh|lah|aja|saja|ini|itu)?(?:[ \t]+)?)+/iu',
+            '',
+            $t
+        ));
+
+        // Stretched trailing prompt particles ("...yaaa", "...yay").
+        $t = trim((string) preg_replace('/\s+(?:ya{2,}|yay+|dong|donk|deh|lah|aja|saja)\s*$/iu', '', $t));
+
+        $t = trim((string) preg_replace('/\s+/u', ' ', $t));
+        $t = trim($t, " \t\n\r,.;:!?—-");
+
+        return $t === '' ? null : $t;
+    }
+
+    /**
      * Pick the first clean, single declarative sentence from a save request —
      * verbatim user wording, so the fallback cannot hallucinate. Returns null
      * for questions, commands, negations, URLs, filler and multi-sentence text.
@@ -2253,6 +2309,14 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
     {
         $text = trim($text);
         if ($text === '' || mb_strlen($text) > 400) {
+            return null;
+        }
+
+        // Peel the save-command framing first so a raw command can never be
+        // persisted verbatim ("cpba simpen ke node, laptopku 256gb" resolves to
+        // the fact "laptopku 256gb"; "pelajari yaaa" has nothing left → null).
+        $text = $this->stripCommandFrame($text);
+        if ($text === null) {
             return null;
         }
 
@@ -2336,6 +2400,16 @@ $run->neurons_retrieved = $data['neurons_retrieved'] ?? null;
             if ($s === '' || $len < 6 || $len > 240) {
                 continue;
             }
+
+            // Peel the save-command framing ("catat ya, eka ...", "cpba simpen
+            // ke node, ...") so the DECLARATIVE fact underneath is what gets
+            // matched — never the user's raw command sentence verbatim. Bare
+            // commands ("pelajari yaaa") reduce to null and are skipped.
+            $fact = $this->stripCommandFrame($s);
+            if ($fact === null) {
+                continue;
+            }
+            $s = $fact;
 
             // Not a fact: questions, commands or negated / hypothetical phrasing.
             if (str_contains($s, '?')
