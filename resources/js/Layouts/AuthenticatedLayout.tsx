@@ -193,6 +193,10 @@ export default function Authenticated({
                             </Link>
 
                             <div className="hidden xl:flex items-center gap-0.5">
+                                <Link href={route('assistant.visualization')} prefetch className={navLink(!!route().current('assistant.visualization'))}>
+                                    <Sparkles className="h-4 w-4 text-primary" />
+                                    <span>Visualize</span>
+                                </Link>
                                 <Link href={route('customers.index')} prefetch className={navLink(!!route().current('customers.index'))}>
                                     <Users className="h-4 w-4" />
                                     <span>Customers</span>

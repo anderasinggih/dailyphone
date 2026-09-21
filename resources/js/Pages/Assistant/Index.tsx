@@ -53,7 +53,7 @@ import Markdown from '@/Components/Markdown';
 import AiActionProposalCard, { ActionProposalData, GeneratedFile } from '@/Components/AiActionProposalCard';
 import NeuronFiringMap from '@/Components/NeuronFiringMap';
 import FileViewerModal from '@/Components/Assistant/FileViewerModal';
-import VisualizationViewer from '@/Components/Assistant/VisualizationViewer';
+import VisualizationViewer, { isHtmlDocument } from '@/Components/Assistant/VisualizationViewer';
 import ProjectWorkspace from '@/Components/Workspace/ProjectWorkspace';
 import { consumeNdjson } from '@/lib/ndjson';
 
@@ -1934,6 +1934,11 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
     if (visualizationMode) {
         const activeSessionTitle = sessionList.find(s => s.id === currentSessionId)?.title || 'Visualization';
         const hasDocs = messages.some(m => m.role === 'assistant');
+        // The most recent AI sheet is the "active" document: a standalone HTML
+        // reply gets the full-screen panel while older history fades behind it.
+        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant');
+        const activeAssistantId = lastAssistantMsg?.id ?? null;
+        const activeIsHtml = lastAssistantMsg ? isHtmlDocument(lastAssistantMsg.content) : false;
 
         return (
             <AuthenticatedLayout hideMobileNav={true} hideNavbar={true}>
@@ -1980,9 +1985,9 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
 
                     {/* Big scrollable document viewer */}
                     <div className="flex-1 min-h-0 overflow-y-auto pt-20 pb-48">
-                        <div className="max-w-4xl mx-auto px-4 sm:px-6 space-y-8">
+                        <div className="px-4 sm:px-6 space-y-8">
                             {!hasDocs && !isLoading && (
-                                <div className="pt-10 sm:pt-16 flex flex-col items-center text-center">
+                                <div className="max-w-4xl mx-auto flex flex-col items-center text-center">
                                     <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary mb-4">
                                         <Network className="h-6 w-6" />
                                     </div>
@@ -1999,9 +2004,11 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
 
                             {messages.map((m) => {
                                 if (m.role === 'user') {
+                                    // History chat bubbles stay dimmed so the current
+                                    // document is the star; hover brings them back.
                                     return (
-                                        <div key={m.id} data-message-id={m.id} className="flex justify-end">
-                                            <div className="max-w-[70%] sm:max-w-[55%] rounded-2xl rounded-br-md bg-primary text-primary-foreground px-3.5 py-2 text-[12px] leading-relaxed shadow-2xs">
+                                        <div key={m.id} data-message-id={m.id} className="max-w-4xl mx-auto flex justify-end">
+                                            <div className="max-w-[70%] sm:max-w-[55%] rounded-2xl rounded-br-md bg-primary text-primary-foreground px-3.5 py-2 text-[12px] leading-relaxed shadow-2xs opacity-45 hover:opacity-100 transition-opacity duration-300">
                                                 <div className="whitespace-pre-wrap break-words">{m.content}</div>
                                                 {m.referenced_files && m.referenced_files.length > 0 && (
                                                     <div className="flex flex-wrap gap-1 mt-1.5">
@@ -2028,10 +2035,31 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                                     );
                                 }
 
-                                // Assistant reply → a big readable document sheet.
+                                const isActiveHtml = m.id === activeAssistantId && activeIsHtml;
+
+                                // Active standalone HTML → full-screen interactive panel,
+                                // edge to edge with no wrapping sheet.
+                                if (isActiveHtml) {
+                                    return (
+                                        <div key={m.id} data-message-id={m.id} className="-mx-4 sm:-mx-6">
+                                            <div className="flex items-center justify-between px-4 py-1.5">
+                                                <span className="inline-flex items-center gap-1.5 text-[9.5px] font-semibold tracking-[0.08em] text-muted-foreground/50">
+                                                    <GeminiStar className="h-3 w-3 text-primary" />
+                                                    FULL-SCREEN INTERACTIVE PREVIEW
+                                                </span>
+                                                <span className="text-[9.5px] text-muted-foreground/50 font-mono select-none">
+                                                    {m.timestamp}
+                                                </span>
+                                            </div>
+                                            <VisualizationViewer content={m.content} fill />
+                                        </div>
+                                    );
+                                }
+
+                                // Any other assistant reply → a dimmed history sheet.
                                 return (
-                                    <div key={m.id} data-message-id={m.id}>
-                                        <div className="rounded-2xl border border-border/40 bg-card/70 dark:bg-card/50 backdrop-blur-sm shadow-sm overflow-hidden">
+                                    <div key={m.id} data-message-id={m.id} className="max-w-4xl mx-auto">
+                                        <div className="rounded-2xl border border-border/40 bg-card/70 dark:bg-card/50 backdrop-blur-sm shadow-sm overflow-hidden opacity-40 hover:opacity-95 transition-opacity duration-300">
                                             <div className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-muted/30">
                                                 <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.08em] text-muted-foreground/70">
                                                     <GeminiStar className="h-3 w-3 text-primary" />
@@ -2051,7 +2079,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
 
                             {/* In-flight document while the AI streams */}
                             {isLoading && (
-                                <div className="rounded-2xl border border-primary/30 bg-card/70 dark:bg-card/50 backdrop-blur-sm shadow-sm overflow-hidden">
+                                <div className="max-w-4xl mx-auto rounded-2xl border border-primary/30 bg-card/70 dark:bg-card/50 backdrop-blur-sm shadow-sm overflow-hidden">
                                     <div className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-muted/30">
                                         <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.08em] text-primary">
                                             <Loader2 className="h-3 w-3 animate-spin" />

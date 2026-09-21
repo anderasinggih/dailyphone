@@ -6,6 +6,9 @@ import { Loader2 } from 'lucide-react';
 interface VisualizationViewerProps {
     content: string;
     streaming?: boolean;
+    /** When true (visualization mode) a standalone HTML reply fills nearly the
+     *  whole viewport so it reads as a full-screen interactive preview. */
+    fill?: boolean;
 }
 
 marked.use({ gfm: true, breaks: true });
@@ -88,6 +91,11 @@ function extractHtmlDocument(raw: string): string | null {
     return null;
 }
 
+/** True when a reply is a full standalone HTML page (needs the big panel). */
+export function isHtmlDocument(content: string): boolean {
+    return extractHtmlDocument(content) !== null;
+}
+
 // Encode a mermaid diagram into a holder div that survives the full pipeline:
 // marked (raw HTML passthrough) → DOMPurify (attributes are preserved).
 function mermaidHolder(code: string): string {
@@ -107,7 +115,7 @@ function enhanceCodeBlocks(html: string): string {
  * - Full standalone HTML pages are shown in a big interactive sandboxed iframe.
  * - Markdown is rendered with large document typography + mermaid graph support.
  */
-export default function VisualizationViewer({ content, streaming = false }: VisualizationViewerProps) {
+export default function VisualizationViewer({ content, streaming = false, fill = false }: VisualizationViewerProps) {
     const rootRef = useRef<HTMLDivElement>(null);
 
     const htmlDoc = useMemo(() => extractHtmlDocument(content), [content]);
@@ -222,10 +230,11 @@ export default function VisualizationViewer({ content, streaming = false }: Visu
     }, [html, streaming]);
 
     // Interactive full-page HTML (charts, dashboards) rendered in a sandboxed
-    // iframe so scripts run but stay isolated from the app itself.
+    // iframe so scripts run but stay isolated from the app itself. With `fill`
+    // it takes over nearly the whole viewport (visualization mode).
     if (htmlDoc !== null) {
         return (
-            <div className="relative rounded-xl border border-border/60 overflow-hidden bg-white">
+            <div className="relative rounded-xl border border-border/50 overflow-hidden bg-white">
                 <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/40 bg-muted/40">
                     <span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground/70">
                         INTERACTIVE HTML PREVIEW
@@ -243,7 +252,11 @@ export default function VisualizationViewer({ content, streaming = false }: Visu
                     title="Visualization HTML preview"
                     sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
                     srcDoc={htmlDoc || ''}
-                    className="w-full h-[65dvh] min-h-[420px] bg-white"
+                    className={`w-full bg-white ${
+                        fill
+                            ? 'h-[calc(100dvh-150px)] min-h-[560px]'
+                            : 'h-[65dvh] min-h-[420px]'
+                    }`}
                 />
             </div>
         );
