@@ -2002,7 +2002,7 @@ updateFileTree(projectId, nodes => insertFileNode(nodes, parentId, data.file as 
                         reply fills the whole viewport, chat history stays hidden,
                         and every new input replaces this same panel. No stacked
                         per-reply HTML panels, nothing faded. */}
-                    <div className="absolute inset-0 z-0 pt-16 pb-24 px-3 sm:px-4">
+                    <div className="absolute inset-0 z-0 pt-16">
                         {!lastAssistantMsg && !isLoading ? (
                             <div className="h-full w-full flex flex-col items-center justify-center text-center">
                                 <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary mb-4">
