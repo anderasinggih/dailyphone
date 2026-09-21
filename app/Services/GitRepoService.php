@@ -409,7 +409,7 @@ class GitRepoService
         $tracked = $this->run($project, ['git', 'ls-files'], $dir);
         foreach (array_filter(explode("\n", $tracked)) as $file) {
             $file = trim($file);
-            if ($file === '' || in_array($file[0], ['.', '"'], true)) {
+            if ($file === '' || $file[0] === '"') {
                 continue;
             }
             if (in_array($this->firstSegment($file), self::SKIP_DIRS, true)) {
@@ -471,7 +471,11 @@ class GitRepoService
      */
     protected function run(AiProject $project, array $args, string $cwd, bool $allowFailure = false): string
     {
-        $cmd = implode(' ', array_map('escapeshellarg', $args));
+        if (($args[0] ?? null) === 'git') {
+            array_shift($args);
+        }
+
+        $cmd = 'git -C ' . escapeshellarg($cwd) . ' ' . implode(' ', array_map('escapeshellarg', $args));
         $output = [];
         $code = 0;
         // Ensure git always refs user identity even when the server has none.
@@ -483,7 +487,7 @@ class GitRepoService
         $raw = implode("\n", $output);
 
         if ($code !== 0 && ! $allowFailure) {
-            $message = trim(array_slice($output, -6) ? implode("\n", array_slice($output, -6)) : 'git command failed');
+            $message = trim(implode("\n", array_slice($output, -6)));
             $project->update(['repo_error' => $message]);
             throw new \RuntimeException($message ?: 'Git command failed.');
         }
