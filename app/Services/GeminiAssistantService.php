@@ -1185,9 +1185,25 @@ PROMPT;
             }
         }
 
+        // A turn can end with NO visible prose: the model sometimes answers a
+        // memory-worthy message with only a silent ```ai_memo block (or only
+        // tool calls), leaving the stripped reply empty. An empty `reply` makes
+        // the client show a confusing generic failure bubble while an action
+        // actually succeeded, so never ship a blank answer — acknowledge
+        // naturally when real raw content exists, otherwise surface a real error.
+        $visible = trim($this->stripMemoBlocks($replyText));
+        if ($visible === '') {
+            if (trim((string) $rawText) !== '') {
+                $visible = $this->memoOnlyAcknowledgment($queryText);
+            } else {
+                Log::warning('Gemini chat produced no text content for query: '.mb_substr($queryText, 0, 200));
+                $visible = $this->assistantErrorMessage('Gemini returned an empty response for this message.', $isImageModel);
+            }
+        }
+
         return [
             'success' => true,
-            'reply' => trim($this->stripMemoBlocks($replyText)),
+            'reply' => $visible,
             'raw_reply' => trim($rawText),
             'neurons' => $neurons,
             'images' => $images,
@@ -1299,6 +1315,25 @@ PROMPT;
         }
 
         return ['success' => false, 'error' => $lastErrorMsg];
+    }
+
+    /**
+     * Natural acknowledgment used when the model only wrote a silent ```ai_memo
+     * block this turn (no visible prose). Picks Indonesian vs English from the
+     * user's own wording so the bubble never reads like a machine glitch.
+     */
+    protected function memoOnlyAcknowledgment(string $userText): string
+    {
+        $t = mb_strtolower($userText);
+        $looksIndonesian = (
+            str_contains($t, 'ya') || str_contains($t, 'tidak') || str_contains($t, 'aku')
+            || str_contains($t, 'saya') || str_contains($t, 'nya') || str_contains($t, 'yang')
+            || str_contains($t, 'ga ')
+        );
+
+        return $looksIndonesian
+            ? 'Siap, sudah saya catat. Ada lagi yang bisa dibantu?'
+            : 'Got it, noted. Anything else I can help with?';
     }
 
     /**

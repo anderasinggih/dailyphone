@@ -1054,6 +1054,18 @@ class AiAssistantController extends Controller
                 $result['session_title'] = $session->title;
                 $result['neurons'] = $neurons;
 
+                // Never emit a `done` event with an empty reply: it makes the
+                // client fall back to a misleading generic error bubble. When
+                // the visible answer is blank, say so honestly instead.
+                if (trim((string) ($result['reply'] ?? '')) === '') {
+                    Log::warning('AI chat completed without a visible reply', [
+                        'user_id' => $user->id,
+                        'session_id' => $sessionId,
+                        'query' => mb_substr($userText, 0, 200),
+                    ]);
+                    $result['reply'] = 'I processed your message but produced no visible answer. Please try again or rephrase your question.';
+                }
+
                 // Never ship the raw text (it may still hold temporary ```ai_memo
                 // JSON) to the client — the visible `reply` is enough.
                 unset($result['raw_reply']);
