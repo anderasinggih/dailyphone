@@ -27,6 +27,14 @@ class GeneralSettingsController extends Controller
             'grace_period_minutes' => 15,
             'geofence_lock_enabled' => true,
             'notification_emails' => null,
+            'landing_enabled' => true,
+            'landing_tagline' => 'Great iPhones. Honest Prices.',
+            'landing_description' => 'New and pre-owned iPhones at affordable prices — every unit quality-checked, officially warrantied, and ready with easy trade-in.',
+            'instagram_handle' => 'dailyphone.store',
+            'instagram_url' => 'https://www.instagram.com/dailyphone.store/',
+            'whatsapp_number' => '0881010229772',
+            'store_address' => 'Pekoja, Jakarta Barat',
+            'instagram_embeds' => [],
         ]);
 
         $schedules = EmployeeSchedule::with(['user', 'store'])->get();
@@ -134,6 +142,43 @@ class GeneralSettingsController extends Controller
             $settings->fill($data);
             $settings->save();
             return redirect()->back()->with('success', 'AI Intelligence configuration saved.');
+        }
+
+        if ($section === 'landing') {
+            $request->validate([
+                'landing_tagline' => 'nullable|string|max:255',
+                'landing_description' => 'nullable|string',
+                'instagram_handle' => 'nullable|string|max:255',
+                'instagram_url' => 'nullable|string|max:255',
+                'whatsapp_number' => 'nullable|string|max:30',
+                'store_address' => 'nullable|string|max:255',
+                'instagram_embeds' => 'nullable|array',
+                'instagram_embeds.*' => 'nullable|string',
+            ]);
+
+            $data = $request->only([
+                'landing_tagline',
+                'landing_description',
+                'instagram_handle',
+                'instagram_url',
+                'whatsapp_number',
+                'store_address',
+            ]);
+
+            // Toggle: unchecked checkbox arrives absent, default to keeping it enabled.
+            $data['landing_enabled'] = $request->has('landing_enabled')
+                ? $request->boolean('landing_enabled') : true;
+
+            if ($request->has('instagram_embeds')) {
+                $data['instagram_embeds'] = array_values(array_filter(array_map(
+                    fn ($link) => trim((string)$link),
+                    (array)$request->input('instagram_embeds', [])
+                ), fn ($link) => $link !== ''));
+            }
+
+            $settings->fill($data);
+            $settings->save();
+            return redirect()->back()->with('success', 'Landing page content and Instagram embeds saved.');
         }
 
         // Fallback for full update

@@ -16,7 +16,13 @@ import {
     MapPin,
     Check,
     BrainCircuit,
-    Layers
+    Layers,
+    AtSign,
+    Plus,
+    ArrowUp,
+    ArrowDown,
+    ExternalLink,
+    Image
 } from 'lucide-react';
 import { FormEvent, useState, useEffect } from 'react';
 
@@ -28,6 +34,14 @@ interface GeneralSetting {
     grace_period_minutes: number;
     geofence_lock_enabled: boolean;
     notification_emails?: string | null;
+    landing_enabled?: boolean;
+    landing_tagline?: string | null;
+    landing_description?: string | null;
+    instagram_handle?: string | null;
+    instagram_url?: string | null;
+    whatsapp_number?: string | null;
+    store_address?: string | null;
+    instagram_embeds?: string[] | null;
     ai_enabled?: boolean;
     ai_provider?: string;
     ai_api_key?: string | null;
@@ -74,14 +88,14 @@ interface GeneralProps {
     stores: Store[];
 }
 
-export type SettingsSubPage = 'root' | 'company' | 'work_policy' | 'geofence' | 'ai' | 'shifts';
+export type SettingsSubPage = 'root' | 'company' | 'work_policy' | 'geofence' | 'ai' | 'shifts' | 'landing';
 
 export default function General({ settings, schedules, employees, stores }: GeneralProps) {
     // Read subpage from URL hash if available (e.g. #ai, #shifts)
     const [currentPage, setCurrentPage] = useState<SettingsSubPage>(() => {
         if (typeof window !== 'undefined') {
             const hash = window.location.hash.replace('#', '');
-            if (['company', 'work_policy', 'geofence', 'ai', 'shifts'].includes(hash)) {
+            if (['company', 'work_policy', 'geofence', 'ai', 'shifts', 'landing'].includes(hash)) {
                 return hash as SettingsSubPage;
             }
         }
@@ -103,7 +117,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
     useEffect(() => {
         const handlePopState = () => {
             const hash = window.location.hash.replace('#', '');
-            if (['company', 'work_policy', 'geofence', 'ai', 'shifts'].includes(hash)) {
+            if (['company', 'work_policy', 'geofence', 'ai', 'shifts', 'landing'].includes(hash)) {
                 setCurrentPage(hash as SettingsSubPage);
             } else {
                 setCurrentPage('root');
@@ -268,6 +282,48 @@ export default function General({ settings, schedules, employees, stores }: Gene
         }
     };
 
+    // ── Form 6: Landing Page & Instagram Embeds ──
+    const landingForm = useForm({
+        section: 'landing',
+        landing_enabled: settings.landing_enabled ?? true,
+        landing_tagline: settings.landing_tagline || '',
+        landing_description: settings.landing_description || '',
+        instagram_handle: settings.instagram_handle || '',
+        instagram_url: settings.instagram_url || '',
+        whatsapp_number: settings.whatsapp_number || '',
+        store_address: settings.store_address || '',
+        instagram_embeds: (settings.instagram_embeds || []).filter(Boolean),
+    });
+
+    const submitLanding = (e: FormEvent) => {
+        e.preventDefault();
+        landingForm.post(route('settings.general.update'), {
+            preserveScroll: true,
+        });
+    };
+
+    const setEmbedAt = (index: number, value: string) => {
+        const embeds = [...landingForm.data.instagram_embeds];
+        embeds[index] = value;
+        landingForm.setData('instagram_embeds', embeds);
+    };
+
+    const addEmbed = () => {
+        landingForm.setData('instagram_embeds', [...landingForm.data.instagram_embeds, '']);
+    };
+
+    const removeEmbed = (index: number) => {
+        landingForm.setData('instagram_embeds', landingForm.data.instagram_embeds.filter((_, i) => i !== index));
+    };
+
+    const moveEmbed = (index: number, direction: -1 | 1) => {
+        const embeds = [...landingForm.data.instagram_embeds];
+        const target = index + direction;
+        if (target < 0 || target >= embeds.length) return;
+        [embeds[index], embeds[target]] = [embeds[target], embeds[index]];
+        landingForm.setData('instagram_embeds', embeds);
+    };
+
     return (
         <AuthenticatedLayout>
             <Head title="Settings" />
@@ -374,6 +430,33 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                                 <div className="flex items-center gap-2 shrink-0">
                                                     <span className="text2 text-muted-foreground font-normal">
                                                         {settings.geofence_lock_enabled ? 'Active' : 'Disabled'}
+                                                    </span>
+                                                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
+                                                </div>
+                                            </button>
+
+                                            {/* Landing Page & Instagram Embeds */}
+                                            <button
+                                                type="button"
+                                                onClick={() => navigateTo('landing')}
+                                                className="w-full flex items-center justify-between p-4 hover:bg-muted/40 active:bg-muted/60 transition text-left group"
+                                            >
+                                                <div className="flex items-center gap-3.5 min-w-0">
+                                                    <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                                                        <AtSign className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <span className="text1 text-foreground block truncate">
+                                                            Landing Page & Instagram
+                                                        </span>
+                                                        <span className="caption text-muted-foreground">
+                                                            Public page content & IG embeds
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className="text2 text-muted-foreground font-normal">
+                                                        {settings.landing_enabled ? 'Live' : 'Hidden'}
                                                     </span>
                                                     <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition" />
                                                 </div>
@@ -1246,6 +1329,235 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                     )}
                                 </div>
                             </div>
+                        </div>
+                    )}
+
+                    {/* ══════════════════════════════════════════════════════════════════
+                        SUBPAGE 6: Landing Page & Instagram Embeds
+                    ══════════════════════════════════════════════════════════════════ */}
+                    {currentPage === 'landing' && (
+                        <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-4 duration-200">
+                            {/* Top Navigation Bar with Back button */}
+                            <div className="flex items-center justify-between border-b border-border/40 pb-4">
+                                <button
+                                    type="button"
+                                    onClick={() => navigateTo('root')}
+                                    className="inline-flex items-center gap-1 text2 font-medium text-primary hover:opacity-80 active:scale-95 transition"
+                                >
+                                    <ChevronLeft className="h-5 w-5 -ml-1" />
+                                    <span>Settings</span>
+                                </button>
+                                <h2 className="h3 text-foreground">
+                                    Landing Page & Instagram
+                                </h2>
+                                <div className="w-16"></div>
+                            </div>
+
+                            <form onSubmit={submitLanding} className="space-y-6">
+                                {/* Enable toggle */}
+                                <div className="apple-card p-5 flex items-center justify-between">
+                                    <div className="space-y-1">
+                                        <span className="text1 font-semibold text-foreground block">
+                                            Show Public Landing Page
+                                        </span>
+                                        <span className="text2 text-muted-foreground block">
+                                            Displays store info, contact & Instagram posts at your domain root.
+                                        </span>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input
+                                            type="checkbox"
+                                            checked={landingForm.data.landing_enabled}
+                                            onChange={e => landingForm.setData('landing_enabled', e.target.checked)}
+                                            className="sr-only peer"
+                                        />
+                                        <div className="w-12 h-7 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all after:shadow-xs peer-checked:bg-primary"></div>
+                                    </label>
+                                </div>
+
+                                {/* Store identity & contact */}
+                                <div className="apple-card p-5 space-y-4">
+                                    <h3 className="h3 text-foreground">Store Information</h3>
+
+                                    <div className="space-y-2">
+                                        <label className="text1 text-foreground block font-medium">
+                                            Headline (Tagline)
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={landingForm.data.landing_tagline}
+                                            onChange={e => landingForm.setData('landing_tagline', e.target.value)}
+                                            placeholder="Great iPhones. Honest Prices."
+                                            className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                        />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text1 text-foreground block font-medium">
+                                            Description
+                                        </label>
+                                        <textarea
+                                            rows={3}
+                                            value={landingForm.data.landing_description}
+                                            onChange={e => landingForm.setData('landing_description', e.target.value)}
+                                            placeholder="New and pre-owned iPhones at affordable prices..."
+                                            className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs resize-none"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Instagram Handle
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={landingForm.data.instagram_handle}
+                                                onChange={e => landingForm.setData('instagram_handle', e.target.value)}
+                                                placeholder="dailyphone.store"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            />
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Instagram URL
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={landingForm.data.instagram_url}
+                                                onChange={e => landingForm.setData('instagram_url', e.target.value)}
+                                                placeholder="https://www.instagram.com/dailyphone.store/"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                WhatsApp Number
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={landingForm.data.whatsapp_number}
+                                                onChange={e => landingForm.setData('whatsapp_number', e.target.value)}
+                                                placeholder="0881010229772"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            />
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <label className="text1 text-foreground block font-medium">
+                                                Store Address
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={landingForm.data.store_address}
+                                                onChange={e => landingForm.setData('store_address', e.target.value)}
+                                                placeholder="Pekoja, Jakarta Barat"
+                                                className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Instagram embeds */}
+                                <div className="apple-card p-5 space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <h3 className="h3 text-foreground">Instagram Posts</h3>
+                                            <p className="text2 text-muted-foreground mt-1">
+                                                Paste Instagram embed or post links. Each row appears as a card on the landing page gallery.
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={addEmbed}
+                                            className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-primary text-primary-foreground text-[12px] font-semibold hover:opacity-90 transition shrink-0"
+                                        >
+                                            <Plus className="h-3.5 w-3.5" />
+                                            Add Post
+                                        </button>
+                                    </div>
+
+                                    {landingForm.data.instagram_embeds.length === 0 ? (
+                                        <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 p-6 text-center text2 text-muted-foreground">
+                                            No posts yet. Add Instagram embed links to show your latest posts on the landing page.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {landingForm.data.instagram_embeds.map((embed, i) => (
+                                                <div key={i} className="flex items-start gap-2">
+                                                    <div className="flex flex-col gap-0.5 pt-1">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => moveEmbed(i, -1)}
+                                                            disabled={i === 0}
+                                                            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition disabled:opacity-30"
+                                                            title="Move up"
+                                                        >
+                                                            <ArrowUp className="h-3 w-3" />
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => moveEmbed(i, 1)}
+                                                            disabled={i === landingForm.data.instagram_embeds.length - 1}
+                                                            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition disabled:opacity-30"
+                                                            title="Move down"
+                                                        >
+                                                            <ArrowDown className="h-3 w-3" />
+                                                        </button>
+                                                    </div>
+                                                    <div className="flex-1 flex items-center gap-2">
+                                                        <input
+                                                            type="text"
+                                                            value={embed}
+                                                            onChange={e => setEmbedAt(i, e.target.value)}
+                                                            placeholder="https://www.instagram.com/p/XXXX/embed/captioned"
+                                                            className="flex-1 rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
+                                                        />
+                                                        {embed.trim() !== '' && (
+                                                            <a
+                                                                href={embed.trim()}
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                                className="p-2 rounded-xl text-muted-foreground hover:text-primary transition shrink-0"
+                                                                title="Preview embed link"
+                                                            >
+                                                                <ExternalLink className="h-4 w-4" />
+                                                            </a>
+                                                        )}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeEmbed(i)}
+                                                            className="p-2 rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition shrink-0"
+                                                            title="Remove post"
+                                                        >
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    <p className="caption text-muted-foreground flex items-center gap-1 pt-1">
+                                        <Image className="h-3 w-3" />
+                                        Tip: in Instagram, open a post → ⋯ → Embed → copy the iframe src (or the /embed/captioned link).
+                                    </p>
+                                </div>
+
+                                <div className="pt-1">
+                                    <button
+                                        type="submit"
+                                        disabled={landingForm.processing}
+                                        className="w-full apple-btn-primary py-3 text2 font-semibold shadow-xs"
+                                    >
+                                        {landingForm.processing ? 'Saving...' : 'Save Landing Page'}
+                                    </button>
+                                </div>
+                            </form>
                         </div>
                     )}
 

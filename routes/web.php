@@ -14,6 +14,7 @@ use App\Http\Controllers\ShiftController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StoreManagementController;
 use App\Http\Controllers\UserController;
+use App\Models\GeneralSetting;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -22,7 +23,26 @@ Route::get('/', function () {
         return redirect()->route('dashboard');
     }
 
-    return Inertia::render('Landing');
+    $settings = GeneralSetting::first() ?? GeneralSetting::create([
+        'company_name' => 'Daily Phone',
+        'landing_enabled' => true,
+        'landing_tagline' => 'Great iPhones. Honest Prices.',
+        'landing_description' => 'New and pre-owned iPhones at affordable prices — every unit quality-checked, officially warrantied, and ready with easy trade-in.',
+        'instagram_handle' => 'dailyphone.store',
+        'instagram_url' => 'https://www.instagram.com/dailyphone.store/',
+        'whatsapp_number' => '0881010229772',
+        'store_address' => 'Pekoja, Jakarta Barat',
+        'instagram_embeds' => [],
+    ]);
+
+    // Landing page can be hidden from Settings → Company & Identity.
+    if ($settings->landing_enabled === false) {
+        return redirect()->route('login');
+    }
+
+    return Inertia::render('Landing', [
+        'settings' => $settings,
+    ]);
 })->name('landing');
 
 Route::get('/invoice/{invoice_number}', [SaleController::class, 'publicInvoice'])->name('public.invoice');

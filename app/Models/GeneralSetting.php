@@ -27,6 +27,14 @@ class GeneralSetting extends Model
         'ai_retrieval_top_k',
         'ai_retrieval_min_score',
         'ai_context_token_budget',
+        'landing_enabled',
+        'landing_tagline',
+        'landing_description',
+        'instagram_handle',
+        'instagram_url',
+        'whatsapp_number',
+        'store_address',
+        'instagram_embeds',
     ];
 
     protected $casts = [
@@ -40,6 +48,8 @@ class GeneralSetting extends Model
         'ai_retrieval_top_k' => 'integer',
         'ai_retrieval_min_score' => 'float',
         'ai_context_token_budget' => 'integer',
+        'landing_enabled' => 'boolean',
+        'instagram_embeds' => 'array',
     ];
 
     /**
