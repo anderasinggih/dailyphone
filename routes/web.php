@@ -26,8 +26,8 @@ Route::get('/', function () {
     $settings = GeneralSetting::first() ?? GeneralSetting::create([
         'company_name' => 'Daily Phone',
         'landing_enabled' => true,
-        'landing_tagline' => 'Great iPhones. Honest Prices.',
-        'landing_description' => 'New and pre-owned iPhones at affordable prices — every unit quality-checked, officially warrantied, and ready with easy trade-in.',
+        'landing_tagline' => 'iPhone Berkualitas. Harga Jujur.',
+        'landing_description' => 'iPhone baru dan terawat dengan harga bersahabat — setiap unit terjamin kualitas, bergaransi resmi, dan siap tukar tambah.',
         'instagram_handle' => 'dailyphone.store',
         'instagram_url' => 'https://www.instagram.com/dailyphone.store/',
         'whatsapp_number' => '0881010229772',

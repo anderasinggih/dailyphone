@@ -15,7 +15,7 @@ return new class extends Migration
         // 1. General settings table
         Schema::create('general_settings', function (Blueprint $table) {
             $table->id();
-            $table->string('company_name')->default('Housephone');
+            $table->string('company_name')->default('Daily Phone');
             $table->time('work_start_time')->default('09:00:00');
             $table->time('work_end_time')->default('18:00:00');
             $table->integer('grace_period_minutes')->default(15);
@@ -25,7 +25,7 @@ return new class extends Migration
 
         // Seed default general settings
         DB::table('general_settings')->insert([
-            'company_name' => 'Housephone',
+            'company_name' => 'Daily Phone',
             'work_start_time' => '09:00:00',
             'work_end_time' => '18:00:00',
             'grace_period_minutes' => 15,
