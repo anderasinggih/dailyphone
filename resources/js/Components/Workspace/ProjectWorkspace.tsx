@@ -1246,7 +1246,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                     )}
 
                     {gitMenuOpen && repoUrl && (
-                        <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-xl border border-border/60 bg-card/95 backdrop-blur-2xl shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
+                        <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-xl border border-border/60 bg-card shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
                             <div className="px-2.5 py-2 border-b border-border/30">
                                 <div className="text-[9.5px] font-bold tracking-[0.08em] text-muted-foreground/60">GIT REPOSITORY</div>
                                 <div className="text-[11px] text-foreground font-medium mt-0.5 truncate" title={repoUrl}>
@@ -1658,7 +1658,7 @@ export default function ProjectWorkspace({ projectId, projectTitle, onClose, ref
                     onContextMenu={(e) => { e.preventDefault(); closeContextMenu(); }}
                 >
                     <div
-                        className="absolute w-52 rounded-xl border border-border/60 bg-card/95 backdrop-blur-2xl shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
+                        className="absolute w-52 rounded-xl border border-border/60 bg-card shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
                         style={{ left: Math.min(contextMenu.x, window.innerWidth - 220), top: Math.min(contextMenu.y, window.innerHeight - 260) }}
                     >
                         <div className="px-2.5 py-1.5 border-b border-border/30">

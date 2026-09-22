@@ -5,7 +5,7 @@ namespace App\Services;
 use App\Models\AiProject;
 use App\Models\AiProjectFile;
 use App\Models\User;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -53,12 +53,12 @@ class GitRepoService
 
     protected function repoDir(AiProject $project): string
     {
-        return self::REPO_ROOT . '/project-' . $project->id;
+        return self::REPO_ROOT.'/project-'.$project->id;
     }
 
     protected function repoFullPath(AiProject $project): string
     {
-        return storage_path('app/private/' . $this->repoDir($project));
+        return storage_path('app/private/'.$this->repoDir($project));
     }
 
     protected function checkoutUrl(AiProject $project): string
@@ -87,32 +87,35 @@ class GitRepoService
         $url = $this->checkoutUrl($project);
         $requested = $project->repo_branch ?: null;
 
-        if (! is_dir($dir . '/.git')) {
+        if (! is_dir($dir.'/.git')) {
             if (is_dir($dir)) {
-                @exec('rm -rf ' . escapeshellarg($dir));
+                @exec('rm -rf '.escapeshellarg($dir));
             }
             if (! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
                 throw new \RuntimeException('Could not create the repository directory.');
             }
 
             // 1) Try the requested branch explicitly.
+            $authUrl = $this->authUrlFor($url) ?? $url;
             if ($requested !== null && $requested !== '') {
                 $output = [];
                 $code = 0;
                 exec(sprintf(
                     'git clone --branch %s --single-branch %s %s 2>&1',
                     escapeshellarg($requested),
-                    escapeshellarg($url),
+                    escapeshellarg($authUrl),
                     escapeshellarg($dir)
                 ), $output, $code);
 
-                if ($code === 0 && is_dir($dir . '/.git')) {
+                if ($code === 0 && is_dir($dir.'/.git')) {
+                    $this->sanitizeCloneOrigin($dir, $url);
+
                     return $this->reindexBranch($project, $dir);
                 }
 
                 // Branch did not exist (or another clone error): retry on the
                 // remote default branch below.
-                @exec('rm -rf ' . escapeshellarg($dir));
+                @exec('rm -rf '.escapeshellarg($dir));
                 if (is_dir($dir)) {
                     @rmdir($dir);
                 }
@@ -121,17 +124,19 @@ class GitRepoService
             // 2) Fallback: clone with the remote's default branch.
             $output = [];
             $code = 0;
-            exec(sprintf('git clone %s %s 2>&1', escapeshellarg($url), escapeshellarg($dir)), $output, $code);
+            exec(sprintf('git clone %s %s 2>&1', escapeshellarg($authUrl), escapeshellarg($dir)), $output, $code);
 
-            if ($code !== 0 || ! is_dir($dir . '/.git')) {
+            if ($code !== 0 || ! is_dir($dir.'/.git')) {
                 $message = trim(implode("\n", array_slice($output, -4)));
                 if ($message === '') {
                     $first = trim(implode("\n", array_slice($output, 0, 3)));
                     $message = $first !== '' ? $first : "Could not clone repository from {$url}.";
                 }
-                @exec('rm -rf ' . escapeshellarg($dir));
-                throw new \RuntimeException($message);
+                @exec('rm -rf '.escapeshellarg($dir));
+                throw new \RuntimeException($this->friendlyError($message, $url));
             }
+
+            $this->sanitizeCloneOrigin($dir, $url);
 
             return $this->reindexBranch($project, $dir);
         }
@@ -169,7 +174,7 @@ class GitRepoService
     {
         $output = [];
         $code = 0;
-        exec('git -C ' . escapeshellarg($cwd) . ' rev-parse --abbrev-ref HEAD 2>/dev/null', $output, $code);
+        exec('git -C '.escapeshellarg($cwd).' rev-parse --abbrev-ref HEAD 2>/dev/null', $output, $code);
 
         return ($code === 0 && isset($output[0]) && $output[0] !== 'HEAD') ? trim($output[0]) : null;
     }
@@ -179,7 +184,7 @@ class GitRepoService
         $output = [];
         $code = 0;
         exec(
-            'git -C ' . escapeshellarg($cwd) . ' rev-parse --verify ' . escapeshellarg('origin/' . $branch) . ' 2>/dev/null',
+            'git -C '.escapeshellarg($cwd).' rev-parse --verify '.escapeshellarg('origin/'.$branch).' 2>/dev/null',
             $output,
             $code
         );
@@ -192,7 +197,7 @@ class GitRepoService
         $output = [];
         $code = 0;
         exec(
-            'git -C ' . escapeshellarg($cwd) . ' symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null',
+            'git -C '.escapeshellarg($cwd).' symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null',
             $output,
             $code
         );
@@ -238,7 +243,7 @@ class GitRepoService
         string $fullDir,
         ?int $parentId,
         string $relPrefix,
-        \Illuminate\Support\Collection $existing
+        Collection $existing
     ): void {
         $entries = scandir($fullDir);
         if ($entries === false) {
@@ -252,8 +257,8 @@ class GitRepoService
             if ($entry === '.' || $entry === '..') {
                 continue;
             }
-            $full = $fullDir . '/' . $entry;
-            $rel = ($relPrefix !== '' ? $relPrefix . '/' : '') . $entry;
+            $full = $fullDir.'/'.$entry;
+            $rel = ($relPrefix !== '' ? $relPrefix.'/' : '').$entry;
             $storage = $this->storagePathFor($project, $rel);
 
             if (is_dir($full)) {
@@ -305,7 +310,7 @@ class GitRepoService
         AiProject $project,
         User $user,
         ?int $parentId,
-        \Illuminate\Support\Collection $existing,
+        Collection $existing,
         string $name,
         string $storage,
         bool $isFolder
@@ -327,7 +332,7 @@ class GitRepoService
 
     protected function storagePathFor(AiProject $project, string $relative): string
     {
-        return $this->repoDir($project) . '/' . $relative;
+        return $this->repoDir($project).'/'.$relative;
     }
 
     /**
@@ -351,7 +356,7 @@ class GitRepoService
             return ['output' => 'Nothing to commit — working tree already clean.', 'committed' => 0];
         }
 
-        $message = 'Project workspace sync — ' . now()->format('Y-m-d H:i');
+        $message = 'Project workspace sync — '.now()->format('Y-m-d H:i');
         $this->run($project, ['git', 'commit', '-m', $message], $dir);
         $this->run($project, ['git', 'push', 'origin', 'HEAD'], $dir);
 
@@ -363,7 +368,7 @@ class GitRepoService
             ->update(['change_type' => null, 'previous_content' => null, 'previous_content_hash' => null, 'changed_at' => null]);
 
         return [
-            'output' => 'Committed and pushed ' . count($stagedFiles) . ' file(s).',
+            'output' => 'Committed and pushed '.count($stagedFiles).' file(s).',
             'committed' => count($stagedFiles),
         ];
     }
@@ -392,13 +397,13 @@ class GitRepoService
             }
             $repoPaths[$relative] = (int) $row->id;
 
-            $dest = $dir . '/' . $relative;
+            $dest = $dir.'/'.$relative;
             if (! is_dir(dirname($dest))) {
                 @mkdir(dirname($dest), 0755, true);
             }
 
             if (str_starts_with($storage, 'ai-projects/')) {
-                $blob = storage_path('app/private/' . $storage);
+                $blob = storage_path('app/private/'.$storage);
                 if (is_file($blob)) {
                     @copy($blob, $dest);
                 }
@@ -415,8 +420,8 @@ class GitRepoService
             if (in_array($this->firstSegment($file), self::SKIP_DIRS, true)) {
                 continue;
             }
-            if (! isset($repoPaths[$file]) && is_file($dir . '/' . $file)) {
-                @unlink($dir . '/' . $file);
+            if (! isset($repoPaths[$file]) && is_file($dir.'/'.$file)) {
+                @unlink($dir.'/'.$file);
             }
         }
     }
@@ -428,7 +433,7 @@ class GitRepoService
             return null;
         }
 
-        if (str_starts_with($storage, $prefix . '/')) {
+        if (str_starts_with($storage, $prefix.'/')) {
             return substr($storage, strlen($prefix) + 1);
         }
 
@@ -444,7 +449,7 @@ class GitRepoService
                 break;
             }
             $ps = $parent->storage_path;
-            if ($ps && str_starts_with($ps, $prefix . '/')) {
+            if ($ps && str_starts_with($ps, $prefix.'/')) {
                 $relBase = rtrim(substr($ps, strlen($prefix) + 1), '/');
                 if ($relBase !== '') {
                     $parts = [...explode('/', $relBase), ...$parts];
@@ -461,6 +466,7 @@ class GitRepoService
     protected function firstSegment(string $path): string
     {
         $sep = strpos($path, '/');
+
         return $sep === false ? $path : substr($path, 0, $sep);
     }
 
@@ -495,7 +501,7 @@ class GitRepoService
 
         // Affected rows: the entry plus every descendant when it is a folder.
         $entryId = (int) $entry->id;
-        $affected = \App\Models\AiProjectFile::where('project_id', $project->id)
+        $affected = AiProjectFile::where('project_id', $project->id)
             ->get()
             ->filter(function ($f) use ($entryId) {
                 if ((int) $f->id === $entryId) {
@@ -510,6 +516,7 @@ class GitRepoService
                     $node = $node->parent()->first();
                     $depth++;
                 }
+
                 return false;
             })
             ->values();
@@ -517,7 +524,7 @@ class GitRepoService
         // Old repo-relative paths (from storage_path) captured before any change.
         $oldRelPath = [];
         foreach ($affected as $f) {
-            if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
+            if ($f->storage_path && str_starts_with($f->storage_path, $prefix.'/')) {
                 $oldRelPath[(int) $f->id] = substr($f->storage_path, strlen($prefix) + 1);
             }
         }
@@ -542,9 +549,9 @@ class GitRepoService
                 if ((int) $f->id === $entryId) {
                     continue;
                 }
-                if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
+                if ($f->storage_path && str_starts_with($f->storage_path, $prefix.'/')) {
                     $newRel = $this->repoRelativeOf($prefix, $f);
-                    $f->update(['storage_path' => $prefix . '/' . $newRel]);
+                    $f->update(['storage_path' => $prefix.'/'.$newRel]);
                 }
             }
         } elseif (! $entry->is_folder && $hasStorage) {
@@ -554,7 +561,7 @@ class GitRepoService
             // UI-created folder (no own storage): move each repo-backed
             // descendant individually.
             foreach ($affected as $f) {
-                if ($f->storage_path && str_starts_with($f->storage_path, $prefix . '/')) {
+                if ($f->storage_path && str_starts_with($f->storage_path, $prefix.'/')) {
                     $this->movePhysicalRow($dir, $prefix, $f, $oldRelPath[(int) $f->id] ?? null);
                 }
             }
@@ -570,14 +577,14 @@ class GitRepoService
     protected function movePhysicalRow(string $dir, string $prefix, AiProjectFile $row, ?string $oldRel): void
     {
         $newRel = $this->repoRelativeOf($prefix, $row);
-        $row->update(['storage_path' => $prefix . '/' . $newRel]);
+        $row->update(['storage_path' => $prefix.'/'.$newRel]);
 
         if ($oldRel === null || $oldRel === $newRel) {
             return;
         }
 
-        $oldFull = $dir . '/' . $oldRel;
-        $newFull = $dir . '/' . $newRel;
+        $oldFull = $dir.'/'.$oldRel;
+        $newFull = $dir.'/'.$newRel;
         if (! file_exists($oldFull) || $oldFull === $newFull) {
             return;
         }
@@ -601,7 +608,7 @@ class GitRepoService
         $dir = $this->ensureClone($project);
         $raw = $this->run(
             $project,
-            ['git', 'log', '--max-count=' . max(1, min(500, $limit)), '--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s'],
+            ['git', 'log', '--max-count='.max(1, min(500, $limit)), '--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s'],
             $dir,
             true
         );
@@ -700,21 +707,35 @@ class GitRepoService
             array_shift($args);
         }
 
-        $cmd = 'git -C ' . escapeshellarg($cwd) . ' ' . implode(' ', array_map('escapeshellarg', $args));
+        $op = $args[0] ?? '';
+        $cmd = 'git -C '.escapeshellarg($cwd).' '.implode(' ', array_map('escapeshellarg', $args));
+
+        // When a GITHUB_TOKEN is configured and we hit the network over plain
+        // HTTPS, inject the token for this command only so a private repo can be
+        // fetched/pushed without storing the token anywhere on disk.
+        if ($this->githubToken() !== null && in_array($op, ['fetch', 'pull', 'push'], true)) {
+            $origin = $this->remoteOriginUrl($cwd);
+            $authUrl = $this->authUrlFor($origin);
+            if ($authUrl !== null) {
+                $cmd = 'git -C '.escapeshellarg($cwd).' -c '.escapeshellarg('remote.origin.url='.$authUrl).
+                    ' '.implode(' ', array_map('escapeshellarg', $args));
+            }
+        }
+
         $output = [];
         $code = 0;
         // Ensure git always refs user identity even when the server has none.
-        $envPrefix = 'GIT_AUTHOR_NAME=' . escapeshellarg('Daily Phone Workspace') . ' GIT_AUTHOR_EMAIL=' . escapeshellarg('workspace@dailyphone.local') .
-            ' GIT_COMMITTER_NAME=' . escapeshellarg('Daily Phone Workspace') . ' GIT_COMMITTER_EMAIL=' . escapeshellarg('workspace@dailyphone.local') .
+        $envPrefix = 'GIT_AUTHOR_NAME='.escapeshellarg('Daily Phone Workspace').' GIT_AUTHOR_EMAIL='.escapeshellarg('workspace@dailyphone.local').
+            ' GIT_COMMITTER_NAME='.escapeshellarg('Daily Phone Workspace').' GIT_COMMITTER_EMAIL='.escapeshellarg('workspace@dailyphone.local').
             ' GIT_TERMINAL_PROMPT=0';
 
-        exec($envPrefix . ' ' . $cmd . ' 2>&1', $output, $code);
+        exec($envPrefix.' '.$cmd.' 2>&1', $output, $code);
         $raw = implode("\n", $output);
 
         if ($code !== 0 && ! $allowFailure) {
-            $message = trim(implode("\n", array_slice($output, -6)));
-            $project->update(['repo_error' => $message]);
-            throw new \RuntimeException($message ?: 'Git command failed.');
+            $rawMessage = trim(implode("\n", array_slice($output, -6)));
+            $project->update(['repo_error' => $this->friendlyError($rawMessage, $project->repo_url)]);
+            throw new \RuntimeException($this->friendlyError($rawMessage, $project->repo_url) ?: 'Git command failed.');
         }
 
         return $raw;
@@ -727,10 +748,10 @@ class GitRepoService
     public function removeClone(AiProject $project): void
     {
         $dir = $this->repoFullPath($project);
-        if (is_dir($dir) && ! is_dir($dir . '/.git')) {
+        if (is_dir($dir) && ! is_dir($dir.'/.git')) {
             return;
         }
-        @exec('rm -rf ' . escapeshellarg($dir));
+        @exec('rm -rf '.escapeshellarg($dir));
     }
 
     /**
@@ -739,6 +760,121 @@ class GitRepoService
     public function displayUrl(string $url): string
     {
         return (string) preg_replace('#^https?://[^@/]*@#', 'https://', $url);
+    }
+
+    /**
+     * Turn raw git stderr into a readable, actionable message. In particular the
+     * app always runs git with GIT_TERMINAL_PROMPT=0, so private HTTPS remotes
+     * fail with "could not read Username ... terminal prompts disabled" whenever
+     * the server has no stored credentials — explain the cause and the fix.
+     */
+    protected function friendlyError(string $message, ?string $repoUrl): string
+    {
+        $message = trim($message);
+
+        $authHint = 'GitHub requires authentication for this repository, but no credentials are stored in git on this server '.
+            '(git runs with prompts disabled, so it cannot ask for a username/password). To fix this: '.
+            '(a) reconnect with a URL that embeds a Personal Access Token, e.g. '.
+            'https://<your-username>:<PAT>@github.com/'.$this->repoSlug($repoUrl).', or '.
+            '(b) store credentials on this machine via `git config --global credential.helper osxkeychain` '.
+            'and authenticate once, or point the repository at an SSH remote that uses a key.';
+
+        if (preg_match('/could not read (Username|Password)|terminal prompts disabled|Authentication failed|invalid username or password|HTTP 401|HTTP 403/i', $message)) {
+            return 'Push/Pull blocked: '.$authHint;
+        }
+
+        if (preg_match('/Repository not found|remote: repository not found|not found: does not exist|HTTP 404/i', $message)) {
+            return 'Repository not found: '.($this->repoSlug($repoUrl) ?: 'check the repository URL').
+                '. Is it public (or is the token authorized to access it)? If the repository is private, '.
+                'connect using a URL that embeds a token with repo access.';
+        }
+
+        if (preg_match('/Permission denied \(publickey\)/i', $message)) {
+            return 'SSH authentication failed: the SSH key on this server is not authorized for this repository. '.
+                'Add the public key to GitHub or use an HTTPS URL that embeds a Personal Access Token.';
+        }
+
+        return $message !== '' ? $message : 'Git command failed.';
+    }
+
+    /**
+     * Extract "owner/repo" from a GitHub URL for readable hints.
+     */
+    protected function repoSlug(?string $url): string
+    {
+        if ($url === null || $url === '') {
+            return '';
+        }
+
+        if (preg_match('#(?:github\.com[:/])([^/]+/[^/]+?)(?:\.git)?$#i', $url, $m)) {
+            return $m[1];
+        }
+
+        return '';
+    }
+
+    /**
+     * Read the configured GitHub token (env GITHUB_TOKEN or GH_TOKEN).
+     */
+    protected function githubToken(): ?string
+    {
+        $token = getenv('GITHUB_TOKEN') ?: getenv('GH_TOKEN');
+
+        return is_string($token) && $token !== '' ? trim($token) : null;
+    }
+
+    /**
+     * Read the origin URL currently stored inside the working clone.
+     */
+    protected function remoteOriginUrl(string $cwd): ?string
+    {
+        $output = [];
+        $code = 0;
+        exec('git -C '.escapeshellarg($cwd).' remote get-url origin 2>/dev/null', $output, $code);
+
+        return $code === 0 && isset($output[0]) ? trim($output[0]) : null;
+    }
+
+    /**
+     * Remove any credentials that ended up in the clone's origin URL. A clone
+     * made with an embedded token must not keep that token in .git/config.
+     */
+    protected function sanitizeCloneOrigin(string $cwd, string $cleanUrl): void
+    {
+        $current = $this->remoteOriginUrl($cwd);
+        if ($current !== null && $current !== $cleanUrl) {
+            @exec('git -C '.escapeshellarg($cwd).' remote set-url origin '.escapeshellarg($cleanUrl).' 2>/dev/null');
+        }
+    }
+
+    /**
+     * Return an https URL with the GITHUB_TOKEN embedded for a single command.
+     * Returns null when there is nothing to inject (no token, non-https URL, or
+     * credentials already present).
+     */
+    protected function authUrlFor(?string $url): ?string
+    {
+        $token = $this->githubToken();
+        if ($token === null || $url === null) {
+            return null;
+        }
+
+        $url = trim($url);
+        if (! preg_match('{^https://}i', $url)) {
+            return null;
+        }
+
+        // Already carries credentials (user:pass@) — leave it alone.
+        if (preg_match('{^https://[^@/]+@}i', $url)) {
+            return null;
+        }
+
+        $username = 'oauth2';
+        if (preg_match('#(?:github\.com[:/])([^/]+)/#i', $url, $m)) {
+            $username = $m[1];
+        }
+
+        return str_ireplace('https://', 'https://'.$username.':'.rawurlencode($token).'@', $url);
     }
 
     /**
@@ -753,7 +889,7 @@ class GitRepoService
 
         // "user/repo" shorthand
         if (! preg_match('#^(https?://|git@|ssh://|git://)#', $url) && substr_count($url, '/') === 1) {
-            $url = 'https://github.com/' . $url . '.git';
+            $url = 'https://github.com/'.$url.'.git';
         }
 
         return $url;
@@ -761,6 +897,6 @@ class GitRepoService
 
     public function isCloned(AiProject $project): bool
     {
-        return $project->repo_url !== null && is_dir($this->repoFullPath($project) . '/.git');
+        return $project->repo_url !== null && is_dir($this->repoFullPath($project).'/.git');
     }
 }
