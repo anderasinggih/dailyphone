@@ -42,10 +42,11 @@ export default function Landing({ settings }: { settings: LandingSettings }) {
                         src="/media/as1.png"
                         alt=""
                         aria-hidden
-                        className="absolute inset-0 h-full w-full object-cover opacity-45"
+                        className="absolute inset-0 h-full w-full object-cover object-top opacity-35 lg:opacity-45"
                         loading="lazy"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-b from-[#f5f5f7]/35 via-[#f5f5f7]/55 to-[#f5f5f7]" />
+                    <div className="absolute inset-0 bg-[#f5f5f7]/45 lg:bg-[#f5f5f7]/40" />
+                    <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-[#f5f5f7] to-transparent" />
                 </div>
 
                 <div className="relative max-w-4xl mx-auto px-4 sm:px-6 pt-16 sm:pt-24 pb-16 sm:pb-20 text-center">
@@ -105,10 +106,11 @@ export default function Landing({ settings }: { settings: LandingSettings }) {
                         src="/media/as2.png"
                         alt=""
                         aria-hidden
-                        className="absolute inset-0 h-full w-full object-cover opacity-30"
+                        className="absolute inset-0 h-full w-full object-cover object-top opacity-25 lg:opacity-30"
                         loading="lazy"
                     />
-                    <div className="absolute inset-0 bg-white/70" />
+                    <div className="absolute inset-0 bg-white/75" />
+                    <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-white to-transparent" />
                 </div>
 
                 <div className="relative max-w-5xl mx-auto px-4 sm:px-6 py-16 sm:py-20">
@@ -127,7 +129,7 @@ export default function Landing({ settings }: { settings: LandingSettings }) {
                                 <div key={`${embed}-${i}`} className="rounded-[1.75rem] border border-black/5 bg-white overflow-hidden shadow-sm">
                                     <iframe
                                         src={embed}
-                                        className="w-full h-[520px]"
+                                        className="w-full h-[620px]"
                                         scrolling="no"
                                         frameBorder={0}
                                         allowTransparency
@@ -179,7 +181,7 @@ function instagramEmbedUrl(link: string): string {
 
     const match = trimmed.match(/instagram\.com\/(?:p|reel|reels|tv)\/([\w-]+)/i);
     if (match) {
-        return `https://www.instagram.com/p/${match[1]}/embed/captioned`;
+        return `https://www.instagram.com/p/${match[1]}/embed`;
     }
 
     return trimmed;
