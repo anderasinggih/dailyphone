@@ -17,6 +17,14 @@ interface LandingSettings {
 export default function Landing({ settings }: { settings: LandingSettings }) {
     useEffect(() => {
         document.documentElement.classList.remove('dark');
+
+        const isStandalone =
+            window.matchMedia('(display-mode: standalone)').matches ||
+            (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+
+        if (isStandalone) {
+            window.location.href = route('login');
+        }
     }, []);
 
     const handle = settings.instagram_handle?.trim() || 'dailyphone.store';
