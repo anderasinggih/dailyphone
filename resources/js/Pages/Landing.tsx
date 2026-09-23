@@ -39,7 +39,7 @@ export default function Landing({ settings }: { settings: LandingSettings }) {
             <section className="bg-[#f5f5f7]">
                 <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-16 sm:pt-24 pb-8 sm:pb-10 text-center">
                     <img
-                        src="/storage/logo.png"
+                        src="/media/logo.png"
                         alt={companyName}
                         className="mx-auto h-24 w-24 sm:h-28 sm:w-28 rounded-3xl object-contain shadow-sm"
                     />
