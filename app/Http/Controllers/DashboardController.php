@@ -361,7 +361,15 @@ class DashboardController extends Controller
             ->groupBy('stocks.name')
             ->orderBy('total_sold', 'desc')
             ->limit(5)
-            ->get();
+            ->get()
+            ->map(function ($row) {
+                return [
+                    'name' => $row->name,
+                    'total_sold' => (int)$row->total_sold,
+                ];
+            })
+            ->values()
+            ->all();
 
         $activeStoreName = 'All Branches';
         if ($storeId) {

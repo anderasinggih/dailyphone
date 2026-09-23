@@ -3042,7 +3042,7 @@ SYSTEM;
 
         $lines[] = '';
         $lines[] = '=== Model Terlaris (periode ini) ===';
-        $top = collect($context['topProducts'])->map(fn ($t) => "- {$t['name']}: {$t['total_sold']} unit")->implode("\n");
+        $top = collect($context['topProducts'])->map(fn ($t) => "- ".(((array) $t)['name'] ?? 'Unknown').": ".(((array) $t)['total_sold'] ?? 0)." unit")->implode("\n");
         $lines[] = $top ?: '- Belum ada data.';
 
         $lines[] = '';
