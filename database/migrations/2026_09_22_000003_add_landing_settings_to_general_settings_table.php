@@ -28,7 +28,7 @@ return new class extends Migration
         DB::table('general_settings')->update([
             'landing_enabled' => true,
             'landing_tagline' => 'iPhone Berkualitas. Harga Bersahabat.',
-            'landing_description' => 'iPhone baru dan terawat dengan harga bersahabat — setiap unit dicek satu-satu, bergaransi resmi, dan siap tukar tambah.',
+            'landing_description' => 'iPhone baru & terawat, bergaransi resmi, bisa tukar tambah.',
             'instagram_handle' => 'dailyphone.store',
             'instagram_url' => 'https://www.instagram.com/dailyphone.store/',
             'whatsapp_number' => '0881010229772',
