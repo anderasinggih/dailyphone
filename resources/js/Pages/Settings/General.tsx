@@ -1455,7 +1455,7 @@ export default function General({ settings, schedules, employees, stores }: Gene
                                                 type="text"
                                                 value={landingForm.data.store_address}
                                                 onChange={e => landingForm.setData('store_address', e.target.value)}
-                                                placeholder="Pekoja, Jakarta Barat"
+                                                placeholder="Pekojan, Jakarta Barat"
                                                 className="w-full rounded-xl border border-border/80 bg-background px-4 py-2.5 text2 text-foreground focus:border-primary focus:ring-1 focus:ring-primary shadow-2xs"
                                             />
                                         </div>

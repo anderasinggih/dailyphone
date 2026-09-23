@@ -27,12 +27,12 @@ return new class extends Migration
         // since ALTER TABLE only applies them to newly created records.
         DB::table('general_settings')->update([
             'landing_enabled' => true,
-            'landing_tagline' => 'Great iPhones. Honest Prices.',
-            'landing_description' => 'New and pre-owned iPhones at affordable prices — every unit quality-checked, officially warrantied, and ready with easy trade-in.',
+            'landing_tagline' => 'iPhone Berkualitas. Harga Bersahabat.',
+            'landing_description' => 'iPhone baru dan terawat dengan harga bersahabat — setiap unit dicek satu-satu, bergaransi resmi, dan siap tukar tambah.',
             'instagram_handle' => 'dailyphone.store',
             'instagram_url' => 'https://www.instagram.com/dailyphone.store/',
             'whatsapp_number' => '0881010229772',
-            'store_address' => 'Pekoja, Jakarta Barat',
+            'store_address' => 'Pekojan, Jakarta Barat',
             'instagram_embeds' => json_encode([]),
         ]);
     }

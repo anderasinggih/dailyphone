@@ -33,7 +33,7 @@ class GeneralSettingsController extends Controller
             'instagram_handle' => 'dailyphone.store',
             'instagram_url' => 'https://www.instagram.com/dailyphone.store/',
             'whatsapp_number' => '0881010229772',
-            'store_address' => 'Pekoja, Jakarta Barat',
+            'store_address' => 'Pekojan, Jakarta Barat',
             'instagram_embeds' => [],
         ]);
 
