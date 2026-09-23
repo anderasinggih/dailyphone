@@ -42,10 +42,10 @@ export default function Landing({ settings }: { settings: LandingSettings }) {
                         src="/media/as1.png"
                         alt=""
                         aria-hidden
-                        className="absolute inset-0 h-full w-full object-cover opacity-[0.12]"
+                        className="absolute inset-0 h-full w-full object-cover opacity-45"
                         loading="lazy"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-b from-[#f5f5f7]/75 via-[#f5f5f7]/85 to-[#f5f5f7]" />
+                    <div className="absolute inset-0 bg-gradient-to-b from-[#f5f5f7]/35 via-[#f5f5f7]/55 to-[#f5f5f7]" />
                 </div>
 
                 <div className="relative max-w-4xl mx-auto px-4 sm:px-6 pt-16 sm:pt-24 pb-16 sm:pb-20 text-center">
@@ -105,10 +105,10 @@ export default function Landing({ settings }: { settings: LandingSettings }) {
                         src="/media/as2.png"
                         alt=""
                         aria-hidden
-                        className="absolute inset-0 h-full w-full object-cover opacity-[0.06]"
+                        className="absolute inset-0 h-full w-full object-cover opacity-30"
                         loading="lazy"
                     />
-                    <div className="absolute inset-0 bg-white/90" />
+                    <div className="absolute inset-0 bg-white/70" />
                 </div>
 
                 <div className="relative max-w-5xl mx-auto px-4 sm:px-6 py-16 sm:py-20">
