@@ -61,6 +61,7 @@ interface StockDetailPanelProps {
     onEdit: (stock: StockItemDetail) => void;
     onDelete: (id: number) => void;
     onRestore: (id: number) => void;
+    onForceDelete?: (id: number) => void;
     onRestoreToAvailable: (stock: StockItemDetail) => void;
     onChatWA: (phone: string, name: string) => void;
     onSendWAInvoice: (phone: string, name: string, invoiceNumber: string, total?: number) => void;
@@ -74,6 +75,7 @@ export default function StockDetailPanel({
     onEdit,
     onDelete,
     onRestore,
+    onForceDelete,
     onRestoreToAvailable,
     onChatWA,
     onSendWAInvoice,
@@ -323,13 +325,24 @@ export default function StockDetailPanel({
                     )}
                     <div className="flex gap-2">
                         {stock.deleted_at ? (
-                            <button
-                                type="button"
-                                onClick={() => onRestore(stock.id)}
-                                className="flex-1 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition"
-                            >
-                                Restore Unit
-                            </button>
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => onRestore(stock.id)}
+                                    className="flex-1 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition"
+                                >
+                                    Restore Unit
+                                </button>
+                                {onForceDelete && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onForceDelete(stock.id)}
+                                        className="flex-1 rounded-xl bg-destructive py-2.5 text-xs font-semibold text-destructive-foreground hover:opacity-90 transition"
+                                    >
+                                        Delete Permanently
+                                    </button>
+                                )}
+                            </>
                         ) : (
                             <>
                                 <button

@@ -445,6 +445,28 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
         }
     };
 
+    const handleForceDeleteStock = (stockId: number) => {
+        if (confirm('Are you sure you want to PERMANENTLY delete this stock unit? This action cannot be undone.')) {
+            router.delete(route('stocks.force-destroy', stockId), {
+                onSuccess: () => {
+                    setSelectedStockDetail(null);
+                    alert('Stock unit permanently deleted!');
+                }
+            });
+        }
+    };
+
+    const handleEmptyTrash = () => {
+        if (confirm('Are you sure you want to PERMANENTLY empty the entire Trash? All deleted units will be removed forever.')) {
+            router.post(route('stocks.empty-trash'), {}, {
+                onSuccess: () => {
+                    setSelectedStockDetail(null);
+                    alert('Trash emptied successfully!');
+                }
+            });
+        }
+    };
+
     const handleQuickRestoreToAvailable = (stock: StockItem) => {
         if (confirm('Are you sure you want to revert this unit from SOLD to AVAILABLE? The sale transaction will be deleted.')) {
             router.put(route('stocks.update', stock.id), {
@@ -717,6 +739,18 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                                     <option value="active">Active Units</option>
                                                     <option value="trash">Trash / Deleted</option>
                                                 </select>
+                                            </div>
+                                        )}
+                                        {isSuperAdmin && trashFilter === 'trash' && filteredStocks.length > 0 && (
+                                            <div className="flex items-end">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleEmptyTrash}
+                                                    className="rounded-xl bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive hover:text-destructive-foreground px-3.5 py-2 text-xs font-semibold shadow-sm transition flex items-center justify-center gap-1.5"
+                                                >
+                                                    <Trash className="h-3.5 w-3.5" />
+                                                    Empty Trash ({filteredStocks.length})
+                                                </button>
                                             </div>
                                         )}
                                         {isSuperAdmin && (
@@ -1070,6 +1104,7 @@ export default function ManageStock({ stocks, stores, parameters, filters }: Man
                                         onEdit={openEditModal}
                                         onDelete={handleDeleteStock}
                                         onRestore={handleRestoreStock}
+                                        onForceDelete={handleForceDeleteStock}
                                         onRestoreToAvailable={handleQuickRestoreToAvailable}
                                         onChatWA={openWAChat}
                                         onSendWAInvoice={openWAInvoice}

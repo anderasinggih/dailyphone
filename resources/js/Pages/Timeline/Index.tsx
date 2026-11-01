@@ -65,6 +65,95 @@ interface TimelineProps {
     activities: PaginatedData<ActivityLog>;
 }
 
+const AUDIT_FIELD_LABELS: Record<string, string> = {
+    name: 'Unit Name',
+    stock_name: 'Unit Name',
+    serial_number: 'Serial Number (SN)',
+    imei_1: 'IMEI',
+    sell_price: 'Selling Price',
+    sell_price_reseller: 'Reseller Price',
+    buy_price: 'Purchase Cost',
+    supplier: 'Supplier / Distributor',
+    type: 'Condition',
+    category: 'Category',
+    status: 'Unit Status',
+    qty: 'Quantity',
+    warranty_duration_days: 'Warranty Period',
+    invoice_number: 'Invoice Number',
+    total_amount: 'Total Amount',
+    dp_amount: 'Down Payment (DP)',
+    payment_method: 'Payment Method',
+    payment_detail: 'Payment Detail',
+    buyer_name: 'Customer Name',
+    buyer_phone: 'Customer Phone',
+    notes: 'Notes',
+    void_reason: 'Void Reason',
+    store_name: 'Branch / Store',
+    clock_in_time: 'Clock In Time',
+    clock_out_time: 'Clock Out Time',
+    actual_cash: 'Actual Cash',
+    expected_cash: 'Expected Cash',
+    cash_difference: 'Cash Difference',
+    amount: 'Amount',
+    description: 'Description',
+    damage_description: 'Damage Description',
+    repair_cost: 'Repair Cost',
+    refund_amount: 'Refund Amount',
+    restocking_fee: 'Restocking Fee',
+    items_detail: 'Item Details',
+    deleted_count: 'Deleted Count',
+    reason: 'Reason',
+};
+
+const IGNORED_AUDIT_KEYS = new Set([
+    'id', 'created_at', 'updated_at', 'deleted_at',
+    'brand_id', 'color_id', 'memory_id', 'license_id', 'store_id',
+    'user_id', 'shift_id', 'buyer_id', 'affiliate_user_id', 'affiliate_fee',
+    'sale_id', 'stock_id', 'model_type', 'model_id', 'default_charge_to',
+    'created_by', 'extra_id', 'parameter_id', 'value_id'
+]);
+
+const formatAuditValue = (key: string, val: any): string => {
+    if (val === null || val === undefined || val === '') return '-';
+
+    const currencyKeys = [
+        'sell_price', 'sell_price_reseller', 'buy_price', 'total_amount', 'dp_amount',
+        'actual_cash', 'expected_cash', 'cash_difference', 'amount',
+        'repair_cost', 'refund_amount', 'restocking_fee'
+    ];
+    if (currencyKeys.includes(key)) {
+        const num = parseFloat(val);
+        if (!isNaN(num)) {
+            return new Intl.NumberFormat('id-ID', {
+                style: 'currency',
+                currency: 'IDR',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(num);
+        }
+    }
+
+    if (key === 'warranty_duration_days') {
+        const n = parseInt(val);
+        return isNaN(n) || n <= 0 ? 'No Warranty' : `${n} Days`;
+    }
+
+    if (key === 'type') {
+        if (val === 'new') return 'Brand New';
+        if (val === 'second') return 'Second / Used';
+    }
+
+    if (key === 'category') {
+        return String(val).toUpperCase();
+    }
+
+    if (typeof val === 'object') {
+        return JSON.stringify(val);
+    }
+
+    return String(val);
+};
+
 export default function Timeline({ activities }: TimelineProps) {
     const { filters } = usePage().props as any;
     const [search, setSearch] = useState(filters?.search || '');
@@ -444,6 +533,30 @@ export default function Timeline({ activities }: TimelineProps) {
                         </span>
                     )
                 };
+            case 'stock_force_deleted':
+                return {
+                    title: 'Stock Permanently Deleted',
+                    icon: Trash2,
+                    accentColor: 'text-destructive bg-destructive/10 border-destructive/20',
+                    labelColor: 'text-destructive',
+                    desc: (
+                        <span>
+                            Permanently deleted unit <strong className="text-foreground font-semibold">{log.old_values?.name || 'Unit'}</strong> {log.old_values?.serial_number && `(SN: ${log.old_values.serial_number})`}.
+                        </span>
+                    )
+                };
+            case 'stocks_trash_emptied':
+                return {
+                    title: 'Trash Emptied',
+                    icon: Trash2,
+                    accentColor: 'text-destructive bg-destructive/10 border-destructive/20',
+                    labelColor: 'text-destructive',
+                    desc: (
+                        <span>
+                            Permanently emptied trash ({vals.deleted_count || 'all'} units removed).
+                        </span>
+                    )
+                };
             default:
                 return {
                     title: log.action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
@@ -759,45 +872,107 @@ export default function Timeline({ activities }: TimelineProps) {
                                             </div>
                                         </div>
 
-                                        {/* New Values (Full Fields) */}
-                                        {Object.keys(newVals).length > 0 && (
-                                            <div className="space-y-1.5">
-                                                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                                                    <span>Updated / Recorded Fields ({Object.keys(newVals).length})</span>
-                                                    <span className="text-emerald-500 font-mono">new_values</span>
-                                                </div>
-                                                <div className="rounded-xl border border-border/60 bg-muted/20 overflow-hidden divide-y divide-border/20 text-[11px] font-mono">
-                                                    {Object.entries(newVals).map(([k, v]) => (
-                                                        <div key={k} className="flex items-start justify-between p-2 hover:bg-muted/30 transition">
-                                                            <span className="text-muted-foreground font-semibold w-1/3 truncate">{k}</span>
-                                                            <span className="text-foreground text-right w-2/3 break-all font-medium">
-                                                                {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}
-                                                            </span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
+                                        {/* Informative Audit Changes / Record Details */}
+                                        {(() => {
+                                            const hasBoth = Object.keys(newVals).length > 0 && Object.keys(oldVals).length > 0;
+                                            const diffs: Array<{ label: string; key: string; oldVal: any; newVal: any }> = [];
 
-                                        {/* Old Values (If update or revertible) */}
-                                        {Object.keys(oldVals).length > 0 && (
-                                            <div className="space-y-1.5">
-                                                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                                                    <span>Previous Values (Before Change)</span>
-                                                    <span className="text-rose-500 font-mono">old_values</span>
-                                                </div>
-                                                <div className="rounded-xl border border-border/60 bg-muted/20 overflow-hidden divide-y divide-border/20 text-[11px] font-mono">
-                                                    {Object.entries(oldVals).map(([k, v]) => (
-                                                        <div key={k} className="flex items-start justify-between p-2 hover:bg-muted/30 transition opacity-80">
-                                                            <span className="text-muted-foreground font-semibold w-1/3 truncate">{k}</span>
-                                                            <span className="text-muted-foreground text-right w-2/3 break-all line-through">
-                                                                {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}
-                                                            </span>
+                                            if (hasBoth) {
+                                                const candidateKeys = Array.from(new Set([...Object.keys(newVals), ...Object.keys(oldVals)]));
+                                                for (const k of candidateKeys) {
+                                                    if (IGNORED_AUDIT_KEYS.has(k)) continue;
+                                                    const o = oldVals[k];
+                                                    const n = newVals[k];
+                                                    if (String(o ?? '') !== String(n ?? '')) {
+                                                        diffs.push({
+                                                            label: AUDIT_FIELD_LABELS[k] || k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                                                            key: k,
+                                                            oldVal: o,
+                                                            newVal: n
+                                                        });
+                                                    }
+                                                }
+                                            }
+
+                                            const informativeFields: Array<{ label: string; key: string; value: any }> = [];
+                                            const sourceObj = Object.keys(newVals).length > 0 ? newVals : oldVals;
+                                            for (const [k, v] of Object.entries(sourceObj)) {
+                                                if (IGNORED_AUDIT_KEYS.has(k)) continue;
+                                                if (v === null || v === undefined || v === '') continue;
+                                                informativeFields.push({
+                                                    label: AUDIT_FIELD_LABELS[k] || k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                                                    key: k,
+                                                    value: v
+                                                });
+                                            }
+
+                                            return (
+                                                <div className="space-y-3">
+                                                    {diffs.length > 0 ? (
+                                                        <div className="space-y-1.5">
+                                                            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                                                <span>Modified Fields ({diffs.length})</span>
+                                                                <span className="text-primary font-semibold">Audit Diff</span>
+                                                            </div>
+                                                            <div className="rounded-xl border border-border/70 bg-muted/20 overflow-hidden divide-y divide-border/20">
+                                                                {diffs.map((d) => (
+                                                                    <div key={d.key} className="p-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-[11px] hover:bg-muted/30 transition">
+                                                                        <span className="font-semibold text-foreground shrink-0">{d.label}</span>
+                                                                        <div className="flex items-center gap-1.5 text-right font-medium">
+                                                                            <span className="text-muted-foreground line-through text-[10.5px]">
+                                                                                {formatAuditValue(d.key, d.oldVal)}
+                                                                            </span>
+                                                                            <span className="text-muted-foreground text-[10px]">→</span>
+                                                                            <span className="text-primary font-bold">
+                                                                                {formatAuditValue(d.key, d.newVal)}
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
                                                         </div>
-                                                    ))}
+                                                    ) : informativeFields.length > 0 ? (
+                                                        <div className="space-y-1.5">
+                                                            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                                                <span>Recorded Details</span>
+                                                                <span className="text-primary font-semibold">{informativeFields.length} attributes</span>
+                                                            </div>
+                                                            <div className="rounded-xl border border-border/70 bg-muted/20 overflow-hidden divide-y divide-border/20">
+                                                                {informativeFields.map((f) => (
+                                                                    <div key={f.key} className="flex items-center justify-between p-2.5 text-[11px] hover:bg-muted/30 transition">
+                                                                        <span className="text-muted-foreground font-medium">{f.label}</span>
+                                                                        <span className="text-foreground font-semibold text-right">
+                                                                            {formatAuditValue(f.key, f.value)}
+                                                                        </span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    ) : null}
+
+                                                    {/* Collapsed Technical Inspection */}
+                                                    <details className="pt-2 border-t border-border/40 group">
+                                                        <summary className="text-[10px] text-muted-foreground/70 hover:text-foreground cursor-pointer select-none font-medium">
+                                                            ▸ View Technical Raw JSON (Developer Reference)
+                                                        </summary>
+                                                        <div className="mt-2 p-2 rounded-lg bg-muted/40 border border-border/40 text-[10px] font-mono overflow-x-auto space-y-1 text-muted-foreground">
+                                                            {Object.keys(newVals).length > 0 && (
+                                                                <div>
+                                                                    <span className="font-bold text-foreground">new_values: </span>
+                                                                    {JSON.stringify(newVals, null, 2)}
+                                                                </div>
+                                                            )}
+                                                            {Object.keys(oldVals).length > 0 && (
+                                                                <div>
+                                                                    <span className="font-bold text-foreground">old_values: </span>
+                                                                    {JSON.stringify(oldVals, null, 2)}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </details>
                                                 </div>
-                                            </div>
-                                        )}
+                                            );
+                                        })()}
                                     </div>
 
                                     {/* Modal Footer */}

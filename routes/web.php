@@ -70,6 +70,8 @@ Route::prefix('application/dp')->group(function () {
         Route::put('/stocks/{stock}', [StockController::class, 'update'])->name('stocks.update');
         Route::post('/stocks/{stock}/restore', [StockController::class, 'restore'])->name('stocks.restore');
         Route::delete('/stocks/{stock}', [StockController::class, 'destroy'])->name('stocks.destroy');
+        Route::delete('/stocks/{id}/force', [StockController::class, 'forceDestroy'])->name('stocks.force-destroy');
+        Route::post('/stocks/empty-trash', [StockController::class, 'emptyTrash'])->name('stocks.empty-trash');
         Route::post('/parameters', [StockController::class, 'storeParameter'])->name('parameters.store');
         Route::post('/parameters/value', [StockController::class, 'storeParameterValue'])->name('parameters.value.store');
         Route::put('/parameters/value/{value}', [StockController::class, 'updateParameterValue'])->name('parameters.value.update');

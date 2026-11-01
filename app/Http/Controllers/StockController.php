@@ -593,4 +593,82 @@ class StockController extends Controller
 
         return redirect()->back()->with('success', 'Stok unit berhasil dihapus.');
     }
+
+    public function forceDestroy(Request $request, $id): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $stock = Stock::withTrashed()->findOrFail($id);
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($stock) {
+            \App\Models\StockParameterValue::where('stock_id', $stock->id)->delete();
+            \App\Models\StockTransfer::where('stock_id', $stock->id)->delete();
+            \App\Models\ReturnLog::where('stock_id', $stock->id)->delete();
+            \App\Models\WarrantyRepair::where('stock_id', $stock->id)->delete();
+            \App\Models\SaleExtra::where('extra_id', $stock->id)->delete();
+
+            $saleItems = \App\Models\SaleItem::where('stock_id', $stock->id)->get();
+            foreach ($saleItems as $item) {
+                $sale = $item->sale;
+                $item->delete();
+                if ($sale && $sale->items()->count() === 0 && $sale->extras()->count() === 0) {
+                    $sale->returns()->delete();
+                    $sale->delete();
+                }
+            }
+
+            $auditValues = [
+                'name' => $stock->name,
+                'serial_number' => $stock->serial_number,
+                'imei_1' => $stock->imei_1,
+                'type' => $stock->type,
+                'category' => $stock->category,
+                'sell_price' => $stock->sell_price,
+            ];
+
+            $stock->forceDelete();
+
+            ActivityLog::log('stock_force_deleted', Stock::class, $stock->id, null, $auditValues);
+        });
+
+        return redirect()->back()->with('success', 'Stok unit berhasil dihapus permanen.');
+    }
+
+    public function emptyTrash(Request $request): RedirectResponse
+    {
+        if ($request->user()->role !== 'superadmin') {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $trashedStocks = Stock::onlyTrashed()->get();
+        $count = $trashedStocks->count();
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($trashedStocks) {
+            foreach ($trashedStocks as $stock) {
+                \App\Models\StockParameterValue::where('stock_id', $stock->id)->delete();
+                \App\Models\StockTransfer::where('stock_id', $stock->id)->delete();
+                \App\Models\ReturnLog::where('stock_id', $stock->id)->delete();
+                \App\Models\WarrantyRepair::where('stock_id', $stock->id)->delete();
+                \App\Models\SaleExtra::where('extra_id', $stock->id)->delete();
+
+                $saleItems = \App\Models\SaleItem::where('stock_id', $stock->id)->get();
+                foreach ($saleItems as $item) {
+                    $sale = $item->sale;
+                    $item->delete();
+                    if ($sale && $sale->items()->count() === 0 && $sale->extras()->count() === 0) {
+                        $sale->returns()->delete();
+                        $sale->delete();
+                    }
+                }
+
+                $stock->forceDelete();
+            }
+
+            ActivityLog::log('stocks_trash_emptied', Stock::class, null, ['deleted_count' => $trashedStocks->count()]);
+        });
+
+        return redirect()->back()->with('success', "Trash berhasil dikosongkan ({$count} unit dihapus permanen).");
+    }
 }

@@ -110,7 +110,10 @@ class DashboardController extends Controller
         }
 
         // Custom time period (month & year)
-        $latestSale = Sale::where('status', 'completed')->latest('created_at')->first();
+        $latestSale = Sale::where('status', 'completed')
+            ->whereHas('items.stock', fn($q) => $q->whereNull('deleted_at'))
+            ->latest('created_at')
+            ->first() ?? Sale::where('status', 'completed')->latest('created_at')->first();
         $defaultMonth = $latestSale ? $latestSale->created_at->month : now()->month;
         $defaultYear = $latestSale ? $latestSale->created_at->year : now()->year;
 
@@ -123,11 +126,13 @@ class DashboardController extends Controller
             ->whereYear('created_at', $year);
 
         $returnsQuery = ReturnLog::whereMonth('created_at', $month)
-            ->whereYear('created_at', $year);
+            ->whereYear('created_at', $year)
+            ->whereHas('stock', fn($q) => $q->whereNull('deleted_at'));
 
         $repairsQuery = WarrantyRepair::where('status', 'repaired')
             ->whereMonth('created_at', $month)
-            ->whereYear('created_at', $year);
+            ->whereYear('created_at', $year)
+            ->whereHas('stock', fn($q) => $q->whereNull('deleted_at'));
 
         if ($storeId) {
             $salesQuery->where('store_id', $storeId);
@@ -139,9 +144,43 @@ class DashboardController extends Controller
             });
         }
 
-        $sales = $salesQuery->with(['items.stock', 'extras', 'returns'])->get();
+        $sales = $salesQuery->with(['items.stock', 'extras.extra', 'returns'])->get();
         $returns = $returnsQuery->get();
         $repairs = $repairsQuery->get();
+
+        // Helper to compute sale revenue and check active items (excluding trashed/soft-deleted items)
+        $computeSaleRevenue = function ($sale) {
+            $returnedStockIds = $sale->returns->pluck('stock_id')->toArray();
+            $rev = 0;
+            $hasValidItems = false;
+
+            foreach ($sale->items as $item) {
+                if (in_array($item->stock_id, $returnedStockIds)) {
+                    continue;
+                }
+                // Exclude soft-deleted / trashed units
+                if (!$item->stock || $item->stock->trashed()) {
+                    continue;
+                }
+                $hasValidItems = true;
+                if (!$item->is_trade_in_item) {
+                    $rev += $item->actual_sell_price * $item->qty;
+                }
+            }
+
+            foreach ($sale->extras as $extra) {
+                // Exclude soft-deleted extra stock units
+                if ($extra->extra && $extra->extra->trashed()) {
+                    continue;
+                }
+                $hasValidItems = true;
+                if ($extra->charge_to === 'buyer') {
+                    $rev += $extra->sell_price;
+                }
+            }
+
+            return [$rev, $hasValidItems];
+        };
 
         // Financial Math for the active period
         $totalRevenue = 0;
@@ -157,6 +196,10 @@ class DashboardController extends Controller
                 if (in_array($item->stock_id, $returnedStockIds)) {
                     continue;
                 }
+                // Exclude soft-deleted / trashed stock
+                if (!$item->stock || $item->stock->trashed()) {
+                    continue;
+                }
                 if (!$item->is_trade_in_item) {
                     $saleRevenue += $item->actual_sell_price * $item->qty;
                     $saleHpp += $item->buy_price_snap * $item->qty;
@@ -165,6 +208,9 @@ class DashboardController extends Controller
             }
 
             foreach ($sale->extras as $extra) {
+                if ($extra->extra && $extra->extra->trashed()) {
+                    continue;
+                }
                 if ($extra->charge_to === 'buyer') {
                     $saleRevenue += $extra->sell_price;
                     $saleHpp += $extra->buy_price;
@@ -180,7 +226,11 @@ class DashboardController extends Controller
 
         $totalRepairs = $repairs->sum('repair_cost');
         $totalReturnPenalty = $returns->sum('restocking_fee');
-        $totalAffiliatorFee = $sales->sum('affiliate_fee');
+        $validSales = $sales->filter(function ($sale) {
+            return $sale->items->contains(fn($i) => $i->stock && !$i->stock->trashed())
+                || $sale->extras->contains(fn($e) => !$e->extra || !$e->extra->trashed());
+        });
+        $totalAffiliatorFee = $validSales->sum('affiliate_fee');
         $netProfit = $totalRevenue - $totalHpp - $totalRepairs + $totalReturnPenalty - $totalAffiliatorFee;
 
         // Calculate Pending Profits (from booking sales) for current period
@@ -188,15 +238,30 @@ class DashboardController extends Controller
             ->whereMonth('created_at', $month)
             ->whereYear('created_at', $year)
             ->when($storeId, fn($q) => $q->where('store_id', $storeId))
-            ->with(['items.stock', 'extras'])
+            ->with(['items.stock', 'extras.extra'])
             ->get();
 
         $pendingProfit = 0;
         foreach ($bookingSales as $sale) {
-            $rev = $sale->total_amount;
+            $rev = 0;
             $hpp = 0;
             foreach ($sale->items as $item) {
-                $hpp += ($item->buy_price_snap ?? 0) * $item->qty;
+                if (!$item->stock || $item->stock->trashed()) {
+                    continue;
+                }
+                if (!$item->is_trade_in_item) {
+                    $rev += $item->actual_sell_price * $item->qty;
+                    $hpp += ($item->buy_price_snap ?? 0) * $item->qty;
+                }
+            }
+            foreach ($sale->extras as $extra) {
+                if ($extra->extra && $extra->extra->trashed()) {
+                    continue;
+                }
+                if ($extra->charge_to === 'buyer') {
+                    $rev += $extra->sell_price;
+                }
+                $hpp += $extra->buy_price;
             }
             $pendingProfit += ($rev - $hpp);
         }
@@ -204,7 +269,7 @@ class DashboardController extends Controller
         // --- All Time (Global) Statistics ---
         $allTimeSales = Sale::where('status', 'completed')
             ->when($storeId, fn($q) => $q->where('store_id', $storeId))
-            ->with(['items.stock', 'extras', 'returns'])
+            ->with(['items.stock', 'extras.extra', 'returns'])
             ->get();
 
         $allTimeRevenue = 0;
@@ -220,6 +285,9 @@ class DashboardController extends Controller
                 if (in_array($item->stock_id, $returnedStockIds)) {
                     continue;
                 }
+                if (!$item->stock || $item->stock->trashed()) {
+                    continue;
+                }
                 if (!$item->is_trade_in_item) {
                     $saleRevenue += $item->actual_sell_price * $item->qty;
                     $saleHpp += $item->buy_price_snap * $item->qty;
@@ -228,6 +296,9 @@ class DashboardController extends Controller
             }
 
             foreach ($sale->extras as $extra) {
+                if ($extra->extra && $extra->extra->trashed()) {
+                    continue;
+                }
                 if ($extra->charge_to === 'buyer') {
                     $saleRevenue += $extra->sell_price;
                     $saleHpp += $extra->buy_price;
@@ -241,8 +312,10 @@ class DashboardController extends Controller
             $allTimeHpp += $saleHpp;
         }
 
-        $allTimeRepairsQuery = WarrantyRepair::where('status', 'repaired');
-        $allTimeReturnsQuery = ReturnLog::query();
+        $allTimeRepairsQuery = WarrantyRepair::where('status', 'repaired')
+            ->whereHas('stock', fn($q) => $q->whereNull('deleted_at'));
+        $allTimeReturnsQuery = ReturnLog::query()
+            ->whereHas('stock', fn($q) => $q->whereNull('deleted_at'));
         if ($storeId) {
             $allTimeRepairsQuery->whereHas('sale', fn($q) => $q->where('store_id', $storeId));
             $allTimeReturnsQuery->whereHas('sale', fn($q) => $q->where('store_id', $storeId));
@@ -250,7 +323,11 @@ class DashboardController extends Controller
 
         $allTimeRepairs = $allTimeRepairsQuery->sum('repair_cost');
         $allTimeReturnPenalty = $allTimeReturnsQuery->sum('restocking_fee');
-        $allTimeAffiliatorFee = $allTimeSales->sum('affiliate_fee');
+        $validAllTimeSales = $allTimeSales->filter(function ($sale) {
+            return $sale->items->contains(fn($i) => $i->stock && !$i->stock->trashed())
+                || $sale->extras->contains(fn($e) => !$e->extra || !$e->extra->trashed());
+        });
+        $allTimeAffiliatorFee = $validAllTimeSales->sum('affiliate_fee');
         $allTimeNetProfit = $allTimeRevenue - $allTimeHpp - $allTimeRepairs + $allTimeReturnPenalty - $allTimeAffiliatorFee;
 
         // --- Type / Phone model distribution (filtered by active period) ---
@@ -263,7 +340,10 @@ class DashboardController extends Controller
             ->flatMap(function ($sale) {
                 $returnedStockIds = $sale->returns->pluck('stock_id')->toArray();
                 return $sale->items->filter(function ($item) use ($returnedStockIds) {
-                    return !in_array($item->stock_id, $returnedStockIds) && !$item->is_trade_in_item;
+                    return !in_array($item->stock_id, $returnedStockIds)
+                        && !$item->is_trade_in_item
+                        && $item->stock
+                        && !$item->stock->trashed();
                 });
             })
             ->groupBy(function ($item) {
@@ -288,6 +368,9 @@ class DashboardController extends Controller
             ->whereMonth('created_at', $month)
             ->whereYear('created_at', $year)
             ->whereNotNull('affiliate_user_id')
+            ->whereHas('items.stock', function ($q) {
+                $q->whereNull('deleted_at');
+            })
             ->with('affiliateUser')
             ->get()
             ->groupBy('affiliate_user_id')
@@ -305,46 +388,66 @@ class DashboardController extends Controller
         // --- Monthly trends (last 8 months, scoped by store) ---
         $monthlyRevenue = Sale::where('status', 'completed')
             ->when($storeId, fn($q) => $q->where('store_id', $storeId))
+            ->with(['items.stock', 'extras.extra', 'returns'])
             ->orderBy('created_at', 'asc')
             ->get()
             ->groupBy(function ($sale) {
                 return $sale->created_at->format('M Y');
             })
-            ->map(function ($group) {
+            ->map(function ($group) use ($computeSaleRevenue) {
+                $monthRev = $group->sum(function ($sale) use ($computeSaleRevenue) {
+                    [$rev] = $computeSaleRevenue($sale);
+                    return $rev;
+                });
                 return [
                     'month' => $group->first()->created_at->format('M Y'),
-                    'revenue' => (float)$group->sum('total_amount'),
+                    'revenue' => (float)$monthRev,
                 ];
             })
             ->values();
 
         // --- Payment method distribution (filtered by active period and store) ---
-        $paymentData = Sale::where('status', 'completed')
-            ->when($storeId, fn($q) => $q->where('store_id', $storeId))
-            ->whereMonth('created_at', $month)
-            ->whereYear('created_at', $year)
-            ->get()
+        $paymentData = $sales
             ->groupBy('payment_method')
-            ->map(function ($group, $method) {
+            ->map(function ($group, $method) use ($computeSaleRevenue) {
+                $methodRevenue = 0;
+                $validCount = 0;
+                foreach ($group as $sale) {
+                    [$rev, $hasItems] = $computeSaleRevenue($sale);
+                    if ($hasItems) {
+                        $methodRevenue += $rev;
+                        $validCount++;
+                    }
+                }
                 return [
                     'method' => $method ?: 'Cash',
-                    'count' => $group->count(),
-                    'revenue' => (float)$group->sum('total_amount'),
+                    'count' => $validCount,
+                    'revenue' => (float)$methodRevenue,
                 ];
             })
+            ->filter(fn($p) => $p['count'] > 0)
             ->values();
 
         // Fetch stores list for superadmin and viewer filter
         $stores = in_array($user->role, ['superadmin', 'viewer']) ? Store::all() : [];
 
-        // Fetch recent sales (scoped by store, latest 5)
-        $recentSales = Sale::with(['buyer', 'user'])
+        // Fetch recent sales (scoped by store, latest 5, with non-trashed stock)
+        $recentSales = Sale::where('status', 'completed')
+            ->whereHas('items.stock', function ($q) {
+                $q->whereNull('deleted_at');
+            })
+            ->with(['buyer', 'user', 'items.stock', 'extras.extra', 'returns'])
             ->when($storeId, fn($q) => $q->where('store_id', $storeId))
             ->orderBy('created_at', 'desc')
             ->limit(5)
-            ->get();
+            ->get()
+            ->map(function ($sale) use ($computeSaleRevenue) {
+                [$rev] = $computeSaleRevenue($sale);
+                $sale->total_amount = $rev;
+                return $sale;
+            });
 
-        // Top Selling Products count (filtered by active period)
+        // Top Selling Products count (filtered by active period, excluding soft-deleted / trashed units)
         $topProducts = DB::table('sale_items')
             ->join('stocks', 'sale_items.stock_id', '=', 'stocks.id')
             ->join('sales', 'sale_items.sale_id', '=', 'sales.id')
@@ -353,6 +456,7 @@ class DashboardController extends Controller
                      ->on('sale_items.stock_id', '=', 'returns.stock_id');
             })
             ->whereNull('returns.id')
+            ->whereNull('stocks.deleted_at')
             ->select('stocks.name', DB::raw('SUM(sale_items.qty) as total_sold'))
             ->where('sales.status', 'completed')
             ->whereMonth('sales.created_at', $month)
@@ -377,21 +481,25 @@ class DashboardController extends Controller
             $activeStoreName = $activeStore ? $activeStore->name : 'Branch';
         }
 
-        $activeAffiliatorsCount = $sales->whereNotNull('affiliate_user_id')->pluck('affiliate_user_id')->unique()->count();
+        $activeAffiliatorsCount = $sales->filter(function ($s) {
+            return $s->affiliate_user_id && $s->items->contains(fn($i) => $i->stock && !$i->stock->trashed());
+        })->pluck('affiliate_user_id')->unique()->count();
 
         // --- Today's (Hari Ini) Statistics ---
         $todayDate = now()->toDateString();
         $todaySales = Sale::where('status', 'completed')
             ->whereDate('created_at', $todayDate)
-            ->with(['items.stock', 'extras', 'returns'])
+            ->with(['items.stock', 'extras.extra', 'returns'])
             ->get();
 
         $todayReturns = ReturnLog::whereDate('created_at', $todayDate)
+            ->whereHas('stock', fn($q) => $q->whereNull('deleted_at'))
             ->with('sale')
             ->get();
 
         $todayRepairs = WarrantyRepair::where('status', 'repaired')
             ->whereDate('created_at', $todayDate)
+            ->whereHas('stock', fn($q) => $q->whereNull('deleted_at'))
             ->with('sale')
             ->get();
 
@@ -399,16 +507,22 @@ class DashboardController extends Controller
             $revenue = 0;
             $hpp = 0;
             $soldItems = 0;
+            $validTransactions = 0;
 
             foreach ($sales as $sale) {
                 $returnedStockIds = $sale->returns->pluck('stock_id')->toArray();
                 $saleRevenue = 0;
                 $saleHpp = 0;
+                $hasActiveItems = false;
 
                 foreach ($sale->items as $item) {
                     if (in_array($item->stock_id, $returnedStockIds)) {
                         continue;
                     }
+                    if (!$item->stock || $item->stock->trashed()) {
+                        continue;
+                    }
+                    $hasActiveItems = true;
                     if (!$item->is_trade_in_item) {
                         $saleRevenue += $item->actual_sell_price * $item->qty;
                         $saleHpp += $item->buy_price_snap * $item->qty;
@@ -417,6 +531,10 @@ class DashboardController extends Controller
                 }
 
                 foreach ($sale->extras as $extra) {
+                    if ($extra->extra && $extra->extra->trashed()) {
+                        continue;
+                    }
+                    $hasActiveItems = true;
                     if ($extra->charge_to === 'buyer') {
                         $saleRevenue += $extra->sell_price;
                         $saleHpp += $extra->buy_price;
@@ -426,20 +544,28 @@ class DashboardController extends Controller
                     }
                 }
 
+                if ($hasActiveItems) {
+                    $validTransactions++;
+                }
+
                 $revenue += $saleRevenue;
                 $hpp += $saleHpp;
             }
 
             $repairsCost = $repairs->sum('repair_cost');
             $returnPenalty = $returns->sum('restocking_fee');
-            $affiliateFee = $sales->sum('affiliate_fee');
+            $validSales = $sales->filter(function ($s) {
+                return $s->items->contains(fn($i) => $i->stock && !$i->stock->trashed())
+                    || $s->extras->contains(fn($e) => !$e->extra || !$e->extra->trashed());
+            });
+            $affiliateFee = $validSales->sum('affiliate_fee');
             $netProfit = $revenue - $hpp - $repairsCost + $returnPenalty - $affiliateFee;
 
             return [
                 'revenue' => (float)$revenue,
                 'netProfit' => $role === 'karyawan' ? 0 : (float)$netProfit,
                 'soldItems' => (int)$soldItems,
-                'transactions' => $sales->count(),
+                'transactions' => $validTransactions,
             ];
         };
 
@@ -493,7 +619,7 @@ class DashboardController extends Controller
                 'totalRepairs' => $user->role === 'karyawan' ? 0 : (float)$totalRepairs,
                 'totalReturnPenalty' => $user->role === 'karyawan' ? 0 : (float)$totalReturnPenalty,
                 'netProfit' => $user->role === 'karyawan' ? 0 : (float)$netProfit,
-                'totalAffiliatorFee' => $user->role === 'karyawan' ? 0 : (float)$sales->sum('affiliate_fee'),
+                'totalAffiliatorFee' => $user->role === 'karyawan' ? 0 : (float)$totalAffiliatorFee,
                 'soldItemsCount' => (int)$soldItemsCount,
                 'pendingProfit' => $user->role === 'karyawan' ? 0 : (float)$pendingProfit,
                 'activeAffiliatorsCount' => $user->role === 'karyawan' ? 0 : (int)$activeAffiliatorsCount,
